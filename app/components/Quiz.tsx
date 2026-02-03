@@ -233,13 +233,18 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
 
     // Save score and student name to quiztbl (latest submission)
     if (quizId) {
-      supabase
-        .from("quiztbl")
-        .update({ score: totalScore, studentname: name })
-        .eq("id", quizId)
-        .then(({ error }) => {
-          if (error) console.error("Failed to save quiz score:", error);
-        });
+      if (!supabase) {
+        // Supabase client isn't available (e.g. during static prerender); skip saving.
+        console.warn("Supabase client not available; skipping score save.");
+      } else {
+        supabase
+          .from("quiztbl")
+          .update({ score: totalScore, studentname: name })
+          .eq("id", quizId)
+          .then(({ error }) => {
+            if (error) console.error("Failed to save quiz score:", error);
+          });
+      }
     }
   }, [topic, studentName, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId]);
 
