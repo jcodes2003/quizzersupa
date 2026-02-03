@@ -147,6 +147,10 @@ export default function TeacherPage() {
   const [newQuestionAnswerKey, setNewQuestionAnswerKey] = useState("");
   const [savingQuiz, setSavingQuiz] = useState(false);
   const [savingQuestion, setSavingQuestion] = useState(false);
+  const [responsesPage, setResponsesPage] = useState(1);
+  const [reportsPage, setReportsPage] = useState(1);
+  const [navOpen, setNavOpen] = useState(false);
+  const PAGE_SIZE = 10;
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
@@ -254,6 +258,15 @@ export default function TeacherPage() {
       if (sections.length === 0) fetchSections();
     }
   }, [tab, rows.length, subjects.length, sections.length, fetchSubjects, fetchSections]);
+
+  // Reset pagination when filters change
+  useEffect(() => {
+    setResponsesPage(1);
+  }, [filterSubject]);
+
+  useEffect(() => {
+    setReportsPage(1);
+  }, [reportFilterSection, reportFilterSubject, reportFilterDate]);
 
   // Debug: log retrieved section/subject names from API rows
   useEffect(() => {
@@ -448,6 +461,12 @@ export default function TeacherPage() {
     ? rows.filter((r) => r.subjectid === filterSubject) 
     : rows;
 
+  const responsesTotalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const currentResponsesPage = Math.min(responsesPage, responsesTotalPages);
+  const responsesStartIndex = (currentResponsesPage - 1) * PAGE_SIZE;
+  const responsesEndIndex = responsesStartIndex + PAGE_SIZE;
+  const pagedResponsesRows = filteredRows.slice(responsesStartIndex, responsesEndIndex);
+
   // Filter for reports tab - cascade filters using IDs
   let reportFilteredRows = rows;
   if (reportFilterSection) {
@@ -462,6 +481,12 @@ export default function TeacherPage() {
       return rowDate === reportFilterDate;
     });
   }
+
+  const reportsTotalPages = Math.max(1, Math.ceil(reportFilteredRows.length / PAGE_SIZE));
+  const currentReportsPage = Math.min(reportsPage, reportsTotalPages);
+  const reportsStartIndex = (currentReportsPage - 1) * PAGE_SIZE;
+  const reportsEndIndex = reportsStartIndex + PAGE_SIZE;
+  const pagedReportRows = reportFilteredRows.slice(reportsStartIndex, reportsEndIndex);
 
   // Get unique subjects for current section in reports (filter by sectionid)
   const reportSubjectsForSection = reportFilterSection
@@ -540,32 +565,111 @@ export default function TeacherPage() {
             </h1>
           </div>
           <div className="flex items-center gap-2">
+            {/* Mobile hamburger */}
             <button
-              onClick={() => setTab("responses")}
-              className={`px-4 py-2 rounded-xl font-medium ${tab === "responses" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              type="button"
+              onClick={() => setNavOpen((open) => !open)}
+              className="md:hidden inline-flex items-center justify-center p-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              aria-label="Toggle navigation"
+            >
+              <svg
+                className="h-5 w-5"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d={navOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"}
+                />
+              </svg>
+            </button>
+            {/* Desktop nav */}
+            <div className="hidden md:flex items-center gap-2">
+              <button
+                onClick={() => setTab("responses")}
+                className={`px-4 py-2 rounded-xl font-medium ${tab === "responses" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              >
+                Responses
+              </button>
+              <button
+                onClick={() => setTab("reports")}
+                className={`px-4 py-2 rounded-xl font-medium ${tab === "reports" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              >
+                Reports
+              </button>
+              <button
+                onClick={() => setTab("questions")}
+                className={`px-4 py-2 rounded-xl font-medium ${tab === "questions" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              >
+                Question Bank
+              </button>
+              <button
+                onClick={handleLogout}
+                className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium"
+              >
+                Logout
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Mobile nav menu */}
+        {navOpen && (
+          <div className="mb-4 flex flex-col gap-2 md:hidden">
+            <button
+              onClick={() => {
+                setTab("responses");
+                setNavOpen(false);
+              }}
+              className={`w-full px-4 py-2 rounded-xl text-left font-medium ${
+                tab === "responses"
+                  ? "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
             >
               Responses
             </button>
             <button
-              onClick={() => setTab("reports")}
-              className={`px-4 py-2 rounded-xl font-medium ${tab === "reports" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              onClick={() => {
+                setTab("reports");
+                setNavOpen(false);
+              }}
+              className={`w-full px-4 py-2 rounded-xl text-left font-medium ${
+                tab === "reports"
+                  ? "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
             >
               Reports
             </button>
             <button
-              onClick={() => setTab("questions")}
-              className={`px-4 py-2 rounded-xl font-medium ${tab === "questions" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              onClick={() => {
+                setTab("questions");
+                setNavOpen(false);
+              }}
+              className={`w-full px-4 py-2 rounded-xl text-left font-medium ${
+                tab === "questions"
+                  ? "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
             >
               Question Bank
             </button>
             <button
-              onClick={handleLogout}
-              className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium"
+              onClick={() => {
+                setNavOpen(false);
+                handleLogout();
+              }}
+              className="w-full px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium text-left"
             >
               Logout
             </button>
           </div>
-        </div>
+        )}
 
         {tab === "responses" && (
           <>
@@ -613,8 +717,8 @@ export default function TeacherPage() {
               </div>
             ) : (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+                <div className="overflow-x-auto w-full">
+                  <table className="w-full min-w-[640px] text-left">
                     <thead>
                       <tr className="border-b border-slate-600 bg-slate-700/50">
                         <th className="px-4 py-3 text-slate-300 font-semibold">Quiz Code</th>
@@ -626,7 +730,7 @@ export default function TeacherPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {filteredRows.map((r) => (
+                      {pagedResponsesRows.map((r) => (
                         <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
                           <td className="px-4 py-3 text-slate-200">{r.studentname ?? "—"}</td>
@@ -644,6 +748,39 @@ export default function TeacherPage() {
                       ))}
                     </tbody>
                   </table>
+                </div>
+              </div>
+            )}
+
+            {filteredRows.length > 0 && (
+              <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-slate-400">
+                <p>
+                  Showing{" "}
+                  {filteredRows.length === 0
+                    ? "0"
+                    : `${responsesStartIndex + 1}-${Math.min(responsesEndIndex, filteredRows.length)}`}{" "}
+                  of {filteredRows.length} responses
+                </p>
+                <div className="flex items-center gap-2 self-end md:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setResponsesPage((p) => Math.max(1, p - 1))}
+                    disabled={currentResponsesPage === 1}
+                    className="px-3 py-1 rounded-lg border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700 text-xs"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-slate-300 text-xs">
+                    Page {currentResponsesPage} of {responsesTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setResponsesPage((p) => Math.min(responsesTotalPages, p + 1))}
+                    disabled={currentResponsesPage === responsesTotalPages}
+                    className="px-3 py-1 rounded-lg border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700 text-xs"
+                  >
+                    Next
+                  </button>
                 </div>
               </div>
             )}
@@ -742,8 +879,8 @@ export default function TeacherPage() {
               </div>
             ) : (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-left">
+                <div className="overflow-x-auto w-full">
+                  <table className="w-full min-w-[768px] text-left">
                     <thead>
                       <tr className="border-b border-slate-600 bg-slate-700/50">
                         <th className="px-4 py-3 text-slate-300 font-semibold">Quiz Code</th>
@@ -758,7 +895,7 @@ export default function TeacherPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {reportFilteredRows.map((r) => {
+                      {pagedReportRows.map((r) => {
                         const percentage = r.max_score ? Math.round((r.score! / r.max_score) * 100) : 0;
                         return (
                           <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
@@ -792,6 +929,39 @@ export default function TeacherPage() {
               )}
               {reportFilterDate && <p className="mt-1">Date: {reportFilterDate}</p>}
             </div>
+
+            {reportFilteredRows.length > 0 && (
+              <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-slate-400">
+                <p>
+                  Showing{" "}
+                  {reportFilteredRows.length === 0
+                    ? "0"
+                    : `${reportsStartIndex + 1}-${Math.min(reportsEndIndex, reportFilteredRows.length)}`}{" "}
+                  of {reportFilteredRows.length} records
+                </p>
+                <div className="flex items-center gap-2 self-end md:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setReportsPage((p) => Math.max(1, p - 1))}
+                    disabled={currentReportsPage === 1}
+                    className="px-3 py-1 rounded-lg border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700 text-xs"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-slate-300 text-xs">
+                    Page {currentReportsPage} of {reportsTotalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setReportsPage((p) => Math.min(reportsTotalPages, p + 1))}
+                    disabled={currentReportsPage === reportsTotalPages}
+                    className="px-3 py-1 rounded-lg border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700 text-xs"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
           </>
         )}
 
