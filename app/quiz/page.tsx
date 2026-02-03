@@ -42,7 +42,8 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
   const multipleChoice = list
     .filter((q) => getQuizType(q) === "multiple_choice")
     .map((q) => {
-      const options = parseOptions(q.options ?? (q as Record<string, unknown>).options);
+      const rawOptions = (q.options ?? (q as Record<string, unknown>).options) as string | null | undefined;
+      const options = parseOptions(rawOptions);
       const correct = (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim();
       const id = (q.id ?? "").toString();
       const question = (q.question ?? "").toString();
