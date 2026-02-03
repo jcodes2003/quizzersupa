@@ -304,6 +304,12 @@ export default function TeacherPage() {
         return;
       }
     }
+    if (newQuizType === "identification" || newQuizType === "long_answer" || newQuizType === "enumeration") {
+      if (!newQuestionAnswerKey.trim()) {
+        setError(`Answer key is required for ${newQuizType.replace("_", " ")} questions.`);
+        return;
+      }
+    }
     setSavingQuestion(true);
     setError("");
     try {
@@ -313,6 +319,8 @@ export default function TeacherPage() {
       };
       if (newQuizType === "multiple_choice") {
         body.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
+        body.answerkey = newQuestionAnswerKey.trim();
+      } else if (newQuizType === "identification" || newQuizType === "long_answer" || newQuizType === "enumeration") {
         body.answerkey = newQuestionAnswerKey.trim();
       }
       const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
@@ -717,6 +725,32 @@ export default function TeacherPage() {
                               </div>
                             </>
                           )}
+                          {(newQuizType === "identification" || newQuizType === "long_answer") && (
+                            <div>
+                              <label className="block text-slate-400 text-sm mb-1">Correct answer (answer key)</label>
+                              <textarea
+                                value={newQuestionAnswerKey}
+                                onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+                                rows={2}
+                                placeholder="Enter the correct answer (case-insensitive matching)"
+                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                              />
+                              <p className="text-slate-500 text-xs mt-1">Case-insensitive: answers will be compared ignoring uppercase/lowercase</p>
+                            </div>
+                          )}
+                          {newQuizType === "enumeration" && (
+                            <div>
+                              <label className="block text-slate-400 text-sm mb-1">Correct answers (one per line)</label>
+                              <textarea
+                                value={newQuestionAnswerKey}
+                                onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+                                rows={3}
+                                placeholder="Enter each correct answer on a new line&#10;Example:&#10;photosynthesis&#10;cellular respiration"
+                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                              />
+                              <p className="text-slate-500 text-xs mt-1">Case-insensitive: students can answer in any case (uppercase, lowercase, mixed)</p>
+                            </div>
+                          )}
                           <div className="flex gap-2">
                             <button
                               type="submit"
@@ -762,6 +796,14 @@ export default function TeacherPage() {
                                   {q.answerkey && (
                                     <span className="text-emerald-400 ml-2">Answer: {q.answerkey}</span>
                                   )}
+                                </p>
+                              )}
+                              {(q.quiztype === "identification" || q.quiztype === "long_answer") && q.answerkey && (
+                                <p className="text-emerald-400 text-sm mt-1">Answer key: {q.answerkey}</p>
+                              )}
+                              {q.quiztype === "enumeration" && q.answerkey && (
+                                <p className="text-emerald-400 text-sm mt-1">
+                                  Answers: {q.answerkey.split("\n").filter((a) => a.trim()).join(", ")}
                                 </p>
                               )}
                             </div>

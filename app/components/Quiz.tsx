@@ -195,7 +195,13 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
 
     let idScore = 0;
     for (const q of identificationQuestions) {
-      if (checkIdentification(idAnswers[q.id] || "", q.correct)) {
+      const userAnswer = idAnswers[q.id] || "";
+      // Use the answer key if available from API; if empty, fall back to old behavior
+      if (q.correct && q.correct.trim()) {
+        if (checkIdentification(userAnswer, q.correct)) {
+          idScore++;
+        }
+      } else if (checkIdentification(userAnswer, q.correct)) {
         idScore++;
       }
     }
@@ -204,9 +210,16 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     if (!programmingSection) {
       for (const q of enumerationQuestions) {
         const userItems = parseEnumerationInput(enumAnswers[q.id] || "");
-        const matched = checkEnumerationMatch(userItems, q.correct);
-        const expected = q.correct.length;
-        enumPoints += expected > 0 && matched / expected >= 0.8 ? 1 : 0;
+        // Use the answer key if available from API; if empty, fall back to old behavior
+        if (Array.isArray(q.correct) && q.correct.length > 0) {
+          const matched = checkEnumerationMatch(userItems, q.correct);
+          const expected = q.correct.length;
+          enumPoints += expected > 0 && matched / expected >= 0.8 ? 1 : 0;
+        } else {
+          const matched = checkEnumerationMatch(userItems, q.correct);
+          const expected = q.correct.length;
+          enumPoints += expected > 0 && matched / expected >= 0.8 ? 1 : 0;
+        }
       }
     }
 

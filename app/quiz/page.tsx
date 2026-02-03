@@ -63,15 +63,19 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
     .map((q) => ({
       id: (q.id ?? "").toString(),
       question: (q.question ?? "").toString(),
-      correct: "",
+      correct: (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim(),
     }));
   const enumeration = list
     .filter((q) => getQuizType(q) === "enumeration")
-    .map((q) => ({
-      id: (q.id ?? "").toString(),
-      question: (q.question ?? "").toString(),
-      correct: [] as string[],
-    }));
+    .map((q) => {
+      const answerKeyStr = (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim();
+      const answers = answerKeyStr.split("\n").map((a) => a.trim()).filter((a) => a.length > 0);
+      return {
+        id: (q.id ?? "").toString(),
+        question: (q.question ?? "").toString(),
+        correct: answers,
+      };
+    });
   return {
     title: "Teacher Quiz",
     multipleChoice,

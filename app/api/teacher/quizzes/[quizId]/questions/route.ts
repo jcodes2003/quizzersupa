@@ -51,6 +51,9 @@ export async function POST(
     if (!answerkey || typeof answerkey !== "string" || !answerkey.trim()) return NextResponse.json({ error: "Answer key required for multiple choice" }, { status: 400 });
     if (!opts.includes(answerkey.trim())) return NextResponse.json({ error: "Answer key must be one of the options" }, { status: 400 });
   }
+  if ((type === "identification" || type === "long_answer" || type === "enumeration") && (!answerkey || typeof answerkey !== "string" || !answerkey.trim())) {
+    return NextResponse.json({ error: `Answer key required for ${type.replace("_", " ")}` }, { status: 400 });
+  }
   const supabase = getSupabase();
   const insert: Record<string, unknown> = {
     quizid: quizId,
@@ -60,6 +63,8 @@ export async function POST(
   if (type === "multiple_choice" && Array.isArray(options)) {
     insert.answerkey = (answerkey ?? "").trim();
     insert.options = JSON.stringify(options.map((o) => String(o).trim()).filter(Boolean));
+  } else if (type === "identification" || type === "long_answer" || type === "enumeration") {
+    insert.answerkey = (answerkey ?? "").trim();
   }
   const { data, error } = await supabase
     .from("questiontbl")
