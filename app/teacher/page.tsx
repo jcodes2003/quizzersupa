@@ -9,8 +9,16 @@ type QuizResponseRow = {
   subjectid: string;
   sectionid: string;
   score: number | null;
+  max_score?: number;
+  student_id?: string;
+  attempt_number?: number;
   studentname: string | null;
   created_at?: string;
+  // Joined, human-readable names from API
+  section?: string;
+  subject?: string;
+  sectionname?: string;
+  subjectname?: string;
 };
 
 type Subject = { id: string; name: string; slug: string };
@@ -45,17 +53,20 @@ function escapeCsvCell(value: string | number): string {
   return s;
 }
 
-function downloadCsv(rows: QuizResponseRow[], getSubjectName: (id: string) => string, getSectionName: (id: string) => string) {
-  const headers = ["Quiz Code", "Student Name", "Score", "Section", "Subject", "Created"];
+function downloadCsv(rows: QuizResponseRow[]) {
+  const headers = ["Quiz Code", "Student Name", "Student ID", "Score", "Max Score", "Attempt #", "Section", "Subject", "Created"];
   const lines = [
     headers.join(","),
     ...rows.map((r) =>
       [
         escapeCsvCell(r.quizcode),
         escapeCsvCell(r.studentname ?? ""),
+        escapeCsvCell(r.student_id ?? ""),
         escapeCsvCell(r.score ?? ""),
-        escapeCsvCell(getSectionName(r.sectionid)),
-        escapeCsvCell(getSubjectName(r.subjectid)),
+        escapeCsvCell(r.max_score ?? ""),
+        escapeCsvCell(r.attempt_number ?? ""),
+        escapeCsvCell(r.section ?? ""),
+        escapeCsvCell(r.subject ?? ""),
         escapeCsvCell(r.created_at ? new Date(r.created_at).toLocaleString() : ""),
       ].join(",")
     ),
@@ -65,6 +76,34 @@ function downloadCsv(rows: QuizResponseRow[], getSubjectName: (id: string) => st
   const a = document.createElement("a");
   a.href = url;
   a.download = `quiz-responses-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadReportCsv(rows: QuizResponseRow[]) {
+  const headers = ["Quiz Code", "Student Name", "Student ID", "Section", "Subject", "Score", "Max Score", "Percentage", "Date"];
+  const lines = [
+    headers.join(","),
+    ...rows.map((r) => {
+      const percentage = r.max_score ? Math.round((r.score! / r.max_score) * 100) : 0;
+      return [
+        escapeCsvCell(r.quizcode),
+        escapeCsvCell(r.studentname ?? ""),
+        escapeCsvCell(r.student_id ?? ""),
+        escapeCsvCell(r.section ?? ""),
+        escapeCsvCell(r.subject ?? ""),
+        escapeCsvCell(r.score ?? ""),
+        escapeCsvCell(r.max_score ?? ""),
+        escapeCsvCell(percentage),
+        escapeCsvCell(r.created_at ? new Date(r.created_at).toLocaleDateString() : ""),
+      ].join(",");
+    }),
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `student-report-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -87,7 +126,10 @@ export default function TeacherPage() {
   const [rows, setRows] = useState<QuizResponseRow[]>([]);
   const [scoresLoading, setScoresLoading] = useState(false);
   const [filterSubject, setFilterSubject] = useState<string>("");
-  const [tab, setTab] = useState<"responses" | "questions">("responses");
+  const [reportFilterSection, setReportFilterSection] = useState<string>("");
+  const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
+  const [reportFilterDate, setReportFilterDate] = useState<string>("");
+  const [tab, setTab] = useState<"responses" | "questions" | "reports">("responses");
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
@@ -105,11 +147,10 @@ export default function TeacherPage() {
   const [newQuestionAnswerKey, setNewQuestionAnswerKey] = useState("");
   const [savingQuiz, setSavingQuiz] = useState(false);
   const [savingQuestion, setSavingQuestion] = useState(false);
-
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
-      const res = await fetch("/api/teacher-scores", { credentials: "include" });
+      const res = await fetch("/api/teacher-attempts", { credentials: "include" });
       if (res.status === 401) {
         setAuthenticated(false);
         setRows([]);
@@ -169,7 +210,7 @@ export default function TeacherPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/teacher-scores", { credentials: "include" });
+      const res = await fetch("/api/teacher-attempts", { credentials: "include" });
       if (cancelled) return;
       if (res.ok) {
         const data = await res.json();
@@ -213,6 +254,22 @@ export default function TeacherPage() {
       if (sections.length === 0) fetchSections();
     }
   }, [tab, rows.length, subjects.length, sections.length, fetchSubjects, fetchSections]);
+
+  // Debug: log retrieved section/subject names from API rows
+  useEffect(() => {
+    if (rows.length === 0) return;
+    const debugSample = rows.map((r) => ({
+      id: r.id,
+      sectionid: r.sectionid,
+      sectionname: r.sectionname,
+      section: r.section,
+      subjectid: r.subjectid,
+      subjectname: r.subjectname,
+      subject: r.subject,
+    }));
+    // This will appear in the browser devtools console
+    console.log("[teacher] attempts rows (section/subject names):", debugSample);
+  }, [rows]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -304,12 +361,6 @@ export default function TeacherPage() {
         return;
       }
     }
-    if (newQuizType === "identification" || newQuizType === "long_answer" || newQuizType === "enumeration") {
-      if (!newQuestionAnswerKey.trim()) {
-        setError(`Answer key is required for ${newQuizType.replace("_", " ")} questions.`);
-        return;
-      }
-    }
     setSavingQuestion(true);
     setError("");
     try {
@@ -319,8 +370,6 @@ export default function TeacherPage() {
       };
       if (newQuizType === "multiple_choice") {
         body.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
-        body.answerkey = newQuestionAnswerKey.trim();
-      } else if (newQuizType === "identification" || newQuizType === "long_answer" || newQuizType === "enumeration") {
         body.answerkey = newQuestionAnswerKey.trim();
       }
       const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
@@ -352,10 +401,84 @@ export default function TeacherPage() {
 
   const getSubjectName = (id: string) => subjects.find((s) => s.id === id)?.name ?? id;
   const getSectionName = (id: string) => sections.find((s) => s.id === id)?.name ?? id;
-  const subjectOptionsFromRows = Array.from(new Set(rows.map((r) => r.subjectid))).map(
-    (subjectid) => ({ id: subjectid, name: getSubjectName(subjectid) })
+
+  // Prefer names coming from attempts rows (joined via API), fall back to master lists/ID
+  const getSubjectLabelFromRows = (id: string) => {
+    const row = rows.find((r) => r.subjectid === id);
+    return row?.subjectname || row?.subject || getSubjectName(id);
+  };
+
+  const getSectionLabelFromRows = (id: string) => {
+    const row = rows.find((r) => r.sectionid === id);
+    return row?.sectionname || row?.section || getSectionName(id);
+  };
+  
+  // Get unique subjects from rows by subjectid, use getSubjectName for display names
+  const subjectOptionsFromRows = Array.from(
+    new Map(
+      rows
+        .filter((r) => r.subjectid)
+        .map((r) => [
+          r.subjectid,
+          {
+            id: r.subjectid,
+            name: r.subjectname || r.subject || getSubjectName(r.subjectid),
+          },
+        ])
+    ).values()
   );
-  const filteredRows = filterSubject ? rows.filter((r) => r.subjectid === filterSubject) : rows;
+
+  // Get unique sections from rows by sectionid, use getSectionName for display names
+  const sectionOptionsFromRows = Array.from(
+    new Map(
+      rows
+        .filter((r) => r.sectionid)
+        .map((r) => [
+          r.sectionid,
+          {
+            id: r.sectionid,
+            name: r.sectionname || r.section || getSectionName(r.sectionid),
+          },
+        ])
+    ).values()
+  );
+
+  // Filter for responses tab - filter by subjectid
+  const filteredRows = filterSubject 
+    ? rows.filter((r) => r.subjectid === filterSubject) 
+    : rows;
+
+  // Filter for reports tab - cascade filters using IDs
+  let reportFilteredRows = rows;
+  if (reportFilterSection) {
+    reportFilteredRows = reportFilteredRows.filter((r) => r.sectionid === reportFilterSection);
+  }
+  if (reportFilterSubject) {
+    reportFilteredRows = reportFilteredRows.filter((r) => r.subjectid === reportFilterSubject);
+  }
+  if (reportFilterDate) {
+    reportFilteredRows = reportFilteredRows.filter((r) => {
+      const rowDate = r.created_at ? new Date(r.created_at).toISOString().split("T")[0] : "";
+      return rowDate === reportFilterDate;
+    });
+  }
+
+  // Get unique subjects for current section in reports (filter by sectionid)
+  const reportSubjectsForSection = reportFilterSection
+    ? Array.from(
+        new Map(
+          rows
+            .filter((r) => r.sectionid === reportFilterSection && r.subjectid)
+            .map((r) => [
+              r.subjectid,
+              {
+                id: r.subjectid,
+                name: r.subjectname || r.subject || getSubjectName(r.subjectid),
+              },
+            ])
+        ).values()
+      )
+    : [];
 
   if (authenticated === null && !scoresLoading) {
     return (
@@ -424,6 +547,12 @@ export default function TeacherPage() {
               Responses
             </button>
             <button
+              onClick={() => setTab("reports")}
+              className={`px-4 py-2 rounded-xl font-medium ${tab === "reports" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+            >
+              Reports
+            </button>
+            <button
               onClick={() => setTab("questions")}
               className={`px-4 py-2 rounded-xl font-medium ${tab === "questions" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
             >
@@ -452,7 +581,7 @@ export default function TeacherPage() {
                 ))}
               </select>
               <button
-                onClick={() => downloadCsv(filteredRows, getSubjectName, getSectionName)}
+                onClick={() => downloadCsv(filteredRows)}
                 disabled={filteredRows.length === 0}
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
               >
@@ -469,9 +598,18 @@ export default function TeacherPage() {
 
             {scoresLoading && rows.length === 0 ? (
               <p className="text-slate-400 text-center py-12">Loading responses...</p>
+            ) : rows.length === 0 ? (
+              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
+                <p>No responses yet.</p>
+                <p className="text-sm mt-2">Total records loaded: {rows.length}</p>
+              </div>
             ) : filteredRows.length === 0 ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
-                No responses yet.
+                <p>No responses matching the selected filter.</p>
+                <p className="text-sm mt-2">
+                  Total records: {rows.length} | Filter:{" "}
+                  {filterSubject ? `Subject: ${getSubjectLabelFromRows(filterSubject)}` : "None"}
+                </p>
               </div>
             ) : (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
@@ -493,8 +631,12 @@ export default function TeacherPage() {
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
                           <td className="px-4 py-3 text-slate-200">{r.studentname ?? "—"}</td>
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
-                          <td className="px-4 py-3 text-slate-300">{getSectionName(r.sectionid)}</td>
-                          <td className="px-4 py-3 text-slate-300">{getSubjectName(r.subjectid)}</td>
+                          <td className="px-4 py-3 text-slate-300">
+                            {r.sectionname || r.section || getSectionName(r.sectionid)}
+                          </td>
+                          <td className="px-4 py-3 text-slate-300">
+                            {r.subjectname || r.subject || getSubjectName(r.subjectid)}
+                          </td>
                           <td className="px-4 py-3 text-slate-400 text-sm">
                             {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
                           </td>
@@ -508,6 +650,148 @@ export default function TeacherPage() {
             <p className="mt-4 text-slate-500 text-sm text-center">
               One row per quiz (from quiztbl). Score is the latest submission. Export includes all visible rows.
             </p>
+          </>
+        )}
+
+        {tab === "reports" && (
+          <>
+            <h2 className="text-xl font-semibold text-cyan-300 mb-6">Student Score Report</h2>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+              {/* Section Filter */}
+              <div>
+                <label className="block text-slate-300 text-sm font-medium mb-2">Filter by Section</label>
+                <select
+                  value={reportFilterSection}
+                  onChange={(e) => {
+                    setReportFilterSection(e.target.value);
+                    setReportFilterSubject(""); // Reset subject when section changes
+                  }}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="">All sections</option>
+                  {sectionOptionsFromRows.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Subject Filter */}
+              <div>
+                <label className="block text-slate-300 text-sm font-medium mb-2">Filter by Subject</label>
+                <select
+                  value={reportFilterSubject}
+                  onChange={(e) => setReportFilterSubject(e.target.value)}
+                  disabled={!reportFilterSection}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 disabled:opacity-50"
+                >
+                  <option value="">All subjects</option>
+                  {reportSubjectsForSection.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Date Filter */}
+              <div>
+                <label className="block text-slate-300 text-sm font-medium mb-2">Filter by Date</label>
+                <input
+                  type="date"
+                  value={reportFilterDate}
+                  onChange={(e) => setReportFilterDate(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                />
+              </div>
+            </div>
+
+            {/* Export and Refresh Buttons */}
+            <div className="flex flex-wrap items-center gap-3 mb-6">
+              <button
+                onClick={() => downloadReportCsv(reportFilteredRows)}
+                disabled={reportFilteredRows.length === 0}
+                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+              >
+                Export to CSV
+              </button>
+              <button
+                onClick={() => fetchScores()}
+                disabled={scoresLoading}
+                className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-50 text-white font-semibold"
+              >
+                {scoresLoading ? "Loading..." : "Refresh"}
+              </button>
+            </div>
+
+            {/* Results */}
+            {scoresLoading && reportFilteredRows.length === 0 ? (
+              <p className="text-slate-400 text-center py-12">Loading reports...</p>
+            ) : rows.length === 0 ? (
+              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
+                <p>No data available.</p>
+                <p className="text-sm mt-2">Total records loaded: {rows.length}</p>
+              </div>
+            ) : reportFilteredRows.length === 0 ? (
+              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
+                <p>No data matching selected filters.</p>
+                <p className="text-sm mt-2">
+                  Total records: {rows.length} | Section:{" "}
+                  {reportFilterSection ? getSectionLabelFromRows(reportFilterSection) : "None"} | Subject:{" "}
+                  {reportFilterSubject ? getSubjectLabelFromRows(reportFilterSubject) : "None"} | Date:{" "}
+                  {reportFilterDate || "None"}
+                </p>
+              </div>
+            ) : (
+              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left">
+                    <thead>
+                      <tr className="border-b border-slate-600 bg-slate-700/50">
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Quiz Code</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Subject</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Max Score</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">%</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {reportFilteredRows.map((r) => {
+                        const percentage = r.max_score ? Math.round((r.score! / r.max_score) * 100) : 0;
+                        return (
+                          <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                            <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
+                            <td className="px-4 py-3 text-slate-200">{r.studentname ?? "—"}</td>
+                            <td className="px-4 py-3 text-slate-300 font-mono">{r.student_id ?? "—"}</td>
+                            <td className="px-4 py-3 text-slate-300">{r.section ?? "—"}</td>
+                            <td className="px-4 py-3 text-slate-300">{r.subject ?? "—"}</td>
+                            <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
+                            <td className="px-4 py-3 text-slate-300">{r.max_score ?? "—"}</td>
+                            <td className="px-4 py-3 text-cyan-400 font-semibold">{percentage}%</td>
+                            <td className="px-4 py-3 text-slate-400 text-sm">
+                              {r.created_at ? new Date(r.created_at).toLocaleDateString() : "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            <div className="mt-4 text-slate-500 text-sm">
+              <p>Total records: {reportFilteredRows.length}</p>
+              {reportFilterSection && (
+                <p className="mt-1">Section: {getSectionLabelFromRows(reportFilterSection)}</p>
+              )}
+              {reportFilterSubject && (
+                <p className="mt-1">Subject: {getSubjectLabelFromRows(reportFilterSubject)}</p>
+              )}
+              {reportFilterDate && <p className="mt-1">Date: {reportFilterDate}</p>}
+            </div>
           </>
         )}
 
@@ -725,32 +1009,6 @@ export default function TeacherPage() {
                               </div>
                             </>
                           )}
-                          {(newQuizType === "identification" || newQuizType === "long_answer") && (
-                            <div>
-                              <label className="block text-slate-400 text-sm mb-1">Correct answer (answer key)</label>
-                              <textarea
-                                value={newQuestionAnswerKey}
-                                onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
-                                rows={2}
-                                placeholder="Enter the correct answer (case-insensitive matching)"
-                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                              />
-                              <p className="text-slate-500 text-xs mt-1">Case-insensitive: answers will be compared ignoring uppercase/lowercase</p>
-                            </div>
-                          )}
-                          {newQuizType === "enumeration" && (
-                            <div>
-                              <label className="block text-slate-400 text-sm mb-1">Correct answers (one per line)</label>
-                              <textarea
-                                value={newQuestionAnswerKey}
-                                onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
-                                rows={3}
-                                placeholder="Enter each correct answer on a new line&#10;Example:&#10;photosynthesis&#10;cellular respiration"
-                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                              />
-                              <p className="text-slate-500 text-xs mt-1">Case-insensitive: students can answer in any case (uppercase, lowercase, mixed)</p>
-                            </div>
-                          )}
                           <div className="flex gap-2">
                             <button
                               type="submit"
@@ -796,14 +1054,6 @@ export default function TeacherPage() {
                                   {q.answerkey && (
                                     <span className="text-emerald-400 ml-2">Answer: {q.answerkey}</span>
                                   )}
-                                </p>
-                              )}
-                              {(q.quiztype === "identification" || q.quiztype === "long_answer") && q.answerkey && (
-                                <p className="text-emerald-400 text-sm mt-1">Answer key: {q.answerkey}</p>
-                              )}
-                              {q.quiztype === "enumeration" && q.answerkey && (
-                                <p className="text-emerald-400 text-sm mt-1">
-                                  Answers: {q.answerkey.split("\n").filter((a) => a.trim()).join(", ")}
                                 </p>
                               )}
                             </div>

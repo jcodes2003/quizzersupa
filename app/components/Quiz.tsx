@@ -87,20 +87,20 @@ function checkIdentification(user: string, correct: string | string[]): boolean 
 
 const ATTEMPT_KEY = "quiz_attempts";
 
-function getAttemptKey(topic: string, section: string, name: string): string {
-  const normalized = (name || "anonymous").trim().toLowerCase().replace(/\s+/g, "_");
+function getAttemptKey(topic: string, section: string, studentId: string): string {
+  const normalized = (studentId || "anonymous").trim().toLowerCase().replace(/\s+/g, "_");
   return `${ATTEMPT_KEY}_${topic}_${section}_${normalized}`;
 }
 
-function getAttemptCount(topic: string, section: string, name: string): number {
+function getAttemptCount(topic: string, section: string, studentId: string): number {
   if (typeof window === "undefined") return 0;
-  const key = getAttemptKey(topic, section, name);
+  const key = getAttemptKey(topic, section, studentId);
   return parseInt(localStorage.getItem(key) || "0", 10);
 }
 
-function incrementAttemptCount(topic: string, section: string, name: string): number {
-  const key = getAttemptKey(topic, section, name);
-  const next = getAttemptCount(topic, section, name) + 1;
+function incrementAttemptCount(topic: string, section: string, studentId: string): number {
+  const key = getAttemptKey(topic, section, studentId);
+  const next = getAttemptCount(topic, section, studentId) + 1;
   localStorage.setItem(key, String(next));
   return next;
 }
@@ -133,6 +133,7 @@ const SECTION_ENUM = 2;
 export default function Quiz({ topic, section, quizTitle, quizData, quizId }: QuizProps) {
   const { multipleChoice: multipleChoiceQuestions, identification: identificationQuestions, enumeration: enumerationQuestions = [], programming: programmingSection } = quizData;
   const [studentName, setStudentName] = useState("");
+  const [studentId, setStudentId] = useState("");
   const [mcAnswers, setMcAnswers] = useState<Record<string, string>>({});
   const [idAnswers, setIdAnswers] = useState<Record<string, string>>({});
   const [enumAnswers, setEnumAnswers] = useState<Record<string, string>>({});
@@ -177,9 +178,30 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     return getUnansweredPages().length === 0;
   }, [studentName, getUnansweredPages]);
 
-  const gradeQuiz = useCallback(() => {
+  const gradeQuiz = useCallback(async () => {
     const name = studentName.trim();
-    const currentAttempts = getAttemptCount(topic, section, name);
+    const id = studentId.trim();
+    if (!id) {
+      setSubmitError("Please enter your student ID.");
+      setCurrentPage(0);
+      return;
+    }
+
+    // Check attempt count from server if quizId is available (quiz taken by code)
+    let currentAttempts = getAttemptCount(topic, section, id);
+    if (quizId) {
+      try {
+        const res = await fetch(`/api/student-attempts-count?quizId=${quizId}&studentId=${encodeURIComponent(id)}`);
+        if (res.ok) {
+          const data = await res.json();
+          currentAttempts = data.attemptCount ?? 0;
+        }
+      } catch (err) {
+        console.error("Failed to fetch attempt count:", err);
+        // Fall back to localStorage count if server check fails
+      }
+    }
+
     if (currentAttempts >= 2) {
       setSubmitError("You've used all 2 attempts for this quiz. You cannot retake it.");
       setCurrentPage(0);
@@ -197,7 +219,11 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     for (const q of identificationQuestions) {
       const userAnswer = idAnswers[q.id] || "";
       // Use the answer key if available from API; if empty, fall back to old behavior
-      if (q.correct && q.correct.trim()) {
+      const hasAnswerKey = Array.isArray(q.correct)
+        ? q.correct.length > 0
+        : !!q.correct && q.correct.trim().length > 0;
+
+      if (hasAnswerKey) {
         if (checkIdentification(userAnswer, q.correct)) {
           idScore++;
         }
@@ -229,7 +255,7 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     const totalScore = mcScore + idScore + enumPoints;
     const percentage = Math.round((totalScore / maxScore) * 100);
 
-    const attempts = incrementAttemptCount(topic, section, name);
+    const attempts = incrementAttemptCount(topic, section, id);
 
     setResults({
       studentName: name,
@@ -244,22 +270,39 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     });
     setSubmitted(true);
 
-    // Save score and student name to quiztbl (latest submission)
+    // Save attempt and update score if this is the best attempt for this student
     if (quizId) {
       if (!supabase) {
         // Supabase client isn't available (e.g. during static prerender); skip saving.
         console.warn("Supabase client not available; skipping score save.");
       } else {
-        (supabase as any)
-          .from("quiztbl")
-          .update({ score: totalScore, studentname: name } as any)
-          .eq("id", quizId)
-          .then(({ error }: any) => {
-            if (error) console.error("Failed to save quiz score:", error);
-          });
+        // Save the attempt record and let the API handle the best score logic
+        (async () => {
+          try {
+            const res = await fetch("/api/student-attempts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                quizId,
+                studentName: name,
+                studentId: id,
+                score: totalScore,
+                maxScore,
+                attemptNumber: currentAttempts + 1,
+              }),
+            });
+
+            if (!res.ok) {
+              const errorData = await res.json();
+              console.error("Failed to save attempt:", errorData.error);
+            }
+          } catch (err) {
+            console.error("Error saving attempt:", err);
+          }
+        })();
       }
     }
-  }, [topic, studentName, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId]);
+  }, [topic, studentName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId]);
 
   useEffect(() => {
     const handleVisibility = () => {
@@ -277,6 +320,11 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     setSubmitError(null);
     if (!studentName.trim()) {
       setSubmitError("Please enter your name.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!studentId.trim()) {
+      setSubmitError("Please enter your student ID.");
       setCurrentPage(0);
       return;
     }
@@ -392,15 +440,27 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 md:p-6 shadow-2xl">
-            <label className="block text-slate-300 font-medium mb-2">Your Name</label>
-            <input
-              type="text"
-              value={studentName}
-              onChange={(e) => setStudentName(e.target.value)}
-              placeholder="Enter your full name..."
-              className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-            />
+          <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 md:p-6 shadow-2xl space-y-4">
+            <div>
+              <label className="block text-slate-300 font-medium mb-2">Your Name</label>
+              <input
+                type="text"
+                value={studentName}
+                onChange={(e) => setStudentName(e.target.value)}
+                placeholder="Enter your full name..."
+                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-300 font-medium mb-2">Student ID</label>
+              <input
+                type="text"
+                value={studentId}
+                onChange={(e) => setStudentId(e.target.value)}
+                placeholder="Enter your student ID..."
+                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
+            </div>
           </div>
 
           {submitError && (
