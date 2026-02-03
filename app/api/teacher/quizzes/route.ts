@@ -8,7 +8,7 @@ export async function GET() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("quiztbl")
-    .select("id, teacherid, subjectid, quizcode, sectionid")
+    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname")
     .eq("teacherid", teacherId)
     .order("quizcode");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -27,8 +27,8 @@ function generateQuizCode(): string {
 export async function POST(request: NextRequest) {
   const teacherId = await getTeacherId();
   if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const body = await request.json() as { subjectId?: string; sectionId?: string };
-  const { subjectId, sectionId } = body;
+  const body = await request.json() as { subjectId?: string; sectionId?: string; period?: string; quizname?: string };
+  const { subjectId, sectionId, period, quizname } = body;
   if (!subjectId?.trim() || !sectionId?.trim()) {
     return NextResponse.json({ error: "subjectId and sectionId required" }, { status: 400 });
   }
@@ -46,6 +46,8 @@ export async function POST(request: NextRequest) {
       subjectid: subjectId.trim(),
       quizcode,
       sectionid: sectionId.trim(),
+      period: (period ?? "").toString().trim(),
+      quizname: (quizname ?? "").toString().trim(),
     })
     .select()
     .single();

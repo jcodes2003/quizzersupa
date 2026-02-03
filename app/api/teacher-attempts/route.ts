@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
   // Get all quizzes created by this teacher
   const { data: quizzes, error: quizError } = await supabase
     .from("quiztbl")
-    .select("id")
+    .select("id, period, quizname")
     .eq("teacherid", teacherId);
 
   if (quizError) return NextResponse.json({ error: quizError.message }, { status: 500 });
@@ -21,10 +21,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ rows: [] });
   }
 
+  const quizPeriodNameMap = new Map((quizzes ?? []).map((q: any) => [q.id, { period: q.period ?? "", quizname: q.quizname ?? "" }]));
+
   // Get all student attempts for these quizzes with sectionid and subjectid
   const { data: attempts, error: attemptsError } = await supabase
     .from("student_attempts")
-    .select("quizid, studentname, student_id, score, max_score, attempt_number, created_at, subjectid, sectionid")
+    .select("id, quizid, studentname, student_id, score, max_score, attempt_number, created_at, subjectid, sectionid")
     .in("quizid", quizIds)
     .order("created_at", { ascending: false });
 
@@ -63,9 +65,16 @@ export async function GET(request: NextRequest) {
     const sectionname = sectionid ? sectionMap.get(sectionid) ?? "" : "";
     const subjectname = subjectid ? subjectMap.get(subjectid) ?? "" : "";
 
+    const periodName = quizPeriodNameMap.get(a.quizid);
+    // Use the database primary key as the unique ID, fallback to composite key if id is missing
+    const uniqueId = a.id ? String(a.id) : `${a.quizid}-${a.student_id}-${a.attempt_number}-${a.created_at || Date.now()}`;
+    
     return {
-      id: `${a.quizid}-${a.student_id}-${a.attempt_number}`,
+      id: uniqueId,
+      quizid: a.quizid,
       quizcode: quiz?.quizcode ?? "",
+      period: periodName?.period ?? "",
+      quizname: periodName?.quizname ?? "",
       studentname: a.studentname,
       student_id: a.student_id,
       score: a.score,

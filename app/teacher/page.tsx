@@ -5,7 +5,10 @@ import Link from "next/link";
 
 type QuizResponseRow = {
   id: string;
+  quizid?: string;
   quizcode: string;
+  period?: string;
+  quizname?: string;
   subjectid: string;
   sectionid: string;
   score: number | null;
@@ -30,6 +33,8 @@ type QuizRow = {
   subjectid: string;
   quizcode: string;
   sectionid: string;
+  period?: string;
+  quizname?: string;
 };
 
 type QuestionRow = {
@@ -39,6 +44,17 @@ type QuestionRow = {
   quiztype: string;
   answerkey?: string | null;
   options?: string | null;
+  score?: number | null;
+};
+
+type ConsolidatedRow = {
+  student_id: string;
+  studentname: string;
+  section: string;
+  subject: string;
+  sectionid: string;
+  subjectid: string;
+  quizzes: Map<string, { score: number; max_score: number }>;
 };
 
 const SUBJECT_LABELS: Record<string, string> = {
@@ -108,6 +124,38 @@ function downloadReportCsv(rows: QuizResponseRow[]) {
   URL.revokeObjectURL(url);
 }
 
+function downloadConsolidatedReportCsv(
+  rows: ConsolidatedRow[],
+  quizColumns: { quizid: string; quizcode: string; quizname: string }[]
+) {
+  const headers = ["Student ID", "Student Name", "Section", "Subject", ...quizColumns.map((q) => escapeCsvCell(q.quizname || q.quizcode))];
+  const lines = [
+    headers.join(","),
+    ...rows.map((row) => {
+      const quizCells = quizColumns.map((q) => {
+        const qq = row.quizzes.get(q.quizid);
+        if (!qq) return escapeCsvCell("—");
+        // Export only the score (number of correct answers)
+        return escapeCsvCell(String(qq.score));
+      });
+      return [
+        escapeCsvCell(row.student_id),
+        escapeCsvCell(row.studentname),
+        escapeCsvCell(row.section),
+        escapeCsvCell(row.subject),
+        ...quizCells,
+      ].join(",");
+    }),
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `student-report-consolidated-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 const QUESTION_TYPES = [
   { value: "multiple_choice", label: "Multiple Choice" },
   { value: "identification", label: "Identification" },
@@ -129,6 +177,7 @@ export default function TeacherPage() {
   const [reportFilterSection, setReportFilterSection] = useState<string>("");
   const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
   const [reportFilterDate, setReportFilterDate] = useState<string>("");
+  const [reportFilterPeriod, setReportFilterPeriod] = useState<string>("");
   const [tab, setTab] = useState<"responses" | "questions" | "reports">("responses");
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
@@ -141,15 +190,34 @@ export default function TeacherPage() {
   const [showAddQuestion, setShowAddQuestion] = useState(false);
   const [newQuizSubjectId, setNewQuizSubjectId] = useState("");
   const [newQuizSectionId, setNewQuizSectionId] = useState("");
+  const [newQuizPeriod, setNewQuizPeriod] = useState("");
+  const [newQuizQuizName, setNewQuizQuizName] = useState("");
   const [newQuestionText, setNewQuestionText] = useState("");
   const [newQuizType, setNewQuizType] = useState<typeof QUESTION_TYPES[number]["value"]>("multiple_choice");
   const [newQuestionOptions, setNewQuestionOptions] = useState<string[]>(["", ""]);
   const [newQuestionAnswerKey, setNewQuestionAnswerKey] = useState("");
   const [savingQuiz, setSavingQuiz] = useState(false);
   const [savingQuestion, setSavingQuestion] = useState(false);
+  const [newQuestionScore, setNewQuestionScore] = useState<string>("1");
+  const [batchQuestions, setBatchQuestions] = useState<Array<{
+    question: string;
+    quizType: typeof QUESTION_TYPES[number]["value"];
+    options?: string[];
+    answerkey?: string;
+    score: number;
+  }>>([]);
   const [responsesPage, setResponsesPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
+  const [questionTypeFilter, setQuestionTypeFilter] = useState<
+    "all" | "multiple_choice" | "identification" | "enumeration" | "long_answer"
+  >("all");
+  const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
+  const [editQuestionText, setEditQuestionText] = useState("");
+  const [editAnswerKey, setEditAnswerKey] = useState("");
+  const [editScore, setEditScore] = useState<string>("1");
+  const [editQuestionOptions, setEditQuestionOptions] = useState<string[]>([]);
+  const [savingEdit, setSavingEdit] = useState(false);
   const PAGE_SIZE = 10;
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
@@ -344,6 +412,8 @@ export default function TeacherPage() {
         body: JSON.stringify({
           subjectId: newQuizSubjectId,
           sectionId: newQuizSectionId,
+          period: newQuizPeriod.trim(),
+          quizname: newQuizQuizName.trim(),
         }),
       });
       if (!res.ok) {
@@ -354,9 +424,87 @@ export default function TeacherPage() {
       setShowCreateQuiz(false);
       setNewQuizSubjectId("");
       setNewQuizSectionId("");
+      setNewQuizPeriod("");
+      setNewQuizQuizName("");
       fetchQuizzes();
     } finally {
       setSavingQuiz(false);
+    }
+  };
+
+  const handleAddQuestionToBatch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newQuestionText.trim()) {
+      setError("Question text is required.");
+      return;
+    }
+    if (newQuizType === "multiple_choice") {
+      const opts = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
+      if (opts.length < 2) {
+        setError("Multiple choice needs at least 2 options.");
+        return;
+      }
+      if (!newQuestionAnswerKey.trim() || !opts.includes(newQuestionAnswerKey.trim())) {
+        setError("Select the correct answer from the options.");
+        return;
+      }
+    } else {
+      // For identification, enumeration, and long answer, an answer key is required
+      if (!newQuestionAnswerKey.trim()) {
+        setError("Answer key is required for this question type.");
+        return;
+      }
+    }
+    const scoreNumber = Number(newQuestionScore) || 1;
+    if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+      setError("Score must be a positive number.");
+      return;
+    }
+    
+    const questionToAdd: typeof batchQuestions[0] = {
+      question: newQuestionText.trim(),
+      quizType: newQuizType,
+      score: scoreNumber,
+    };
+    
+    if (newQuizType === "multiple_choice") {
+      questionToAdd.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
+      questionToAdd.answerkey = newQuestionAnswerKey.trim();
+    } else {
+      questionToAdd.answerkey = newQuestionAnswerKey.trim();
+    }
+    
+    setBatchQuestions([...batchQuestions, questionToAdd]);
+    setError("");
+    // Clear form for next question
+    setNewQuestionText("");
+    setNewQuestionOptions(["", ""]);
+    setNewQuestionAnswerKey("");
+    setNewQuestionScore("1");
+    setNewQuizType("multiple_choice");
+  };
+
+  const handleSaveAllQuestions = async () => {
+    if (!selectedQuizId || batchQuestions.length === 0) return;
+    setSavingQuestion(true);
+    setError("");
+    try {
+      const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ questions: batchQuestions }),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        setError(d.error ?? "Failed to save questions");
+        return;
+      }
+      setBatchQuestions([]);
+      setShowAddQuestion(false);
+      if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
+    } finally {
+      setSavingQuestion(false);
     }
   };
 
@@ -373,18 +521,36 @@ export default function TeacherPage() {
         setError("Select the correct answer from the options.");
         return;
       }
+    } else {
+      // For identification, enumeration, and long answer, an answer key is required
+      if (!newQuestionAnswerKey.trim()) {
+        setError("Answer key is required for this question type.");
+        return;
+      }
+    }
+    const scoreNumber = Number(newQuestionScore) || 1;
+    if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+      setError("Score must be a positive number.");
+      return;
     }
     setSavingQuestion(true);
     setError("");
     try {
-      const body: { question: string; quizType: string; options?: string[]; answerkey?: string } = {
+      const body: { question: string; quizType: string; options?: string[]; answerkey?: string; score?: number } = {
         question: newQuestionText.trim(),
         quizType: newQuizType,
       };
       if (newQuizType === "multiple_choice") {
         body.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
         body.answerkey = newQuestionAnswerKey.trim();
+      } else if (
+        newQuizType === "identification" ||
+        newQuizType === "enumeration" ||
+        newQuizType === "long_answer"
+      ) {
+        body.answerkey = newQuestionAnswerKey.trim();
       }
+      body.score = scoreNumber;
       const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -400,6 +566,7 @@ export default function TeacherPage() {
       setNewQuestionText("");
       setNewQuestionOptions(["", ""]);
       setNewQuestionAnswerKey("");
+      setNewQuestionScore("1");
       if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
     } finally {
       setSavingQuestion(false);
@@ -456,6 +623,11 @@ export default function TeacherPage() {
     ).values()
   );
 
+  // Get unique periods from rows for report filter
+  const periodOptionsFromRows = Array.from(
+    new Set(rows.map((r) => String(r.period ?? "").trim()).filter(Boolean))
+  ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
   // Filter for responses tab - filter by subjectid
   const filteredRows = filterSubject 
     ? rows.filter((r) => r.subjectid === filterSubject) 
@@ -467,13 +639,16 @@ export default function TeacherPage() {
   const responsesEndIndex = responsesStartIndex + PAGE_SIZE;
   const pagedResponsesRows = filteredRows.slice(responsesStartIndex, responsesEndIndex);
 
-  // Filter for reports tab - cascade filters using IDs
+  // Filter for reports tab - cascade filters using IDs and period
   let reportFilteredRows = rows;
   if (reportFilterSection) {
     reportFilteredRows = reportFilteredRows.filter((r) => r.sectionid === reportFilterSection);
   }
   if (reportFilterSubject) {
     reportFilteredRows = reportFilteredRows.filter((r) => r.subjectid === reportFilterSubject);
+  }
+  if (reportFilterPeriod) {
+    reportFilteredRows = reportFilteredRows.filter((r) => String(r.period ?? "") === reportFilterPeriod);
   }
   if (reportFilterDate) {
     reportFilteredRows = reportFilteredRows.filter((r) => {
@@ -482,11 +657,59 @@ export default function TeacherPage() {
     });
   }
 
-  const reportsTotalPages = Math.max(1, Math.ceil(reportFilteredRows.length / PAGE_SIZE));
+  // Latest attempt per (student_id, quizid) for consolidated report
+  const latestByStudentQuiz = new Map<string, QuizResponseRow>();
+  for (const r of reportFilteredRows) {
+    const key = `${r.student_id ?? ""}-${r.quizid ?? r.quizcode}`;
+    const existing = latestByStudentQuiz.get(key);
+    if (!existing || (r.created_at && existing.created_at && r.created_at > existing.created_at)) {
+      latestByStudentQuiz.set(key, r);
+    }
+  }
+  const latestRows = Array.from(latestByStudentQuiz.values());
+
+  // Consolidated: one row per student; columns = Student ID, Name, Section, Subject, then one column per quiz (score/max or —)
+  type QuizColumn = { quizid: string; quizcode: string; quizname: string };
+  const quizColumns: QuizColumn[] = Array.from(
+    new Map(
+      latestRows
+        .filter((r) => r.quizid || r.quizcode)
+        .map((r) => [
+          r.quizid ?? r.quizcode,
+          { quizid: r.quizid ?? r.quizcode, quizcode: r.quizcode, quizname: (r.quizname ?? r.quizcode).trim() || r.quizcode },
+        ])
+    ).values()
+  );
+
+  const consolidatedByStudent = new Map<string, ConsolidatedRow>();
+  for (const r of latestRows) {
+    const sid = r.student_id ?? "";
+    if (!sid) continue;
+    let row = consolidatedByStudent.get(sid);
+    if (!row) {
+      row = {
+        student_id: sid,
+        studentname: r.studentname ?? "",
+        section: r.sectionname ?? r.section ?? "",
+        subject: r.subjectname ?? r.subject ?? "",
+        sectionid: r.sectionid ?? "",
+        subjectid: r.subjectid ?? "",
+        quizzes: new Map(),
+      };
+      consolidatedByStudent.set(sid, row);
+    }
+    const qid = r.quizid ?? r.quizcode;
+    if (qid && r.score != null) {
+      row.quizzes.set(qid, { score: r.score, max_score: r.max_score ?? 0 });
+    }
+  }
+  const consolidatedRows = Array.from(consolidatedByStudent.values());
+
+  const reportsTotalPages = Math.max(1, Math.ceil(consolidatedRows.length / PAGE_SIZE));
   const currentReportsPage = Math.min(reportsPage, reportsTotalPages);
   const reportsStartIndex = (currentReportsPage - 1) * PAGE_SIZE;
   const reportsEndIndex = reportsStartIndex + PAGE_SIZE;
-  const pagedReportRows = reportFilteredRows.slice(reportsStartIndex, reportsEndIndex);
+  const pagedReportRows = consolidatedRows.slice(reportsStartIndex, reportsEndIndex);
 
   // Get unique subjects for current section in reports (filter by sectionid)
   const reportSubjectsForSection = reportFilterSection
@@ -794,7 +1017,21 @@ export default function TeacherPage() {
           <>
             <h2 className="text-xl font-semibold text-cyan-300 mb-6">Student Score Report</h2>
             
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+              {/* Period Filter */}
+              <div>
+                <label className="block text-slate-300 text-sm font-medium mb-2">Filter by Period</label>
+                <select
+                  value={reportFilterPeriod}
+                  onChange={(e) => setReportFilterPeriod(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="">All periods</option>
+                  {periodOptionsFromRows.map((p) => (
+                    <option key={p} value={p}>Period {p}</option>
+                  ))}
+                </select>
+              </div>
               {/* Section Filter */}
               <div>
                 <label className="block text-slate-300 text-sm font-medium mb-2">Filter by Section</label>
@@ -802,7 +1039,7 @@ export default function TeacherPage() {
                   value={reportFilterSection}
                   onChange={(e) => {
                     setReportFilterSection(e.target.value);
-                    setReportFilterSubject(""); // Reset subject when section changes
+                    setReportFilterSubject("");
                   }}
                   className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                 >
@@ -844,8 +1081,8 @@ export default function TeacherPage() {
             {/* Export and Refresh Buttons */}
             <div className="flex flex-wrap items-center gap-3 mb-6">
               <button
-                onClick={() => downloadReportCsv(reportFilteredRows)}
-                disabled={reportFilteredRows.length === 0}
+                onClick={() => downloadConsolidatedReportCsv(consolidatedRows, quizColumns)}
+                disabled={consolidatedRows.length === 0}
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
               >
                 Export to CSV
@@ -867,11 +1104,12 @@ export default function TeacherPage() {
                 <p>No data available.</p>
                 <p className="text-sm mt-2">Total records loaded: {rows.length}</p>
               </div>
-            ) : reportFilteredRows.length === 0 ? (
+            ) : consolidatedRows.length === 0 ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
                 <p>No data matching selected filters.</p>
                 <p className="text-sm mt-2">
-                  Total records: {rows.length} | Section:{" "}
+                  Total records: {rows.length} | Period:{" "}
+                  {reportFilterPeriod || "All"} | Section:{" "}
                   {reportFilterSection ? getSectionLabelFromRows(reportFilterSection) : "None"} | Subject:{" "}
                   {reportFilterSubject ? getSubjectLabelFromRows(reportFilterSubject) : "None"} | Date:{" "}
                   {reportFilterDate || "None"}
@@ -880,39 +1118,42 @@ export default function TeacherPage() {
             ) : (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
                 <div className="overflow-x-auto w-full">
-                  <table className="w-full min-w-[768px] text-left">
+                  <table className="w-full min-w-[640px] text-left">
                     <thead>
                       <tr className="border-b border-slate-600 bg-slate-700/50">
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Quiz Code</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Subject</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Max Score</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">%</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Date</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Student ID</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Student Name</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Section</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Subject</th>
+                        {quizColumns.map((q) => (
+                          <th key={q.quizid} className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">
+                            {q.quizname || q.quizcode}
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody>
-                      {pagedReportRows.map((r) => {
-                        const percentage = r.max_score ? Math.round((r.score! / r.max_score) * 100) : 0;
-                        return (
-                          <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                            <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
-                            <td className="px-4 py-3 text-slate-200">{r.studentname ?? "—"}</td>
-                            <td className="px-4 py-3 text-slate-300 font-mono">{r.student_id ?? "—"}</td>
-                            <td className="px-4 py-3 text-slate-300">{r.section ?? "—"}</td>
-                            <td className="px-4 py-3 text-slate-300">{r.subject ?? "—"}</td>
-                            <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
-                            <td className="px-4 py-3 text-slate-300">{r.max_score ?? "—"}</td>
-                            <td className="px-4 py-3 text-cyan-400 font-semibold">{percentage}%</td>
-                            <td className="px-4 py-3 text-slate-400 text-sm">
-                              {r.created_at ? new Date(r.created_at).toLocaleDateString() : "—"}
-                            </td>
-                          </tr>
-                        );
-                      })}
+                      {pagedReportRows.map((r) => (
+                        <tr key={r.student_id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                          <td className="px-4 py-3 text-slate-200 font-mono">{r.student_id}</td>
+                          <td className="px-4 py-3 text-slate-200">{r.studentname || "—"}</td>
+                          <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>
+                          <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>
+                          {quizColumns.map((q) => {
+                            const qq = r.quizzes.get(q.quizid);
+                            const cell = qq
+                              ? qq.max_score
+                                ? `${qq.score}/${qq.max_score}`
+                                : String(qq.score)
+                              : "—";
+                            return (
+                              <td key={q.quizid} className="px-4 py-3 text-emerald-400 font-medium">
+                                {cell}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
@@ -920,7 +1161,8 @@ export default function TeacherPage() {
             )}
 
             <div className="mt-4 text-slate-500 text-sm">
-              <p>Total records: {reportFilteredRows.length}</p>
+              <p>One row per student. Total students: {consolidatedRows.length}</p>
+              {reportFilterPeriod && <p className="mt-1">Period: {reportFilterPeriod}</p>}
               {reportFilterSection && (
                 <p className="mt-1">Section: {getSectionLabelFromRows(reportFilterSection)}</p>
               )}
@@ -930,14 +1172,14 @@ export default function TeacherPage() {
               {reportFilterDate && <p className="mt-1">Date: {reportFilterDate}</p>}
             </div>
 
-            {reportFilteredRows.length > 0 && (
+            {consolidatedRows.length > 0 && (
               <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-slate-400">
                 <p>
                   Showing{" "}
-                  {reportFilteredRows.length === 0
+                  {consolidatedRows.length === 0
                     ? "0"
-                    : `${reportsStartIndex + 1}-${Math.min(reportsEndIndex, reportFilteredRows.length)}`}{" "}
-                  of {reportFilteredRows.length} records
+                    : `${reportsStartIndex + 1}-${Math.min(reportsEndIndex, consolidatedRows.length)}`}{" "}
+                  of {consolidatedRows.length} students
                 </p>
                 <div className="flex items-center gap-2 self-end md:self-auto">
                   <button
@@ -1032,6 +1274,26 @@ export default function TeacherPage() {
                       </button>
                     )}
                   </div>
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Period</label>
+                    <input
+                      type="text"
+                      value={newQuizPeriod}
+                      onChange={(e) => setNewQuizPeriod(e.target.value)}
+                      placeholder="e.g. 1, 2, Prelim, Midterm"
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Quiz Name</label>
+                    <input
+                      type="text"
+                      value={newQuizQuizName}
+                      onChange={(e) => setNewQuizQuizName(e.target.value)}
+                      placeholder="e.g. Chapter 1 Quiz"
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                  </div>
                   <p className="text-slate-500 text-sm">A unique quiz code will be generated for students to enter.</p>
                   <div className="flex gap-2">
                     <button
@@ -1071,7 +1333,11 @@ export default function TeacherPage() {
                         onClick={() => setSelectedQuizId(selectedQuizId === quiz.id ? null : quiz.id)}
                       >
                         <span className="text-slate-200">
-                          {getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong>
+                          {quiz.quizname ? (
+                            <><strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} · {quiz.quizcode}</>
+                          ) : (
+                            <>{getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong></>
+                          )}
                         </span>
                         <span className="text-slate-500 text-sm">Select to add questions</span>
                       </li>
@@ -1081,19 +1347,133 @@ export default function TeacherPage() {
 
                 {selectedQuizId && (
                   <>
-                    <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
                       <h3 className="text-lg font-semibold text-slate-200">Questions in this quiz</h3>
-                      <button
-                        onClick={() => setShowAddQuestion(true)}
-                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-                      >
-                        Add Question
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* Question type sections */}
+                        <div className="inline-flex rounded-xl bg-slate-800/80 border border-slate-600/60 overflow-hidden">
+                          <button
+                            type="button"
+                            onClick={() => setQuestionTypeFilter("all")}
+                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
+                              questionTypeFilter === "all"
+                                ? "bg-cyan-600 text-white"
+                                : "text-slate-300 hover:bg-slate-700"
+                            }`}
+                          >
+                            All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQuestionTypeFilter("multiple_choice")}
+                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
+                              questionTypeFilter === "multiple_choice"
+                                ? "bg-cyan-600 text-white"
+                                : "text-slate-300 hover:bg-slate-700"
+                            }`}
+                          >
+                            Multiple Choice
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQuestionTypeFilter("identification")}
+                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
+                              questionTypeFilter === "identification"
+                                ? "bg-cyan-600 text-white"
+                                : "text-slate-300 hover:bg-slate-700"
+                            }`}
+                          >
+                            Identification
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQuestionTypeFilter("enumeration")}
+                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
+                              questionTypeFilter === "enumeration"
+                                ? "bg-cyan-600 text-white"
+                                : "text-slate-300 hover:bg-slate-700"
+                            }`}
+                          >
+                            Enumeration
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setQuestionTypeFilter("long_answer")}
+                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
+                              questionTypeFilter === "long_answer"
+                                ? "bg-cyan-600 text-white"
+                                : "text-slate-300 hover:bg-slate-700"
+                            }`}
+                          >
+                            Long Answer
+                          </button>
+                        </div>
+                        <button
+                          onClick={() => setShowAddQuestion(true)}
+                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold relative"
+                        >
+                          Add Question
+                          {batchQuestions.length > 0 && (
+                            <span className="absolute -top-2 -right-2 bg-cyan-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
+                              {batchQuestions.length}
+                            </span>
+                          )}
+                        </button>
+                      </div>
                     </div>
                     {showAddQuestion && (
                       <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 mb-6">
-                        <h4 className="text-cyan-300 font-semibold mb-4">New question</h4>
-                        <form onSubmit={handleAddQuestion} className="space-y-4">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="text-cyan-300 font-semibold">Add Questions (Batch Mode)</h4>
+                          {batchQuestions.length > 0 && (
+                            <span className="text-slate-400 text-sm">
+                              {batchQuestions.length} question{batchQuestions.length !== 1 ? "s" : ""} ready to save
+                            </span>
+                          )}
+                        </div>
+                        
+                        {batchQuestions.length > 0 && (
+                          <div className="mb-4 p-4 rounded-lg bg-slate-700/50 border border-slate-600/50">
+                            <h5 className="text-slate-300 font-medium mb-2 text-sm">Questions to be saved ({batchQuestions.length}):</h5>
+                            <ul className="space-y-2 max-h-40 overflow-y-auto">
+                              {batchQuestions.map((q, idx) => (
+                                <li key={idx} className="text-sm text-slate-400 flex items-start gap-2">
+                                  <span className="text-cyan-400">{idx + 1}.</span>
+                                  <span className="flex-1">
+                                    {q.question.substring(0, 60)}{q.question.length > 60 ? "..." : ""}
+                                    <span className="text-slate-500 ml-2">({q.quizType.replace("_", " ")}, {q.score} pt{q.score !== 1 ? "s" : ""})</span>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={() => setBatchQuestions(batchQuestions.filter((_, i) => i !== idx))}
+                                    className="text-red-400 hover:text-red-300 text-xs"
+                                  >
+                                    Remove
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                            <div className="mt-3 flex gap-2">
+                              <button
+                                type="button"
+                                onClick={handleSaveAllQuestions}
+                                disabled={savingQuestion}
+                                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm"
+                              >
+                                {savingQuestion ? "Saving..." : `Save All ${batchQuestions.length} Question${batchQuestions.length !== 1 ? "s" : ""}`}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setBatchQuestions([])}
+                                className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium text-sm"
+                              >
+                                Clear All
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                        
+                        <form onSubmit={handleAddQuestionToBatch} className="space-y-4">
                           <div>
                             <label className="block text-slate-400 text-sm mb-1">Question</label>
                             <textarea
@@ -1110,8 +1490,13 @@ export default function TeacherPage() {
                             <select
                               value={newQuizType}
                               onChange={(e) => {
-                                setNewQuizType(e.target.value as typeof newQuizType);
-                                if (e.target.value === "multiple_choice" && newQuestionOptions.length === 0) setNewQuestionOptions(["", ""]);
+                                const nextType = e.target.value as typeof newQuizType;
+                                setNewQuizType(nextType);
+                                if (nextType === "multiple_choice" && newQuestionOptions.length === 0) {
+                                  setNewQuestionOptions(["", ""]);
+                                }
+                                // Clear previous answer key when switching type to avoid confusion
+                                setNewQuestionAnswerKey("");
                               }}
                               className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                             >
@@ -1179,23 +1564,89 @@ export default function TeacherPage() {
                               </div>
                             </>
                           )}
+                          {newQuizType !== "multiple_choice" && (
+                            <div>
+                              <label className="block text-slate-400 text-sm mb-1">Answer key</label>
+                              <textarea
+                                value={newQuestionAnswerKey}
+                                onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+                                required
+                                rows={newQuizType === "enumeration" ? 3 : 2}
+                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                placeholder={
+                                  newQuizType === "enumeration"
+                                    ? "Enter the correct items (one per line). Matching will be case-insensitive."
+                                    : "Enter the correct answer. Matching will be case-insensitive."
+                                }
+                              />
+                              {newQuizType === "enumeration" && (
+                                <p className="mt-1 text-xs text-slate-500">
+                                  Tip: put one correct item per line. Students&apos; answers are compared in a
+                                  case-insensitive way.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          <div>
+                            <label className="block text-slate-400 text-sm mb-1">Score</label>
+                            <input
+                              type="number"
+                              min={0.5}
+                              step={0.5}
+                              value={newQuestionScore}
+                              onChange={(e) => setNewQuestionScore(e.target.value)}
+                              className="w-32 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                            />
+                            <p className="mt-1 text-xs text-slate-500">Default is 1 point per question.</p>
+                          </div>
                           <div className="flex gap-2">
                             <button
                               type="submit"
-                              disabled={savingQuestion}
-                              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+                              className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold"
                             >
-                              {savingQuestion ? "Saving..." : "Save Question"}
+                              Add to Batch
                             </button>
+                            {batchQuestions.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={handleSaveAllQuestions}
+                                disabled={savingQuestion}
+                                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+                              >
+                                {savingQuestion ? "Saving..." : `Save All ${batchQuestions.length}`}
+                              </button>
+                            )}
                             <button
                               type="button"
-                              onClick={() => setShowAddQuestion(false)}
+                              onClick={() => {
+                                setShowAddQuestion(false);
+                                setNewQuestionText("");
+                                setNewQuestionOptions(["", ""]);
+                                setNewQuestionAnswerKey("");
+                                setNewQuestionScore("1");
+                              }}
                               className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
                             >
-                              Cancel
+                              Close Form
                             </button>
+                            {batchQuestions.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (confirm("Clear all unsaved questions?")) {
+                                    setBatchQuestions([]);
+                                  }
+                                }}
+                                className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 text-white font-medium"
+                              >
+                                Clear Batch
+                              </button>
+                            )}
                           </div>
                         </form>
+                        <p className="mt-3 text-slate-500 text-xs">
+                          💡 Tip: Add multiple questions to the batch, then click &quot;Save All&quot; to save them at once.
+                        </p>
                       </div>
                     )}
                     {questionsLoading ? (
@@ -1206,34 +1657,192 @@ export default function TeacherPage() {
                       </div>
                     ) : (
                       <ul className="space-y-3">
-                        {questionsForQuiz.map((q) => {
+                        {questionsForQuiz
+                          .filter((q) =>
+                            questionTypeFilter === "all" ? true : q.quiztype === questionTypeFilter
+                          )
+                          .map((q) => {
                           let optionsParsed: string[] = [];
                           try {
                             if (q.options) optionsParsed = JSON.parse(q.options);
                           } catch {
                             // ignore
                           }
-                          return (
-                          <li key={q.id} className="flex items-start justify-between gap-4 p-3 rounded-lg bg-slate-700/50">
-                            <div className="flex-1 min-w-0">
-                              <span className="text-slate-500 text-xs uppercase mr-2">{q.quiztype.replace("_", " ")}</span>
-                              <p className="text-slate-200">{q.question}</p>
-                              {q.quiztype === "multiple_choice" && (optionsParsed.length > 0 || q.answerkey) && (
-                                <p className="text-slate-500 text-sm mt-1">
-                                  Options: {optionsParsed.join(", ")}
-                                  {q.answerkey && (
-                                    <span className="text-emerald-400 ml-2">Answer: {q.answerkey}</span>
-                                  )}
-                                </p>
+                            return (
+                            <li key={q.id} className="p-3 rounded-lg bg-slate-700/50 border border-slate-600/60">
+                              {editingQuestionId === q.id ? (
+                                <div className="space-y-3">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="text-slate-500 text-xs uppercase">
+                                      Editing {q.quiztype.replace("_", " ")}
+                                    </span>
+                                    <span className="text-slate-400 text-xs">
+                                      Score:&nbsp;
+                                      <input
+                                        type="number"
+                                        min={0.5}
+                                        step={0.5}
+                                        value={editScore}
+                                        onChange={(e) => setEditScore(e.target.value)}
+                                        className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                                      />
+                                    </span>
+                                  </div>
+                                  <div>
+                                    <label className="block text-slate-400 text-xs mb-1">Question</label>
+                                    <textarea
+                                      value={editQuestionText}
+                                      onChange={(e) => setEditQuestionText(e.target.value)}
+                                      rows={3}
+                                      className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-slate-400 text-xs mb-1">Answer key</label>
+                                    {q.quiztype === "multiple_choice" && editQuestionOptions.length > 0 ? (
+                                      <select
+                                        value={editAnswerKey}
+                                        onChange={(e) => setEditAnswerKey(e.target.value)}
+                                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                      >
+                                        <option value="">Select the correct option...</option>
+                                        {editQuestionOptions.map((opt) => (
+                                          <option key={opt} value={opt}>
+                                            {opt}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    ) : (
+                                      <textarea
+                                        value={editAnswerKey}
+                                        onChange={(e) => setEditAnswerKey(e.target.value)}
+                                        rows={q.quiztype === "enumeration" ? 3 : 2}
+                                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                      />
+                                    )}
+                                  </div>
+                                  <div className="flex gap-2 justify-end">
+                                    <button
+                                      type="button"
+                                      disabled={savingEdit}
+                                      onClick={async () => {
+                                        setError("");
+                                        const trimmedQuestion = editQuestionText.trim();
+                                        const trimmedAnswer = editAnswerKey.trim();
+                                        const scoreNumber = Number(editScore) || 1;
+                                        if (!trimmedQuestion) {
+                                          setError("Question text is required.");
+                                          return;
+                                        }
+                                        if (!trimmedAnswer) {
+                                          setError("Answer key is required.");
+                                          return;
+                                        }
+                                        if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+                                          setError("Score must be a positive number.");
+                                          return;
+                                        }
+                                        setSavingEdit(true);
+                                        try {
+                                          const res = await fetch(`/api/teacher/questions/${q.id}`, {
+                                            method: "PATCH",
+                                            headers: { "Content-Type": "application/json" },
+                                            credentials: "include",
+                                            body: JSON.stringify({
+                                              question: trimmedQuestion,
+                                              answerkey: trimmedAnswer,
+                                              score: scoreNumber,
+                                            }),
+                                          });
+                                          if (!res.ok) {
+                                            const d = await res.json().catch(() => ({}));
+                                            setError(d.error ?? "Failed to update question");
+                                          } else if (selectedQuizId) {
+                                            await fetchQuestionsForQuiz(selectedQuizId);
+                                            setEditingQuestionId(null);
+                                          }
+                                        } finally {
+                                          setSavingEdit(false);
+                                        }
+                                      }}
+                                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm disabled:opacity-50"
+                                    >
+                                      {savingEdit ? "Saving..." : "Save"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={savingEdit}
+                                      onClick={() => setEditingQuestionId(null)}
+                                      className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="flex items-start justify-between gap-4">
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className="text-slate-500 text-xs uppercase">
+                                        {q.quiztype.replace("_", " ")}
+                                      </span>
+                                      <span className="text-xs text-emerald-300">
+                                        {q.score && q.score !== 1 ? `${q.score} pts` : "1 pt"}
+                                      </span>
+                                    </div>
+                                    <p className="text-slate-200">{q.question}</p>
+                                    {q.quiztype === "multiple_choice" && (optionsParsed.length > 0 || q.answerkey) && (
+                                      <p className="text-slate-500 text-sm mt-1">
+                                        Options: {optionsParsed.join(", ")}
+                                        {q.answerkey && (
+                                          <span className="text-emerald-400 ml-2">Answer: {q.answerkey}</span>
+                                        )}
+                                      </p>
+                                    )}
+                                    {q.quiztype !== "multiple_choice" && q.answerkey && (
+                                      <p className="text-slate-500 text-sm mt-1">
+                                        <span className="text-slate-400">Answer key:</span>{" "}
+                                        <span className="text-emerald-400 whitespace-pre-line">
+                                          {q.answerkey}
+                                        </span>
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className="flex flex-col gap-1 shrink-0">
+                                    <button
+                                      onClick={() => {
+                                        setEditingQuestionId(q.id);
+                                        setEditQuestionText(q.question);
+                                        setEditAnswerKey(q.answerkey ?? "");
+                                        setEditScore(String(q.score ?? 1));
+                                        // Parse options for multiple choice questions
+                                        if (q.quiztype === "multiple_choice" && q.options) {
+                                          try {
+                                            const parsed = JSON.parse(q.options);
+                                            setEditQuestionOptions(
+                                              Array.isArray(parsed) ? parsed.map((o: unknown) => String(o)) : []
+                                            );
+                                          } catch {
+                                            setEditQuestionOptions([]);
+                                          }
+                                        } else {
+                                          setEditQuestionOptions([]);
+                                        }
+                                      }}
+                                      className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-white text-xs"
+                                    >
+                                      Edit
+                                    </button>
+                                    <button
+                                      onClick={() => deleteQuestion(q.id)}
+                                      className="px-3 py-1 rounded bg-red-600/80 hover:bg-red-600 text-white text-xs"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                </div>
                               )}
-                            </div>
-                            <button
-                              onClick={() => deleteQuestion(q.id)}
-                              className="px-3 py-1 rounded bg-red-600/80 text-white text-sm shrink-0"
-                            >
-                              Delete
-                            </button>
-                          </li>
+                            </li>
                           );
                         })}
                       </ul>

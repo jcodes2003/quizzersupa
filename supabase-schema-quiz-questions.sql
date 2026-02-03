@@ -10,11 +10,15 @@ CREATE TABLE IF NOT EXISTS quiztbl (
   sectionid uuid NOT NULL REFERENCES sections(id) ON DELETE CASCADE,
   score numeric,
   studentname text,
+  period text DEFAULT '',
+  quizname text DEFAULT '',
   created_at timestamptz DEFAULT now()
 );
 -- If quiztbl already exists, add columns (run separately if needed):
 -- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS score numeric;
 -- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS studentname text;
+-- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS period text DEFAULT '';
+-- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS quizname text DEFAULT '';
 
 -- Question: belongs to a quiz; has question text, type, and for multiple_choice: options (JSON array) and answerkey
 CREATE TABLE IF NOT EXISTS questiontbl (

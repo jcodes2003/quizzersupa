@@ -158,6 +158,11 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
   const totalPages = sectionOrder.length;
   const currentSection = totalPages > 0 && currentPage < totalPages ? sectionOrder[currentPage]! : SECTION_MC;
 
+  const getSetLabelForSection = (sectionConst: number): string => {
+    const idx = sectionOrder.indexOf(sectionConst);
+    return idx >= 0 ? String.fromCharCode(65 + idx) : "?";
+  };
+
   useEffect(() => {
     if (submitError) errorRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [submitError]);
@@ -472,7 +477,9 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
           <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 md:p-8 shadow-2xl">
             {currentSection === SECTION_MC && (
               <>
-                <h2 className="text-xl font-bold text-emerald-400 mb-1">Part I: Multiple Choice</h2>
+                <h2 className="text-xl font-bold text-emerald-400 mb-1">
+                  Set {getSetLabelForSection(SECTION_MC)}: Multiple Choice
+                </h2>
                 <p className="text-slate-400 text-sm mb-6">{multipleChoiceQuestions.length} items — Choose the best answer</p>
                 <div className="space-y-6">
                   {multipleChoiceQuestions.map((q, i) => (
@@ -488,9 +495,11 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
               </>
             )}
 
-            {currentPage === 1 && (
+            {currentSection === SECTION_ID && (
               <>
-                <h2 className="text-xl font-bold text-cyan-400 mb-1">Part II: Identification</h2>
+                <h2 className="text-xl font-bold text-cyan-400 mb-1">
+                  Set {getSetLabelForSection(SECTION_ID)}: Identification
+                </h2>
                 <p className="text-slate-400 text-sm mb-6">{identificationQuestions.length} items — Write the correct term</p>
                 <div className="space-y-6">
                   {identificationQuestions.map((q, i) => (
@@ -508,7 +517,9 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
 
             {currentSection === SECTION_ENUM && programmingSection ? (
               <>
-                <h2 className="text-xl font-bold text-amber-400 mb-1">Part III: Real-Life Programming Problem (10 points)</h2>
+                <h2 className="text-xl font-bold text-amber-400 mb-1">
+                  Set {getSetLabelForSection(SECTION_ENUM)}: Real-Life Programming Problem (10 points)
+                </h2>
                 <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100">
                   <p className="font-semibold mb-3">📋 Instructions:</p>
                   <p className="text-sm mb-4">{programmingSection.instructions}</p>
@@ -520,7 +531,9 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
               </>
             ) : currentSection === SECTION_ENUM && (
               <>
-                <h2 className="text-xl font-bold text-amber-400 mb-1">Part III: Enumeration</h2>
+                <h2 className="text-xl font-bold text-amber-400 mb-1">
+                  Set {getSetLabelForSection(SECTION_ENUM)}: Enumeration
+                </h2>
                 <p className="text-slate-400 text-sm mb-4">3 items — 1 point each</p>
                 <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100">
                   <p className="font-semibold mb-2">📋 How to answer enumeration questions:</p>
