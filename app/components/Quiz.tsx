@@ -237,11 +237,11 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
         // Supabase client isn't available (e.g. during static prerender); skip saving.
         console.warn("Supabase client not available; skipping score save.");
       } else {
-        supabase
+        (supabase as any)
           .from("quiztbl")
-          .update({ score: totalScore, studentname: name })
+          .update({ score: totalScore, studentname: name } as any)
           .eq("id", quizId)
-          .then(({ error }) => {
+          .then(({ error }: any) => {
             if (error) console.error("Failed to save quiz score:", error);
           });
       }
