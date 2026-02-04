@@ -8,7 +8,7 @@ export async function GET() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("quiztbl")
-    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname")
+    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname, time_limit_minutes, allow_retake, max_attempts")
     .eq("teacherid", teacherId)
     .order("quizcode");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -27,8 +27,16 @@ function generateQuizCode(): string {
 export async function POST(request: NextRequest) {
   const teacherId = await getTeacherId();
   if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const body = await request.json() as { subjectId?: string; sectionId?: string; period?: string; quizname?: string };
-  const { subjectId, sectionId, period, quizname } = body;
+  const body = await request.json() as {
+    subjectId?: string;
+    sectionId?: string;
+    period?: string;
+    quizname?: string;
+    timeLimitMinutes?: number | null;
+    allowRetake?: boolean;
+    maxAttempts?: number | null;
+  };
+  const { subjectId, sectionId, period, quizname, timeLimitMinutes, allowRetake, maxAttempts } = body;
   if (!subjectId?.trim() || !sectionId?.trim()) {
     return NextResponse.json({ error: "subjectId and sectionId required" }, { status: 400 });
   }
@@ -48,6 +56,9 @@ export async function POST(request: NextRequest) {
       sectionid: sectionId.trim(),
       period: (period ?? "").toString().trim(),
       quizname: (quizname ?? "").toString().trim(),
+      time_limit_minutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
+      allow_retake: Boolean(allowRetake),
+      max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 2,
     })
     .select()
     .single();

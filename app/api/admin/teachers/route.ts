@@ -7,13 +7,28 @@ export async function GET() {
   const ok = await isAdminAuthenticated();
   if (!ok) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("teachertbl")
-    .select("id, teachername, username")
+    .select("id, teachername, username, approved")
     .order("teachername");
+  if (error?.message && error.message.toLowerCase().includes("approved")) {
+    const fallback = await supabase
+      .from("teachertbl")
+      .select("id, teachername, username")
+      .order("teachername");
+    data = (fallback.data ?? []) as typeof data;
+    error = fallback.error;
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const rows = (data ?? []) as { id: string; teachername: string; username: string }[];
-  return NextResponse.json(rows.map((r) => ({ id: r.id, name: r.teachername, email: r.username })));
+  const rows = (data ?? []) as { id: string; teachername: string; username: string; approved?: boolean }[];
+  return NextResponse.json(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.teachername,
+      email: r.username,
+      approved: r.approved === undefined ? true : Boolean(r.approved),
+    }))
+  );
 }
 
 export async function POST(request: NextRequest) {
@@ -31,12 +46,26 @@ export async function POST(request: NextRequest) {
   }
   const password = await bcrypt.hash(plainPassword, 10);
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from("teachertbl")
-    .insert({ teachername, username, password })
-    .select("id, teachername, username")
+    .insert({ teachername, username, password, approved: true })
+    .select("id, teachername, username, approved")
     .single();
+  if (error?.message && error.message.toLowerCase().includes("approved")) {
+    const fallback = await supabase
+      .from("teachertbl")
+      .insert({ teachername, username, password })
+      .select("id, teachername, username")
+      .single();
+    data = fallback.data as typeof data;
+    error = fallback.error as typeof error;
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const row = data as { id: string; teachername: string; username: string };
-  return NextResponse.json({ id: row.id, name: row.teachername, email: row.username });
+  const row = data as { id: string; teachername: string; username: string; approved?: boolean };
+  return NextResponse.json({
+    id: row.id,
+    name: row.teachername,
+    email: row.username,
+    approved: Boolean(row.approved),
+  });
 }

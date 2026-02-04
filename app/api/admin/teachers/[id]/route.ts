@@ -10,13 +10,14 @@ export async function PUT(
   const ok = await isAdminAuthenticated();
   if (!ok) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
-  const body = await request.json() as { name?: string; email?: string; password?: string };
-  const updates: { teachername?: string; username?: string; password?: string } = {};
+  const body = await request.json() as { name?: string; email?: string; password?: string; approved?: boolean };
+  const updates: { teachername?: string; username?: string; password?: string; approved?: boolean } = {};
   if (typeof body.name === "string" && body.name.trim()) updates.teachername = body.name.trim();
   if (typeof body.email === "string" && body.email.trim()) updates.username = body.email.trim().toLowerCase();
   if (typeof body.password === "string" && body.password.length >= 6) {
     updates.password = await bcrypt.hash(body.password, 10);
   }
+  if (typeof body.approved === "boolean") updates.approved = body.approved;
   if (Object.keys(updates).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
@@ -25,11 +26,33 @@ export async function PUT(
     .from("teachertbl")
     .update(updates)
     .eq("id", id)
-    .select("id, teachername, username")
+    .select("id, teachername, username, approved")
     .single();
+  if (error?.message && error.message.toLowerCase().includes("approved")) {
+    delete updates.approved;
+    const fallback = await supabase
+      .from("teachertbl")
+      .update(updates)
+      .eq("id", id)
+      .select("id, teachername, username")
+      .single();
+    if (fallback.error) return NextResponse.json({ error: fallback.error.message }, { status: 500 });
+    const rowFallback = fallback.data as { id: string; teachername: string; username: string };
+    return NextResponse.json({
+      id: rowFallback.id,
+      name: rowFallback.teachername,
+      email: rowFallback.username,
+      approved: true,
+    });
+  }
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const row = data as { id: string; teachername: string; username: string };
-  return NextResponse.json({ id: row.id, name: row.teachername, email: row.username });
+  const row = data as { id: string; teachername: string; username: string; approved?: boolean };
+  return NextResponse.json({
+    id: row.id,
+    name: row.teachername,
+    email: row.username,
+    approved: Boolean(row.approved),
+  });
 }
 
 export async function DELETE(

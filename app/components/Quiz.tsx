@@ -124,13 +124,25 @@ interface QuizProps {
   quizData: QuizData;
   /** When set (quiz taken by code), score is saved to student_quiz with this quizid and quiztbl.score is updated */
   quizId?: string | null;
+  timeLimitMinutes?: number | null;
+  allowRetake?: boolean;
+  maxAttempts?: number;
 }
 
 const SECTION_MC = 0;
 const SECTION_ID = 1;
 const SECTION_ENUM = 2;
 
-export default function Quiz({ topic, section, quizTitle, quizData, quizId }: QuizProps) {
+export default function Quiz({
+  topic,
+  section,
+  quizTitle,
+  quizData,
+  quizId,
+  timeLimitMinutes = null,
+  allowRetake = false,
+  maxAttempts = 2,
+}: QuizProps) {
   const { multipleChoice: multipleChoiceQuestions, identification: identificationQuestions, enumeration: enumerationQuestions = [], programming: programmingSection } = quizData;
   const [studentName, setStudentName] = useState("");
   const [studentId, setStudentId] = useState("");
@@ -143,6 +155,14 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
   const [currentPage, setCurrentPage] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
+  const autoSubmitRef = useRef(false);
+  const [started, setStarted] = useState(false);
+  const [startLoading, setStartLoading] = useState(false);
+  const [attemptId, setAttemptId] = useState<string | null>(null);
+  const [attemptNumber, setAttemptNumber] = useState<number | null>(null);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [maxAttemptsState, setMaxAttemptsState] = useState<number>(maxAttempts);
 
   const hasMc = multipleChoiceQuestions.length > 0;
   const hasId = identificationQuestions.length > 0;
@@ -157,6 +177,7 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
   );
   const totalPages = sectionOrder.length;
   const currentSection = totalPages > 0 && currentPage < totalPages ? sectionOrder[currentPage]! : SECTION_MC;
+  const attemptsLimit = quizId ? maxAttemptsState : 2;
 
   const getSetLabelForSection = (sectionConst: number): string => {
     const idx = sectionOrder.indexOf(sectionConst);
@@ -183,6 +204,57 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     return getUnansweredPages().length === 0;
   }, [studentName, getUnansweredPages]);
 
+  const handleStart = async () => {
+    setSubmitError(null);
+    if (!studentName.trim()) {
+      setSubmitError("Please enter your name.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!studentId.trim()) {
+      setSubmitError("Please enter your student ID.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!quizId) {
+      setStarted(true);
+      return;
+    }
+    setStartLoading(true);
+    try {
+      const res = await fetch("/api/quiz-start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          quizId,
+          studentName: studentName.trim(),
+          studentId: studentId.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setSubmitError(data.error ?? "Unable to start quiz");
+        return;
+      }
+      setAttemptId(data.attemptId ?? null);
+      setAttemptNumber(data.attemptNumber ?? null);
+      if (typeof data.maxAttempts === "number") setMaxAttemptsState(data.maxAttempts);
+      if (data.expiresAt) {
+        setExpiresAt(data.expiresAt);
+      } else if (timeLimitMinutes) {
+        const localExpires = new Date(Date.now() + timeLimitMinutes * 60 * 1000).toISOString();
+        setExpiresAt(localExpires);
+      } else {
+        setExpiresAt(null);
+      }
+      setStarted(true);
+    } catch {
+      setSubmitError("Unable to start quiz");
+    } finally {
+      setStartLoading(false);
+    }
+  };
+
   const gradeQuiz = useCallback(async () => {
     const name = studentName.trim();
     const id = studentId.trim();
@@ -192,25 +264,23 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
       return;
     }
 
-    // Check attempt count from server if quizId is available (quiz taken by code)
-    let currentAttempts = getAttemptCount(topic, section, id);
+    let currentAttempts = 0;
+    let nextAttemptNumber = 1;
     if (quizId) {
-      try {
-        const res = await fetch(`/api/student-attempts-count?quizId=${quizId}&studentId=${encodeURIComponent(id)}`);
-        if (res.ok) {
-          const data = await res.json();
-          currentAttempts = data.attemptCount ?? 0;
-        }
-      } catch (err) {
-        console.error("Failed to fetch attempt count:", err);
-        // Fall back to localStorage count if server check fails
+      if (!started || !attemptNumber) {
+        setSubmitError("Please start the quiz first.");
+        setCurrentPage(0);
+        return;
       }
-    }
-
-    if (currentAttempts >= 2) {
-      setSubmitError("You've used all 2 attempts for this quiz. You cannot retake it.");
-      setCurrentPage(0);
-      return;
+      nextAttemptNumber = attemptNumber;
+    } else {
+      currentAttempts = getAttemptCount(topic, section, id);
+      if (currentAttempts >= 2) {
+        setSubmitError("You've used all 2 attempts for this quiz. You cannot retake it.");
+        setCurrentPage(0);
+        return;
+      }
+      nextAttemptNumber = currentAttempts + 1;
     }
 
     let mcScore = 0;
@@ -260,7 +330,21 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     const totalScore = mcScore + idScore + enumPoints;
     const percentage = Math.round((totalScore / maxScore) * 100);
 
-    const attempts = incrementAttemptCount(topic, section, id);
+    const attempts = quizId ? nextAttemptNumber : incrementAttemptCount(topic, section, id);
+    const answersPayload = {
+      multiple_choice: Object.entries(mcAnswers).map(([questionId, answer]) => ({
+        questionId,
+        answer,
+      })),
+      identification: Object.entries(idAnswers).map(([questionId, answer]) => ({
+        questionId,
+        answer,
+      })),
+      enumeration: Object.entries(enumAnswers).map(([questionId, answer]) => ({
+        questionId,
+        answer,
+      })),
+    };
 
     setResults({
       studentName: name,
@@ -293,7 +377,9 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
                 studentId: id,
                 score: totalScore,
                 maxScore,
-                attemptNumber: currentAttempts + 1,
+                attemptNumber: nextAttemptNumber,
+                attemptId: attemptId ?? undefined,
+                answers: answersPayload,
               }),
             });
 
@@ -307,11 +393,31 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
         })();
       }
     }
-  }, [topic, studentName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId]);
+  }, [topic, studentName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started]);
+
+  useEffect(() => {
+    if (!expiresAt || submitted) {
+      setTimeLeft(null);
+      return;
+    }
+    autoSubmitRef.current = false;
+    const tick = () => {
+      const diffMs = new Date(expiresAt).getTime() - Date.now();
+      const secondsLeft = Math.max(0, Math.ceil(diffMs / 1000));
+      setTimeLeft(secondsLeft);
+      if (diffMs <= 0 && !autoSubmitRef.current) {
+        autoSubmitRef.current = true;
+        gradeQuiz();
+      }
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [expiresAt, submitted, gradeQuiz]);
 
   useEffect(() => {
     const handleVisibility = () => {
-      if (document.visibilityState === "hidden" && !submitted) {
+      if (document.visibilityState === "hidden" && !submitted && (!quizId || started)) {
         setTabLeft(true);
         gradeQuiz();
       }
@@ -330,6 +436,11 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
     }
     if (!studentId.trim()) {
       setSubmitError("Please enter your student ID.");
+      setCurrentPage(0);
+      return;
+    }
+    if (quizId && !started) {
+      setSubmitError("Please start the quiz first.");
       setCurrentPage(0);
       return;
     }
@@ -363,7 +474,9 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
             <p className="text-center text-slate-400 mb-2">{quizTitle}</p>
             <p className="text-center text-cyan-300 font-semibold mb-2">Answered by: {results.studentName}</p>
             <p className="text-center text-slate-400 mb-2">Section: {results.section}</p>
-            <p className="text-center text-slate-500 text-sm mb-8">Attempt {results.attempts} of 2</p>
+            <p className="text-center text-slate-500 text-sm mb-8">
+              Attempt {results.attempts} of {attemptsLimit}
+            </p>
 
             <div className="grid gap-4 mb-8">
               <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
@@ -396,9 +509,9 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
             </div>
 
             <div className="mt-8 space-y-4">
-              {results.attempts >= 2 && (
+              {results.attempts >= attemptsLimit && (
                 <div className="p-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-center">
-                  <p className="font-semibold">You've used all 2 attempts. You cannot retake this quiz.</p>
+                  <p className="font-semibold">You've used all {attemptsLimit} attempts. You cannot retake this quiz.</p>
                 </div>
               )}
               <div className="flex gap-4">
@@ -408,10 +521,15 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
                 >
                   ← Back to Home
                 </Link>
-                {results.attempts < 2 && (
+                {results.attempts < attemptsLimit && (
                   <button
                     onClick={() => {
                       setSubmitted(false);
+                      setStarted(false);
+                      setAttemptId(null);
+                      setAttemptNumber(null);
+                      setExpiresAt(null);
+                      setTimeLeft(null);
                       setResults(null);
                       setMcAnswers({});
                       setIdAnswers({});
@@ -466,6 +584,31 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
                 className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
               />
             </div>
+            {quizId && (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleStart}
+                  disabled={startLoading || started}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+                >
+                  {started ? "Quiz Started" : startLoading ? "Starting..." : "Start Quiz"}
+                </button>
+                <span className="text-slate-400 text-sm">
+                  Attempts allowed: {attemptsLimit}
+                </span>
+                {timeLimitMinutes ? (
+                  <span className="text-slate-400 text-sm">Time limit: {timeLimitMinutes} min</span>
+                ) : (
+                  <span className="text-slate-400 text-sm">No time limit</span>
+                )}
+                {started && timeLeft !== null && (
+                  <span className={`text-sm font-semibold ${timeLeft <= 30 ? "text-amber-300" : "text-cyan-300"}`}>
+                    Time left: {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
 
           {submitError && (
@@ -474,7 +617,12 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
             </div>
           )}
 
-          <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 md:p-8 shadow-2xl">
+          {quizId && !started ? (
+            <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 text-center text-slate-400 shadow-2xl">
+              Click "Start Quiz" to begin. The timer will start immediately.
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 md:p-8 shadow-2xl">
             {currentSection === SECTION_MC && (
               <>
                 <h2 className="text-xl font-bold text-emerald-400 mb-1">
@@ -564,12 +712,13 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
               </>
             )}
           </div>
+          )}
 
           <div className="flex justify-between items-center gap-4">
             <button
               type="button"
               onClick={() => { setSubmitError(null); setCurrentPage((p) => Math.max(0, p - 1)); }}
-              disabled={currentPage === 0}
+              disabled={currentPage === 0 || (Boolean(quizId) && !started)}
               className="px-6 py-3 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold transition-colors"
             >
               ← Previous
@@ -578,14 +727,16 @@ export default function Quiz({ topic, section, quizTitle, quizData, quizId }: Qu
               <button
                 type="button"
                 onClick={() => { setSubmitError(null); setCurrentPage((p) => Math.min(totalPages - 1, p + 1)); }}
-                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors"
+                disabled={Boolean(quizId) && !started}
+                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition-colors"
               >
                 Next →
               </button>
             ) : (
               <button
                 type="submit"
-                className="px-8 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold transition-colors"
+                disabled={Boolean(quizId) && !started}
+                className="px-8 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold transition-colors"
               >
                 Submit Quiz
               </button>
@@ -614,9 +765,9 @@ function MCQuestion({
         {index}. {question.question}
       </p>
       <div className="grid gap-2">
-        {question.options.map((opt) => (
+        {question.options.map((opt, idx) => (
           <label
-            key={opt}
+            key={`${question.id}-${idx}`}
             className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
               value === opt ? "bg-emerald-600/30 border border-emerald-500/50" : "bg-slate-700/50 hover:bg-slate-600/50"
             }`}

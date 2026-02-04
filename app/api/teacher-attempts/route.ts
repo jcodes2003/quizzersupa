@@ -23,12 +23,46 @@ export async function GET(request: NextRequest) {
 
   const quizPeriodNameMap = new Map((quizzes ?? []).map((q: any) => [q.id, { period: q.period ?? "", quizname: q.quizname ?? "" }]));
 
-  // Get all student attempts for these quizzes with sectionid and subjectid
-  const { data: attempts, error: attemptsError } = await supabase
-    .from("student_attempts")
-    .select("id, quizid, studentname, student_id, score, max_score, attempt_number, created_at, subjectid, sectionid")
+  // Get all student attempts (log) for these quizzes with sectionid and subjectid
+  let attempts: any[] | null = null;
+  let attemptsError: { message?: string } | null = null;
+  const logResult = await supabase
+    .from("student_attempts_log")
+    .select("id, quizid, studentname, student_id, score, max_score, attempt_number, submitted_at, created_at, subjectid, sectionid, answers")
     .in("quizid", quizIds)
-    .order("created_at", { ascending: false });
+    .eq("is_submitted", true)
+    .order("submitted_at", { ascending: false });
+  attempts = (logResult.data ?? null) as any[] | null;
+  attemptsError = (logResult.error ?? null) as { message?: string } | null;
+
+  // Retry with minimal columns if some columns don't exist yet
+  if (
+    attemptsError?.message &&
+    (attemptsError.message.toLowerCase().includes("answers") ||
+      attemptsError.message.toLowerCase().includes("submitted_at") ||
+      attemptsError.message.toLowerCase().includes("subjectid") ||
+      attemptsError.message.toLowerCase().includes("sectionid"))
+  ) {
+    const minimal = await supabase
+      .from("student_attempts_log")
+      .select("id, quizid, studentname, student_id, score, max_score, attempt_number, created_at")
+      .in("quizid", quizIds)
+      .eq("is_submitted", true)
+      .order("created_at", { ascending: false });
+    attempts = (minimal.data ?? null) as any[] | null;
+    attemptsError = (minimal.error ?? null) as { message?: string } | null;
+  }
+
+  // Fallback if the log table doesn't exist yet
+  if (attemptsError?.message && attemptsError.message.toLowerCase().includes("student_attempts_log")) {
+    const fallback = await supabase
+      .from("student_attempts")
+      .select("id, quizid, studentname, student_id, score, max_score, attempt_number, created_at")
+      .in("quizid", quizIds)
+      .order("created_at", { ascending: false });
+    attempts = (fallback.data ?? null) as any[] | null;
+    attemptsError = (fallback.error ?? null) as { message?: string } | null;
+  }
 
   if (attemptsError) return NextResponse.json({ error: attemptsError.message }, { status: 500 });
 
@@ -83,7 +117,8 @@ export async function GET(request: NextRequest) {
       // Human-readable names from joined tables
       section: sectionname,
       subject: subjectname,
-      created_at: a.created_at,
+      created_at: a.submitted_at ?? a.created_at,
+      answers: a.answers ?? null,
       subjectid,
       sectionid,
       sectionname,

@@ -20,7 +20,14 @@ type ApiQuestion = {
   answerkey?: string | null;
   options?: string | null;
 };
-type ApiQuiz = { id: string; quizcode: string; sectionName: string };
+type ApiQuiz = {
+  id: string;
+  quizcode: string;
+  sectionName: string;
+  time_limit_minutes?: number | null;
+  allow_retake?: boolean;
+  max_attempts?: number | null;
+};
 
 // Ensure options, reply, etc. inside arrays in quiz data all have totally unique keys
 // Even if that means sometimes using a combination of values and indices
@@ -198,6 +205,9 @@ function QuizContent() {
         quizTitle={`Quiz ${apiQuiz.quizcode}`}
         quizData={dynamicData}
         quizId={apiQuiz.id}
+        timeLimitMinutes={apiQuiz.time_limit_minutes ?? null}
+        allowRetake={Boolean(apiQuiz.allow_retake)}
+        maxAttempts={apiQuiz.max_attempts ?? 2}
       />
     );
   }

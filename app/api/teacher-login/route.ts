@@ -21,6 +21,12 @@ export async function POST(request: NextRequest) {
       if (!password) return NextResponse.json({ ok: false, error: "Password required" }, { status: 400 });
       const teacher = await verifyTeacherCredentials(email, password);
       if (!teacher) return NextResponse.json({ ok: false, error: "Invalid email or password" }, { status: 401 });
+      if (!teacher.approved) {
+        return NextResponse.json(
+          { ok: false, error: "Account pending admin approval" },
+          { status: 403 }
+        );
+      }
       const token = createTeacherDBSession(teacher.id);
       const res = NextResponse.json({ ok: true, teacher: { name: teacher.name } });
       res.cookies.set(getTeacherDBCookieName(), token, {

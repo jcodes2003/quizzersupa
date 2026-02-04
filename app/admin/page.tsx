@@ -5,7 +5,7 @@ import Link from "next/link";
 
 type Section = { id: string; name: string };
 type Subject = { id: string; name: string; slug: string };
-type Teacher = { id: string; name: string; email: string; created_at?: string };
+type Teacher = { id: string; name: string; email: string; approved?: boolean; created_at?: string };
 
 export default function AdminPage() {
   const [password, setPassword] = useState("");
@@ -167,11 +167,14 @@ export default function AdminPage() {
   };
 
   const updateSubject = async (id: string) => {
+    const name = (editValue ?? "").trim();
+    const slug = (editSlug ?? "").trim();
+    if (!name) return;
     const res = await fetch(`/api/admin/subjects/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ name: editValue.trim(), slug: editSlug.trim() }),
+      body: JSON.stringify({ name, slug }),
     });
     if (res.ok) {
       setEditingId(null);
@@ -196,6 +199,26 @@ export default function AdminPage() {
       setEditTeacherPass("");
       fetchData();
     }
+  };
+
+  const approveTeacher = async (id: string) => {
+    const res = await fetch(`/api/admin/teachers/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ approved: true }),
+    });
+    if (res.ok) fetchData();
+  };
+
+  const disapproveTeacher = async (id: string) => {
+    const res = await fetch(`/api/admin/teachers/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ approved: false }),
+    });
+    if (res.ok) fetchData();
   };
 
   const deleteSection = async (id: string) => {
@@ -378,7 +401,7 @@ export default function AdminPage() {
                       <>
                         <span className="text-slate-200">{s.name} <span className="text-slate-500 text-sm">({s.slug})</span></span>
                         <div>
-                          <button onClick={() => { setEditingId(s.id); setEditValue(s.name); setEditSlug(s.slug); }} className="px-3 py-1 rounded bg-slate-600 text-sm mr-1">Edit</button>
+                          <button onClick={() => { setEditingId(s.id); setEditValue(s.name); setEditSlug(s.slug ?? ""); }} className="px-3 py-1 rounded bg-slate-600 text-sm mr-1">Edit</button>
                           <button onClick={() => deleteSubject(s.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">Delete</button>
                         </div>
                       </>
@@ -448,10 +471,43 @@ export default function AdminPage() {
                       </>
                     ) : (
                       <>
-                        <span className="text-slate-200">{t.name} <span className="text-slate-500 text-sm">({t.email})</span></span>
-                        <div>
-                          <button onClick={() => { setEditingId(t.id); setEditValue(t.name); setEditSlug(t.email); }} className="px-3 py-1 rounded bg-slate-600 text-sm mr-1">Edit</button>
-                          <button onClick={() => deleteTeacher(t.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">Delete</button>
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-200">
+                            {t.name} <span className="text-slate-500 text-sm">({t.email})</span>
+                          </span>
+                          {t.approved ? (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-600/20 text-emerald-300 border border-emerald-500/40">
+                              Approved
+                            </span>
+                          ) : (
+                            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-600/20 text-amber-300 border border-amber-500/40">
+                              Pending
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {!t.approved && (
+                            <button
+                              onClick={() => approveTeacher(t.id)}
+                              className="px-3 py-1 rounded bg-emerald-600 text-sm text-white"
+                            >
+                              Approve
+                            </button>
+                          )}
+                          {t.approved && (
+                            <button
+                              onClick={() => disapproveTeacher(t.id)}
+                              className="px-3 py-1 rounded bg-amber-600 text-sm text-white"
+                            >
+                              Disapprove
+                            </button>
+                          )}
+                          <button onClick={() => { setEditingId(t.id); setEditValue(t.name); setEditSlug(t.email); }} className="px-3 py-1 rounded bg-slate-600 text-sm">
+                            Edit
+                          </button>
+                          <button onClick={() => deleteTeacher(t.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">
+                            Delete
+                          </button>
                         </div>
                       </>
                     )}

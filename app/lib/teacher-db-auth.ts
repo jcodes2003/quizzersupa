@@ -55,15 +55,41 @@ export function getTeacherDBCookieName(): string {
 export async function verifyTeacherCredentials(
   username: string,
   password: string
-): Promise<{ id: string; name: string } | null> {
+): Promise<{ id: string; name: string; approved: boolean } | null> {
   const supabase = getSupabase();
-  const { data: teacher, error } = await supabase
+  const normalized = username.trim().toLowerCase();
+  let teacher:
+    | { id: string; teachername: string; password: string; approved?: boolean }
+    | null = null;
+  let error: { message?: string } | null = null;
+
+  const first = await supabase
     .from("teachertbl")
-    .select("id, teachername, password")
-    .eq("username", username.trim().toLowerCase())
+    .select("id, teachername, password, approved")
+    .eq("username", normalized)
     .single();
-  if (error || !teacher?.password) return null;
-  const ok = await bcrypt.compare(password, teacher.password);
+  teacher = (first.data ?? null) as typeof teacher;
+  const firstError = first.error as { message?: string } | null;
+  error = firstError;
+
+  // Fallback if the approved column doesn't exist yet
+  if (error?.message && String(error.message).toLowerCase().includes("approved")) {
+    const fallback = await supabase
+      .from("teachertbl")
+      .select("id, teachername, password")
+      .eq("username", normalized)
+      .single();
+    teacher = (fallback.data ?? null) as typeof teacher;
+    error = (fallback.error ?? null) as { message?: string } | null;
+    if (teacher) {
+      (teacher as { approved?: boolean }).approved = true;
+    }
+  }
+
+  if (error || !teacher || !("password" in teacher)) return null;
+  const teacherWithPass = teacher as { password: string; approved?: boolean; id: string; teachername: string };
+  const ok = await bcrypt.compare(password, teacherWithPass.password);
   if (!ok) return null;
-  return { id: teacher.id, name: (teacher as { teachername: string }).teachername };
+  const approved = Boolean(teacherWithPass.approved);
+  return { id: teacherWithPass.id, name: teacherWithPass.teachername, approved };
 }

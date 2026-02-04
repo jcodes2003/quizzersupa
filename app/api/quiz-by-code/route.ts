@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
 
   const { data: quizRow, error: quizError } = await supabase
     .from("quiztbl")
-    .select("id, quizcode, subjectid, sectionid")
+    .select("id, quizcode, subjectid, sectionid, time_limit_minutes, allow_retake, max_attempts")
     .eq("quizcode", code)
     .maybeSingle();
 
@@ -38,6 +38,9 @@ export async function GET(request: NextRequest) {
       quizcode: quizRow.quizcode,
       subjectid: quizRow.subjectid,
       sectionid: quizRow.sectionid,
+      time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
+      allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
+      max_attempts: (quizRow as { max_attempts?: number | null }).max_attempts ?? 2,
       sectionName,
     },
     questions: questions ?? [],

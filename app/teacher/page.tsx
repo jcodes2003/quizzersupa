@@ -17,6 +17,7 @@ type QuizResponseRow = {
   attempt_number?: number;
   studentname: string | null;
   created_at?: string;
+  answers?: Record<string, unknown> | null;
   // Joined, human-readable names from API
   section?: string;
   subject?: string;
@@ -35,6 +36,9 @@ type QuizRow = {
   sectionid: string;
   period?: string;
   quizname?: string;
+  time_limit_minutes?: number | null;
+  allow_retake?: boolean;
+  max_attempts?: number | null;
 };
 
 type QuestionRow = {
@@ -134,7 +138,7 @@ function downloadConsolidatedReportCsv(
     ...rows.map((row) => {
       const quizCells = quizColumns.map((q) => {
         const qq = row.quizzes.get(q.quizid);
-        if (!qq) return escapeCsvCell("—");
+        if (!qq) return escapeCsvCell("0");
         // Export only the score (number of correct answers)
         return escapeCsvCell(String(qq.score));
       });
@@ -154,6 +158,34 @@ function downloadConsolidatedReportCsv(
   a.download = `student-report-consolidated-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+function renderAnswerBlock(
+  title: string,
+  items: Array<{ questionId: string; answer: string }>,
+  questionMap: Record<string, string>
+) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mb-4">
+      <h4 className="text-sm font-semibold text-slate-200 mb-2">{title}</h4>
+      <div className="space-y-2">
+        {items.map((item, idx) => (
+          <div key={`${title}-${item.questionId}-${idx}`} className="rounded-lg bg-slate-800 border border-slate-700 p-3">
+            <div className="text-xs text-slate-500 mb-1">Question ID: {item.questionId}</div>
+            {questionMap[item.questionId] ? (
+              <div className="text-sm text-slate-200 mb-2 whitespace-pre-wrap">
+                {questionMap[item.questionId]}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-500 mb-2">Question text not found.</div>
+            )}
+            <div className="text-sm text-slate-100 whitespace-pre-wrap">{item.answer || "—"}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 const QUESTION_TYPES = [
@@ -192,6 +224,18 @@ export default function TeacherPage() {
   const [newQuizSectionId, setNewQuizSectionId] = useState("");
   const [newQuizPeriod, setNewQuizPeriod] = useState("");
   const [newQuizQuizName, setNewQuizQuizName] = useState("");
+  const [newQuizTimeLimit, setNewQuizTimeLimit] = useState("");
+  const [newQuizAllowRetake, setNewQuizAllowRetake] = useState(false);
+  const [newQuizMaxAttempts, setNewQuizMaxAttempts] = useState("2");
+  const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
+  const [editQuizSubjectId, setEditQuizSubjectId] = useState("");
+  const [editQuizSectionId, setEditQuizSectionId] = useState("");
+  const [editQuizPeriod, setEditQuizPeriod] = useState("");
+  const [editQuizName, setEditQuizName] = useState("");
+  const [editQuizCode, setEditQuizCode] = useState("");
+  const [editQuizTimeLimit, setEditQuizTimeLimit] = useState("");
+  const [editQuizAllowRetake, setEditQuizAllowRetake] = useState(false);
+  const [editQuizMaxAttempts, setEditQuizMaxAttempts] = useState("2");
   const [newQuestionText, setNewQuestionText] = useState("");
   const [newQuizType, setNewQuizType] = useState<typeof QUESTION_TYPES[number]["value"]>("multiple_choice");
   const [newQuestionOptions, setNewQuestionOptions] = useState<string[]>(["", ""]);
@@ -209,6 +253,9 @@ export default function TeacherPage() {
   const [responsesPage, setResponsesPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
+  const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
+  const [answerQuestions, setAnswerQuestions] = useState<Record<string, string>>({});
+  const [answersLoading, setAnswersLoading] = useState(false);
   const [questionTypeFilter, setQuestionTypeFilter] = useState<
     "all" | "multiple_choice" | "identification" | "enumeration" | "long_answer"
   >("all");
@@ -327,6 +374,29 @@ export default function TeacherPage() {
     }
   }, [tab, rows.length, subjects.length, sections.length, fetchSubjects, fetchSections]);
 
+  useEffect(() => {
+    if (!answerModal?.quizid) {
+      setAnswerQuestions({});
+      return;
+    }
+    let cancelled = false;
+    setAnswersLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/teacher/quizzes/${answerModal.quizid}/questions`, { credentials: "include" });
+        if (!res.ok) return;
+        const data = (await res.json()) as Array<{ id: string; question: string }>;
+        if (cancelled) return;
+        const map: Record<string, string> = {};
+        for (const q of data) map[String(q.id)] = String(q.question ?? "");
+        setAnswerQuestions(map);
+      } finally {
+        if (!cancelled) setAnswersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [answerModal?.quizid]);
+
   // Reset pagination when filters change
   useEffect(() => {
     setResponsesPage(1);
@@ -405,6 +475,12 @@ export default function TeacherPage() {
     setSavingQuiz(true);
     setError("");
     try {
+      const timeLimitMinutes = newQuizTimeLimit.trim()
+        ? Number(newQuizTimeLimit.trim())
+        : null;
+      const maxAttempts = newQuizAllowRetake
+        ? Math.max(2, Number(newQuizMaxAttempts) || 2)
+        : 1;
       const res = await fetch("/api/teacher/quizzes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -414,6 +490,9 @@ export default function TeacherPage() {
           sectionId: newQuizSectionId,
           period: newQuizPeriod.trim(),
           quizname: newQuizQuizName.trim(),
+          timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
+          allowRetake: newQuizAllowRetake,
+          maxAttempts,
         }),
       });
       if (!res.ok) {
@@ -426,9 +505,66 @@ export default function TeacherPage() {
       setNewQuizSectionId("");
       setNewQuizPeriod("");
       setNewQuizQuizName("");
+      setNewQuizTimeLimit("");
+      setNewQuizAllowRetake(false);
+      setNewQuizMaxAttempts("2");
       fetchQuizzes();
     } finally {
       setSavingQuiz(false);
+    }
+  };
+
+  const startEditQuiz = (quiz: QuizRow) => {
+    setEditingQuizId(quiz.id);
+    setEditQuizSubjectId(quiz.subjectid);
+    setEditQuizSectionId(quiz.sectionid);
+    setEditQuizPeriod(quiz.period ?? "");
+    setEditQuizName(quiz.quizname ?? "");
+    setEditQuizCode(quiz.quizcode ?? "");
+    setEditQuizTimeLimit(
+      quiz.time_limit_minutes != null ? String(quiz.time_limit_minutes) : ""
+    );
+    setEditQuizAllowRetake(Boolean(quiz.allow_retake));
+    setEditQuizMaxAttempts(String(quiz.max_attempts ?? 2));
+    if (subjects.length === 0) fetchSubjects();
+    if (sections.length === 0) fetchSections();
+  };
+
+  const handleUpdateQuiz = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingQuizId) return;
+    setError("");
+    try {
+      const timeLimitMinutes = editQuizTimeLimit.trim()
+        ? Number(editQuizTimeLimit.trim())
+        : null;
+      const maxAttempts = editQuizAllowRetake
+        ? Math.max(2, Number(editQuizMaxAttempts) || 2)
+        : 1;
+      const res = await fetch(`/api/teacher/quizzes/${editingQuizId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          subjectId: editQuizSubjectId,
+          sectionId: editQuizSectionId,
+          period: editQuizPeriod,
+          quizname: editQuizName,
+          quizcode: editQuizCode,
+          timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
+          allowRetake: editQuizAllowRetake,
+          maxAttempts,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error ?? "Failed to update quiz");
+        return;
+      }
+      setEditingQuizId(null);
+      fetchQuizzes();
+    } catch {
+      setError("Failed to update quiz");
     }
   };
 
@@ -769,7 +905,12 @@ export default function TeacherPage() {
               {loading ? "Checking..." : "Enter"}
             </button>
           </form>
-          <p className="mt-6 text-center">
+          <p className="mt-4 text-center">
+            <Link href="/teacher/register" className="text-cyan-400 hover:text-cyan-300 text-sm">
+              Need an account? Register here
+            </Link>
+          </p>
+          <p className="mt-2 text-center">
             <Link href="/" className="text-slate-500 hover:text-cyan-400 text-sm">← Home</Link>
           </p>
         </div>
@@ -947,8 +1088,10 @@ export default function TeacherPage() {
                         <th className="px-4 py-3 text-slate-300 font-semibold">Quiz Code</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Attempt</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Subject</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Answers</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Created</th>
                       </tr>
                     </thead>
@@ -958,11 +1101,25 @@ export default function TeacherPage() {
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
                           <td className="px-4 py-3 text-slate-200">{r.studentname ?? "—"}</td>
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
+                          <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
                           <td className="px-4 py-3 text-slate-300">
                             {r.sectionname || r.section || getSectionName(r.sectionid)}
                           </td>
                           <td className="px-4 py-3 text-slate-300">
                             {r.subjectname || r.subject || getSubjectName(r.subjectid)}
+                          </td>
+                          <td className="px-4 py-3 text-slate-300">
+                            {r.answers ? (
+                              <button
+                                type="button"
+                                onClick={() => setAnswerModal(r)}
+                                className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
+                              >
+                                View
+                              </button>
+                            ) : (
+                              "-"
+                            )}
                           </td>
                           <td className="px-4 py-3 text-slate-400 text-sm">
                             {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
@@ -1008,7 +1165,7 @@ export default function TeacherPage() {
               </div>
             )}
             <p className="mt-4 text-slate-500 text-sm text-center">
-              One row per quiz (from quiztbl). Score is the latest submission. Export includes all visible rows.
+              One row per attempt (from student_attempts_log). Export includes all visible rows.
             </p>
           </>
         )}
@@ -1294,6 +1451,41 @@ export default function TeacherPage() {
                       className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                     />
                   </div>
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Time Limit (minutes)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={newQuizTimeLimit}
+                      onChange={(e) => setNewQuizTimeLimit(e.target.value)}
+                      placeholder="Leave blank for no limit"
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="allow-retake"
+                      type="checkbox"
+                      checked={newQuizAllowRetake}
+                      onChange={(e) => setNewQuizAllowRetake(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                    />
+                    <label htmlFor="allow-retake" className="text-slate-300 text-sm">
+                      Allow retake attempts
+                    </label>
+                  </div>
+                  {newQuizAllowRetake && (
+                    <div>
+                      <label className="block text-slate-400 text-sm mb-1">Max Attempts</label>
+                      <input
+                        type="number"
+                        min={2}
+                        value={newQuizMaxAttempts}
+                        onChange={(e) => setNewQuizMaxAttempts(e.target.value)}
+                        className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                  )}
                   <p className="text-slate-500 text-sm">A unique quiz code will be generated for students to enter.</p>
                   <div className="flex gap-2">
                     <button
@@ -1329,21 +1521,145 @@ export default function TeacherPage() {
                     {quizzes.map((quiz) => (
                       <li
                         key={quiz.id}
-                        className={`flex items-center justify-between gap-4 p-3 rounded-lg cursor-pointer transition-colors ${selectedQuizId === quiz.id ? "bg-cyan-600/30 border border-cyan-500/50" : "bg-slate-700/50 hover:bg-slate-700"}`}
-                        onClick={() => setSelectedQuizId(selectedQuizId === quiz.id ? null : quiz.id)}
+                        className={`flex flex-wrap items-center justify-between gap-4 p-3 rounded-lg transition-colors ${selectedQuizId === quiz.id ? "bg-cyan-600/30 border border-cyan-500/50" : "bg-slate-700/50 hover:bg-slate-700"}`}
                       >
-                        <span className="text-slate-200">
+                        <button
+                          type="button"
+                          onClick={() => setSelectedQuizId(selectedQuizId === quiz.id ? null : quiz.id)}
+                          className="text-left text-slate-200"
+                        >
                           {quiz.quizname ? (
                             <><strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} · {quiz.quizcode}</>
                           ) : (
                             <>{getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong></>
                           )}
-                        </span>
-                        <span className="text-slate-500 text-sm">Select to add questions</span>
+                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => startEditQuiz(quiz)}
+                            className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
+                          >
+                            Edit
+                          </button>
+                          <span className="text-slate-500 text-xs">Select to add questions</span>
+                        </div>
                       </li>
                     ))}
                   </ul>
                 </div>
+                {editingQuizId && (
+                  <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
+                    <h3 className="text-lg font-semibold text-cyan-300 mb-4">Edit Quiz</h3>
+                    <form onSubmit={handleUpdateQuiz} className="space-y-4">
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Subject</label>
+                        <select
+                          value={editQuizSubjectId}
+                          onChange={(e) => setEditQuizSubjectId(e.target.value)}
+                          required
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="">Select subject...</option>
+                          {subjects.map((s) => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Section</label>
+                        <select
+                          value={editQuizSectionId}
+                          onChange={(e) => setEditQuizSectionId(e.target.value)}
+                          required
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="">Select section...</option>
+                          {sections.map((s) => (
+                            <option key={s.id} value={s.id}>{s.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Period</label>
+                        <input
+                          type="text"
+                          value={editQuizPeriod}
+                          onChange={(e) => setEditQuizPeriod(e.target.value)}
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Quiz Name</label>
+                        <input
+                          type="text"
+                          value={editQuizName}
+                          onChange={(e) => setEditQuizName(e.target.value)}
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Quiz Code</label>
+                        <input
+                          type="text"
+                          value={editQuizCode}
+                          onChange={(e) => setEditQuizCode(e.target.value)}
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Time Limit (minutes)</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={editQuizTimeLimit}
+                          onChange={(e) => setEditQuizTimeLimit(e.target.value)}
+                          placeholder="Leave blank for no limit"
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <input
+                          id="edit-allow-retake"
+                          type="checkbox"
+                          checked={editQuizAllowRetake}
+                          onChange={(e) => setEditQuizAllowRetake(e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                        />
+                        <label htmlFor="edit-allow-retake" className="text-slate-300 text-sm">
+                          Allow retake attempts
+                        </label>
+                      </div>
+                      {editQuizAllowRetake && (
+                        <div>
+                          <label className="block text-slate-400 text-sm mb-1">Max Attempts</label>
+                          <input
+                            type="number"
+                            min={2}
+                            value={editQuizMaxAttempts}
+                            onChange={(e) => setEditQuizMaxAttempts(e.target.value)}
+                            className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                          />
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <button
+                          type="submit"
+                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                        >
+                          Save Changes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingQuizId(null)}
+                          className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  </div>
+                )}
 
                 {selectedQuizId && (
                   <>
@@ -1856,6 +2172,51 @@ export default function TeacherPage() {
           </>
         )}
       </div>
+      {answerModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-700 p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-cyan-300">Student Answers</h3>
+              <button
+                type="button"
+                onClick={() => setAnswerModal(null)}
+                className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm"
+              >
+                Close
+              </button>
+            </div>
+            <div className="text-sm text-slate-300 mb-3">
+              <div>Student: <span className="text-slate-100">{answerModal.studentname ?? "—"}</span></div>
+              <div>Quiz: <span className="text-slate-100">{answerModal.quizcode}</span></div>
+              <div>Attempt: <span className="text-slate-100">{answerModal.attempt_number ?? "—"}</span></div>
+            </div>
+            {(() => {
+              const raw = (answerModal.answers ?? {}) as Record<string, unknown>;
+              const mc = Array.isArray(raw.multiple_choice) ? raw.multiple_choice : [];
+              const id = Array.isArray(raw.identification) ? raw.identification : [];
+              const en = Array.isArray(raw.enumeration) ? raw.enumeration : [];
+              const hasAny = mc.length + id.length + en.length > 0;
+              if (!hasAny) {
+                return (
+                  <div className="rounded-lg bg-slate-800 p-4 text-sm text-slate-400">
+                    No saved answers for this attempt.
+                  </div>
+                );
+              }
+              return (
+                <div className="max-h-[60vh] overflow-auto rounded-lg bg-slate-900/40 p-2">
+                  {answersLoading && (
+                    <div className="mb-3 text-xs text-slate-500">Loading questions…</div>
+                  )}
+                  {renderAnswerBlock("Multiple Choice", mc as Array<{ questionId: string; answer: string }>, answerQuestions)}
+                  {renderAnswerBlock("Identification", id as Array<{ questionId: string; answer: string }>, answerQuestions)}
+                  {renderAnswerBlock("Enumeration", en as Array<{ questionId: string; answer: string }>, answerQuestions)}
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
