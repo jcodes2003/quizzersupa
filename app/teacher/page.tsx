@@ -252,6 +252,7 @@ export default function TeacherPage() {
   }>>([]);
   const [responsesPage, setResponsesPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
+  const [quizzesPage, setQuizzesPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
   const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
   const [answerQuestions, setAnswerQuestions] = useState<Record<string, string>>({});
@@ -266,6 +267,7 @@ export default function TeacherPage() {
   const [editQuestionOptions, setEditQuestionOptions] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const PAGE_SIZE = 10;
+  const QUIZ_PAGE_SIZE = 6;
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
@@ -405,6 +407,10 @@ export default function TeacherPage() {
   useEffect(() => {
     setReportsPage(1);
   }, [reportFilterSection, reportFilterSubject, reportFilterDate]);
+
+  useEffect(() => {
+    setQuizzesPage(1);
+  }, [quizzes.length]);
 
   // Debug: log retrieved section/subject names from API rows
   useEffect(() => {
@@ -1518,148 +1524,186 @@ export default function TeacherPage() {
                 <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
                   <h3 className="text-lg font-semibold text-cyan-300 mb-4">Your quizzes</h3>
                   <ul className="space-y-2">
-                    {quizzes.map((quiz) => (
+                    {(() => {
+                      const totalPages = Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE));
+                      const currentPage = Math.min(quizzesPage, totalPages);
+                      const start = (currentPage - 1) * QUIZ_PAGE_SIZE;
+                      const end = start + QUIZ_PAGE_SIZE;
+                      const pageQuizzes = quizzes.slice(start, end);
+                      return pageQuizzes.map((quiz) => (
                       <li
                         key={quiz.id}
                         className={`flex flex-wrap items-center justify-between gap-4 p-3 rounded-lg transition-colors ${selectedQuizId === quiz.id ? "bg-cyan-600/30 border border-cyan-500/50" : "bg-slate-700/50 hover:bg-slate-700"}`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => setSelectedQuizId(selectedQuizId === quiz.id ? null : quiz.id)}
-                          className="text-left text-slate-200"
-                        >
-                          {quiz.quizname ? (
-                            <><strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} · {quiz.quizcode}</>
-                          ) : (
-                            <>{getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong></>
-                          )}
-                        </button>
-                        <div className="flex items-center gap-2">
+                        <div className="w-full flex flex-wrap items-center justify-between gap-3">
                           <button
                             type="button"
-                            onClick={() => startEditQuiz(quiz)}
-                            className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
+                            onClick={() => setSelectedQuizId(selectedQuizId === quiz.id ? null : quiz.id)}
+                            className="text-left text-slate-200"
                           >
-                            Edit
+                            {quiz.quizname ? (
+                              <><strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} · {quiz.quizcode}</>
+                            ) : (
+                              <>{getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong></>
+                            )}
                           </button>
-                          <span className="text-slate-500 text-xs">Select to add questions</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => startEditQuiz(quiz)}
+                              className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
+                            >
+                              Edit
+                            </button>
+                            <span className="text-slate-500 text-xs">Select to add questions</span>
+                          </div>
                         </div>
+                        {editingQuizId === quiz.id && (
+                          <div className="w-full mt-3 rounded-xl bg-slate-800/80 border border-slate-700 p-4">
+                            <h4 className="text-sm font-semibold text-cyan-200 mb-3">Edit Quiz</h4>
+                            <form onSubmit={handleUpdateQuiz} className="space-y-3">
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Subject</label>
+                                <select
+                                  value={editQuizSubjectId}
+                                  onChange={(e) => setEditQuizSubjectId(e.target.value)}
+                                  required
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                >
+                                  <option value="">Select subject...</option>
+                                  {subjects.map((s) => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Section</label>
+                                <select
+                                  value={editQuizSectionId}
+                                  onChange={(e) => setEditQuizSectionId(e.target.value)}
+                                  required
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                >
+                                  <option value="">Select section...</option>
+                                  {sections.map((s) => (
+                                    <option key={s.id} value={s.id}>{s.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Period</label>
+                                <input
+                                  type="text"
+                                  value={editQuizPeriod}
+                                  onChange={(e) => setEditQuizPeriod(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Quiz Name</label>
+                                <input
+                                  type="text"
+                                  value={editQuizName}
+                                  onChange={(e) => setEditQuizName(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Quiz Code</label>
+                                <input
+                                  type="text"
+                                  value={editQuizCode}
+                                  onChange={(e) => setEditQuizCode(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Time Limit (minutes)</label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={editQuizTimeLimit}
+                                  onChange={(e) => setEditQuizTimeLimit(e.target.value)}
+                                  placeholder="Leave blank for no limit"
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                />
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <input
+                                  id="edit-allow-retake-inline"
+                                  type="checkbox"
+                                  checked={editQuizAllowRetake}
+                                  onChange={(e) => setEditQuizAllowRetake(e.target.checked)}
+                                  className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                                />
+                                <label htmlFor="edit-allow-retake-inline" className="text-slate-300 text-xs">
+                                  Allow retake attempts
+                                </label>
+                              </div>
+                              {editQuizAllowRetake && (
+                                <div>
+                                  <label className="block text-slate-400 text-xs mb-1">Max Attempts</label>
+                                  <input
+                                    type="number"
+                                    min={2}
+                                    value={editQuizMaxAttempts}
+                                    onChange={(e) => setEditQuizMaxAttempts(e.target.value)}
+                                    className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                  />
+                                </div>
+                              )}
+                              <div className="flex gap-2">
+                                <button
+                                  type="submit"
+                                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold"
+                                >
+                                  Save Changes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingQuizId(null)}
+                                  className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </form>
+                          </div>
+                        )}
                       </li>
-                    ))}
+                    ));
+                    })()}
                   </ul>
-                </div>
-                {editingQuizId && (
-                  <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
-                    <h3 className="text-lg font-semibold text-cyan-300 mb-4">Edit Quiz</h3>
-                    <form onSubmit={handleUpdateQuiz} className="space-y-4">
-                      <div>
-                        <label className="block text-slate-400 text-sm mb-1">Subject</label>
-                        <select
-                          value={editQuizSubjectId}
-                          onChange={(e) => setEditQuizSubjectId(e.target.value)}
-                          required
-                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        >
-                          <option value="">Select subject...</option>
-                          {subjects.map((s) => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 text-sm mb-1">Section</label>
-                        <select
-                          value={editQuizSectionId}
-                          onChange={(e) => setEditQuizSectionId(e.target.value)}
-                          required
-                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        >
-                          <option value="">Select section...</option>
-                          {sections.map((s) => (
-                            <option key={s.id} value={s.id}>{s.name}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 text-sm mb-1">Period</label>
-                        <input
-                          type="text"
-                          value={editQuizPeriod}
-                          onChange={(e) => setEditQuizPeriod(e.target.value)}
-                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 text-sm mb-1">Quiz Name</label>
-                        <input
-                          type="text"
-                          value={editQuizName}
-                          onChange={(e) => setEditQuizName(e.target.value)}
-                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 text-sm mb-1">Quiz Code</label>
-                        <input
-                          type="text"
-                          value={editQuizCode}
-                          onChange={(e) => setEditQuizCode(e.target.value)}
-                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-slate-400 text-sm mb-1">Time Limit (minutes)</label>
-                        <input
-                          type="number"
-                          min={1}
-                          value={editQuizTimeLimit}
-                          onChange={(e) => setEditQuizTimeLimit(e.target.value)}
-                          placeholder="Leave blank for no limit"
-                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        />
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <input
-                          id="edit-allow-retake"
-                          type="checkbox"
-                          checked={editQuizAllowRetake}
-                          onChange={(e) => setEditQuizAllowRetake(e.target.checked)}
-                          className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
-                        />
-                        <label htmlFor="edit-allow-retake" className="text-slate-300 text-sm">
-                          Allow retake attempts
-                        </label>
-                      </div>
-                      {editQuizAllowRetake && (
-                        <div>
-                          <label className="block text-slate-400 text-sm mb-1">Max Attempts</label>
-                          <input
-                            type="number"
-                            min={2}
-                            value={editQuizMaxAttempts}
-                            onChange={(e) => setEditQuizMaxAttempts(e.target.value)}
-                            className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                          />
-                        </div>
-                      )}
-                      <div className="flex gap-2">
+                  {quizzes.length > QUIZ_PAGE_SIZE && (
+                    <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+                      <span>
+                        Page {quizzesPage} of {Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE))}
+                      </span>
+                      <div className="flex items-center gap-2">
                         <button
-                          type="submit"
-                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                          type="button"
+                          onClick={() => setQuizzesPage((p) => Math.max(1, p - 1))}
+                          disabled={quizzesPage === 1}
+                          className="px-2 py-1 rounded border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700"
                         >
-                          Save Changes
+                          Previous
                         </button>
                         <button
                           type="button"
-                          onClick={() => setEditingQuizId(null)}
-                          className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
+                          onClick={() =>
+                            setQuizzesPage((p) =>
+                              Math.min(Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE)), p + 1)
+                            )
+                          }
+                          disabled={quizzesPage >= Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE))}
+                          className="px-2 py-1 rounded border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700"
                         >
-                          Cancel
+                          Next
                         </button>
                       </div>
-                    </form>
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
 
                 {selectedQuizId && (
                   <>
