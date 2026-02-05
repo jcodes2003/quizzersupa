@@ -416,14 +416,29 @@ export default function Quiz({
   }, [expiresAt, submitted, gradeQuiz]);
 
   useEffect(() => {
-    const handleVisibility = () => {
-      if (document.visibilityState === "hidden" && !submitted && (!quizId || started)) {
+    const triggerAutoSubmit = () => {
+      if (!submitted && (!quizId || started)) {
         setTabLeft(true);
         gradeQuiz();
       }
     };
+
+    const handleVisibility = () => {
+      if (document.visibilityState === "hidden") {
+        triggerAutoSubmit();
+      }
+    };
+
+    const handleWindowBlur = () => {
+      triggerAutoSubmit();
+    };
+
     document.addEventListener("visibilitychange", handleVisibility);
-    return () => document.removeEventListener("visibilitychange", handleVisibility);
+    window.addEventListener("blur", handleWindowBlur);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      window.removeEventListener("blur", handleWindowBlur);
+    };
   }, [submitted, gradeQuiz]);
 
   const handleSubmit = (e: React.FormEvent) => {

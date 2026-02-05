@@ -51,6 +51,12 @@ type QuestionRow = {
   score?: number | null;
 };
 
+type QuestionInfo = {
+  text: string;
+  answerkey: string;
+  quiztype: string;
+};
+
 type ConsolidatedRow = {
   student_id: string;
   studentname: string;
@@ -160,10 +166,100 @@ function downloadConsolidatedReportCsv(
   URL.revokeObjectURL(url);
 }
 
+function normalizeAnswer(s: string): string {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[^\w\s/-]/g, "")
+    .replace(/-/g, " ");
+}
+
+function normalizeForEnum(s: string): string {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[^\w\s/-]/g, "")
+    .replace(/\band\b/gi, " ");
+}
+
+function parseEnumerationInput(input: string): string[] {
+  return input
+    .split(/[,;\n]|\d+\.\s*|-\s*/)
+    .map((s) => normalizeForEnum(s))
+    .filter((s) => s.length > 0);
+}
+
+function parseEnumerationAnswerKey(input: string): string[] {
+  return input
+    .split(/[,;\n]/)
+    .map((s) => normalizeForEnum(s))
+    .filter((s) => s.length > 0);
+}
+
+function getCorrectVariations(correct: string): string[] {
+  const norm = normalizeForEnum(correct);
+  const variants = [norm];
+  if (norm.includes("/")) {
+    const parts = norm.split("/").map((p) => p.trim()).filter(Boolean);
+    variants.push(...parts);
+    variants.push(parts.join(" "));
+  }
+  if (norm.includes(" ")) {
+    variants.push(norm.replace(/\s+/g, ""));
+  }
+  return [...new Set(variants)];
+}
+
+function checkEnumerationMatch(userItems: string[], correctItems: string[]): number {
+  let matched = 0;
+  const usedUser = new Set<number>();
+
+  for (const correct of correctItems) {
+    const variations = getCorrectVariations(correct);
+
+    for (let i = 0; i < userItems.length; i++) {
+      if (usedUser.has(i)) continue;
+      const userNorm = userItems[i];
+
+      const matches = variations.some(
+        (v) =>
+          userNorm === v ||
+          (userNorm.length >= 3 && v.includes(userNorm)) ||
+          (v.length >= 3 && userNorm.includes(v)) ||
+          (userNorm.length >= 4 && v.startsWith(userNorm)) ||
+          (v.length >= 4 && userNorm.startsWith(v))
+      );
+
+      if (matches) {
+        matched++;
+        usedUser.add(i);
+        break;
+      }
+    }
+  }
+  return matched;
+}
+
+function isCorrectAnswer(studentAnswer: string, answerKey: string, quizType: string): { ok: boolean; detail?: string } {
+  if (!answerKey.trim()) return { ok: false };
+  if (quizType === "enumeration") {
+    const studentItems = parseEnumerationInput(studentAnswer);
+    const correctItems = parseEnumerationAnswerKey(answerKey);
+    const matched = checkEnumerationMatch(studentItems, correctItems);
+    const expected = correctItems.length || 0;
+    const ok = expected > 0 && matched / expected >= 0.8;
+    return { ok, detail: expected > 0 ? `Matched ${matched}/${expected}` : undefined };
+  }
+  const ok = normalizeAnswer(studentAnswer) === normalizeAnswer(answerKey);
+  return { ok };
+}
+
 function renderAnswerBlock(
   title: string,
   items: Array<{ questionId: string; answer: string }>,
-  questionMap: Record<string, string>
+  questionMap: Record<string, QuestionInfo>
 ) {
   if (items.length === 0) return null;
   return (
@@ -175,12 +271,30 @@ function renderAnswerBlock(
             <div className="text-xs text-slate-500 mb-1">Question ID: {item.questionId}</div>
             {questionMap[item.questionId] ? (
               <div className="text-sm text-slate-200 mb-2 whitespace-pre-wrap">
-                {questionMap[item.questionId]}
+                {questionMap[item.questionId]?.text}
               </div>
             ) : (
               <div className="text-xs text-slate-500 mb-2">Question text not found.</div>
             )}
-            <div className="text-sm text-slate-100 whitespace-pre-wrap">{item.answer || "—"}</div>
+            {(() => {
+              const info = questionMap[item.questionId];
+              const answerKey = info?.answerkey ?? "";
+              const quizType = info?.quiztype ?? "";
+              const hasKey = Boolean(answerKey.trim());
+              const result = hasKey ? isCorrectAnswer(item.answer || "", answerKey, quizType) : { ok: false };
+              const answerClass = hasKey ? (result.ok ? "text-emerald-400" : "text-red-400") : "text-slate-100";
+              return (
+                <>
+                  <div className="text-xs text-slate-500 mb-1">Student Answer</div>
+                  <div className={`text-sm whitespace-pre-wrap ${answerClass}`}>{item.answer || "--"}</div>
+                  {result.detail && (
+                    <div className="text-xs text-slate-500 mt-1">{result.detail}</div>
+                  )}
+                  <div className="text-xs text-slate-500 mt-2">Answer Key</div>
+                  <div className="text-sm text-emerald-400 whitespace-pre-wrap">{answerKey || "--"}</div>
+                </>
+              );
+            })()}
           </div>
         ))}
       </div>
@@ -255,7 +369,7 @@ export default function TeacherPage() {
   const [quizzesPage, setQuizzesPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
   const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
-  const [answerQuestions, setAnswerQuestions] = useState<Record<string, string>>({});
+  const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
   const [answersLoading, setAnswersLoading] = useState(false);
   const [questionTypeFilter, setQuestionTypeFilter] = useState<
     "all" | "multiple_choice" | "identification" | "enumeration" | "long_answer"
@@ -387,10 +501,16 @@ export default function TeacherPage() {
       try {
         const res = await fetch(`/api/teacher/quizzes/${answerModal.quizid}/questions`, { credentials: "include" });
         if (!res.ok) return;
-        const data = (await res.json()) as Array<{ id: string; question: string }>;
+        const data = (await res.json()) as Array<{ id: string; question: string; answerkey?: string | null; quiztype?: string | null }>;
         if (cancelled) return;
-        const map: Record<string, string> = {};
-        for (const q of data) map[String(q.id)] = String(q.question ?? "");
+        const map: Record<string, QuestionInfo> = {};
+        for (const q of data) {
+          map[String(q.id)] = {
+            text: String(q.question ?? ""),
+            answerkey: String(q.answerkey ?? ""),
+            quiztype: String(q.quiztype ?? ""),
+          };
+        }
         setAnswerQuestions(map);
       } finally {
         if (!cancelled) setAnswersLoading(false);
