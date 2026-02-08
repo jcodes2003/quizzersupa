@@ -97,6 +97,10 @@ function formatNameLastFirst(name?: string | null): string {
   return `${last}, ${first}`.trim();
 }
 
+function sanitizeStudentId(value?: string | null): string {
+  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
+}
+
 function downloadCsv(rows: QuizResponseRow[]) {
   const headers = ["Quiz Code", "Student Name", "Student ID", "Score", "Max Score", "Attempt #", "Section", "Subject", "Created"];
   const lines = [
@@ -361,6 +365,7 @@ export default function TeacherPage() {
   const [scoresLoading, setScoresLoading] = useState(false);
   const [filterSubject, setFilterSubject] = useState<string>("");
   const [responsesViewMode, setResponsesViewMode] = useState<"all" | "best">("all");
+  const [responsesSearch, setResponsesSearch] = useState("");
   const [reportFilterSection, setReportFilterSection] = useState<string>("");
   const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
   const [reportFilterDate, setReportFilterDate] = useState<string>("");
@@ -1015,11 +1020,29 @@ export default function TeacherPage() {
     ? baseResponseRows.filter((r) => r.subjectid === filterSubject)
     : baseResponseRows;
 
-  const responsesTotalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const searchTerm = responsesSearch.trim().toLowerCase();
+  const searchedRows = searchTerm
+    ? filteredRows.filter((r) => {
+        const name = formatNameLastFirst(r.studentname).toLowerCase();
+        const quiz = String(r.quizcode ?? "").toLowerCase();
+        const studentId = String(r.student_id ?? "").toLowerCase();
+        const section = String(r.sectionname ?? r.section ?? "").toLowerCase();
+        const subject = String(r.subjectname ?? r.subject ?? "").toLowerCase();
+        return (
+          name.includes(searchTerm) ||
+          quiz.includes(searchTerm) ||
+          studentId.includes(searchTerm) ||
+          section.includes(searchTerm) ||
+          subject.includes(searchTerm)
+        );
+      })
+    : filteredRows;
+
+  const responsesTotalPages = Math.max(1, Math.ceil(searchedRows.length / PAGE_SIZE));
   const currentResponsesPage = Math.min(responsesPage, responsesTotalPages);
   const responsesStartIndex = (currentResponsesPage - 1) * PAGE_SIZE;
   const responsesEndIndex = responsesStartIndex + PAGE_SIZE;
-  const pagedResponsesRows = filteredRows.slice(responsesStartIndex, responsesEndIndex);
+  const pagedResponsesRows = searchedRows.slice(responsesStartIndex, responsesEndIndex);
 
   // Filter for reports tab - cascade filters using IDs and period
   let reportFilteredRows = rows;
@@ -1312,13 +1335,16 @@ export default function TeacherPage() {
                 <option value="all">All attempts</option>
                 <option value="best">Best attempt per student</option>
               </select>
-              <button
-                onClick={() => downloadCsv(filteredRows)}
-                disabled={filteredRows.length === 0}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
-              >
-                Export CSV
-              </button>
+              <input
+                type="text"
+                value={responsesSearch}
+                onChange={(e) => {
+                  setResponsesSearch(e.target.value);
+                  setResponsesPage(1);
+                }}
+                placeholder="Search student, quiz, ID, section..."
+                className="min-w-[220px] px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
               <button
                 onClick={() => fetchScores()}
                 disabled={scoresLoading}
@@ -1335,7 +1361,7 @@ export default function TeacherPage() {
                 <p>No responses yet.</p>
                 <p className="text-sm mt-2">Total records loaded: {rows.length}</p>
               </div>
-            ) : filteredRows.length === 0 ? (
+            ) : searchedRows.length === 0 ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
                 <p>No responses matching the selected filter.</p>
                 <p className="text-sm mt-2">
@@ -1349,8 +1375,9 @@ export default function TeacherPage() {
                   <table className="w-full min-w-[640px] text-left">
                     <thead>
                       <tr className="border-b border-slate-600 bg-slate-700/50">
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Quiz Code</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Attempt</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
@@ -1362,8 +1389,8 @@ export default function TeacherPage() {
                     <tbody>
                       {pagedResponsesRows.map((r) => (
                         <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                          <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
-                          <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
+                          <td className="px-4 py-3 text-slate-200">{sanitizeStudentId(r.student_id) || "?"}</td>
+                          <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "?"}</td>
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
                           <td className="px-4 py-3 text-slate-300">
@@ -1396,14 +1423,14 @@ export default function TeacherPage() {
               </div>
             )}
 
-            {filteredRows.length > 0 && (
+            {searchedRows.length > 0 && (
               <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-slate-400">
                 <p>
                   Showing{" "}
-                  {filteredRows.length === 0
+                  {searchedRows.length === 0
                     ? "0"
-                    : `${responsesStartIndex + 1}-${Math.min(responsesEndIndex, filteredRows.length)}`}{" "}
-                  of {filteredRows.length} responses
+                    : `${responsesStartIndex + 1}-${Math.min(responsesEndIndex, searchedRows.length)}`}{" "}
+                  of {searchedRows.length} responses
                 </p>
                 <div className="flex items-center gap-2 self-end md:self-auto">
                   <button

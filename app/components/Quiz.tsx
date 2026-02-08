@@ -85,6 +85,10 @@ function checkIdentification(user: string, correct: string | string[]): boolean 
   return answers.some((a) => normalizeAnswer(a) === userNorm);
 }
 
+function sanitizeStudentId(value: string): string {
+  return value.replace(/[^A-Za-z0-9]/g, "");
+}
+
 function getQuestionScore(score?: number, fallback = 1): number {
   return Number.isFinite(score) && (score ?? 0) > 0 ? (score as number) : fallback;
 }
@@ -654,7 +658,7 @@ export default function Quiz({
               <input
                 type="text"
                 value={studentId}
-                onChange={(e) => setStudentId(e.target.value)}
+                onChange={(e) => setStudentId(sanitizeStudentId(e.target.value))}
                 placeholder="Enter your student ID..."
                 className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
               />
