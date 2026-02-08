@@ -60,8 +60,10 @@ export default function HomePage() {
     router.push(`/quiz?${params.toString()}`);
   };
 
+  const sanitizeCode = (value: string) => value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+
   const handleQuizCode = () => {
-    const code = quizCode.trim().toUpperCase();
+    const code = sanitizeCode(quizCode.trim());
     if (!code) return;
     router.push(`/quiz?code=${encodeURIComponent(code)}`);
   };
@@ -139,7 +141,7 @@ export default function HomePage() {
                   <input
                     type="text"
                     value={quizCode}
-                    onChange={(e) => setQuizCode(e.target.value.toUpperCase())}
+                    onChange={(e) => setQuizCode(sanitizeCode(e.target.value))}
                     placeholder="e.g. ABC12XYZ"
                     className="flex-1 px-4 py-3 rounded-xl bg-slate-700/50 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 uppercase"
                   />

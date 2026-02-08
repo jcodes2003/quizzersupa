@@ -39,6 +39,7 @@ type QuizRow = {
   time_limit_minutes?: number | null;
   allow_retake?: boolean;
   max_attempts?: number | null;
+  save_best_only?: boolean;
 };
 
 type QuestionRow = {
@@ -79,6 +80,23 @@ function escapeCsvCell(value: string | number): string {
   return s;
 }
 
+function getLastNameForSort(name?: string | null): string {
+  const safe = String(name ?? "").trim();
+  if (!safe) return "";
+  const parts = safe.split(/\s+/);
+  return parts[parts.length - 1] ?? "";
+}
+
+function formatNameLastFirst(name?: string | null): string {
+  const safe = String(name ?? "").trim();
+  if (!safe) return "";
+  const parts = safe.split(/\s+/);
+  if (parts.length === 1) return safe;
+  const last = parts[parts.length - 1];
+  const first = parts.slice(0, -1).join(" ");
+  return `${last}, ${first}`.trim();
+}
+
 function downloadCsv(rows: QuizResponseRow[]) {
   const headers = ["Quiz Code", "Student Name", "Student ID", "Score", "Max Score", "Attempt #", "Section", "Subject", "Created"];
   const lines = [
@@ -86,7 +104,7 @@ function downloadCsv(rows: QuizResponseRow[]) {
     ...rows.map((r) =>
       [
         escapeCsvCell(r.quizcode),
-        escapeCsvCell(r.studentname ?? ""),
+        escapeCsvCell(formatNameLastFirst(r.studentname)),
         escapeCsvCell(r.student_id ?? ""),
         escapeCsvCell(r.score ?? ""),
         escapeCsvCell(r.max_score ?? ""),
@@ -114,7 +132,7 @@ function downloadReportCsv(rows: QuizResponseRow[]) {
       const percentage = r.max_score ? Math.round((r.score! / r.max_score) * 100) : 0;
       return [
         escapeCsvCell(r.quizcode),
-        escapeCsvCell(r.studentname ?? ""),
+        escapeCsvCell(formatNameLastFirst(r.studentname)),
         escapeCsvCell(r.student_id ?? ""),
         escapeCsvCell(r.section ?? ""),
         escapeCsvCell(r.subject ?? ""),
@@ -150,7 +168,7 @@ function downloadConsolidatedReportCsv(
       });
       return [
         escapeCsvCell(row.student_id),
-        escapeCsvCell(row.studentname),
+        escapeCsvCell(formatNameLastFirst(row.studentname)),
         escapeCsvCell(row.section),
         escapeCsvCell(row.subject),
         ...quizCells,
@@ -302,6 +320,28 @@ function renderAnswerBlock(
   );
 }
 
+function buildAnswerMap(items: Array<{ questionId: string; answer: string }>): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const item of items) {
+    if (!item?.questionId) continue;
+    map.set(item.questionId, String(item.answer ?? ""));
+  }
+  return map;
+}
+
+function buildQuestionItems(
+  questionMap: Record<string, QuestionInfo>,
+  quiztype: string,
+  answers: Map<string, string>
+): Array<{ questionId: string; answer: string }> {
+  return Object.entries(questionMap)
+    .filter(([, info]) => info.quiztype === quiztype)
+    .map(([questionId]) => ({
+      questionId,
+      answer: answers.get(questionId) ?? "",
+    }));
+}
+
 const QUESTION_TYPES = [
   { value: "multiple_choice", label: "Multiple Choice" },
   { value: "identification", label: "Identification" },
@@ -320,6 +360,7 @@ export default function TeacherPage() {
   const [rows, setRows] = useState<QuizResponseRow[]>([]);
   const [scoresLoading, setScoresLoading] = useState(false);
   const [filterSubject, setFilterSubject] = useState<string>("");
+  const [responsesViewMode, setResponsesViewMode] = useState<"all" | "best">("all");
   const [reportFilterSection, setReportFilterSection] = useState<string>("");
   const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
   const [reportFilterDate, setReportFilterDate] = useState<string>("");
@@ -340,7 +381,8 @@ export default function TeacherPage() {
   const [newQuizQuizName, setNewQuizQuizName] = useState("");
   const [newQuizTimeLimit, setNewQuizTimeLimit] = useState("");
   const [newQuizAllowRetake, setNewQuizAllowRetake] = useState(false);
-  const [newQuizMaxAttempts, setNewQuizMaxAttempts] = useState("2");
+  const [newQuizMaxAttempts, setNewQuizMaxAttempts] = useState("1");
+  const [newQuizSaveBestOnly, setNewQuizSaveBestOnly] = useState(true);
   const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
   const [editQuizSubjectId, setEditQuizSubjectId] = useState("");
   const [editQuizSectionId, setEditQuizSectionId] = useState("");
@@ -349,7 +391,8 @@ export default function TeacherPage() {
   const [editQuizCode, setEditQuizCode] = useState("");
   const [editQuizTimeLimit, setEditQuizTimeLimit] = useState("");
   const [editQuizAllowRetake, setEditQuizAllowRetake] = useState(false);
-  const [editQuizMaxAttempts, setEditQuizMaxAttempts] = useState("2");
+  const [editQuizMaxAttempts, setEditQuizMaxAttempts] = useState("1");
+  const [editQuizSaveBestOnly, setEditQuizSaveBestOnly] = useState(true);
   const [newQuestionText, setNewQuestionText] = useState("");
   const [newQuizType, setNewQuizType] = useState<typeof QUESTION_TYPES[number]["value"]>("multiple_choice");
   const [newQuestionOptions, setNewQuestionOptions] = useState<string[]>(["", ""]);
@@ -357,6 +400,7 @@ export default function TeacherPage() {
   const [savingQuiz, setSavingQuiz] = useState(false);
   const [savingQuestion, setSavingQuestion] = useState(false);
   const [newQuestionScore, setNewQuestionScore] = useState<string>("1");
+  const [enumScoreMode, setEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
   const [batchQuestions, setBatchQuestions] = useState<Array<{
     question: string;
     quizType: typeof QUESTION_TYPES[number]["value"];
@@ -378,10 +422,33 @@ export default function TeacherPage() {
   const [editQuestionText, setEditQuestionText] = useState("");
   const [editAnswerKey, setEditAnswerKey] = useState("");
   const [editScore, setEditScore] = useState<string>("1");
+  const [editQuestionType, setEditQuestionType] = useState<QuestionRow["quiztype"] | "">("");
+  const [editEnumScoreMode, setEditEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
   const [editQuestionOptions, setEditQuestionOptions] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const PAGE_SIZE = 10;
   const QUIZ_PAGE_SIZE = 6;
+  const batchCounts = batchQuestions.reduce(
+    (acc, q) => {
+      if (q.quizType === "multiple_choice") acc.mc++;
+      else if (q.quizType === "identification") acc.id++;
+      else if (q.quizType === "enumeration") acc.en++;
+      return acc;
+    },
+    { mc: 0, id: 0, en: 0 }
+  );
+  const questionTypeCounts = questionsForQuiz.reduce(
+    (acc, q) => {
+      if (q.quiztype === "multiple_choice") acc.mc++;
+      else if (q.quiztype === "identification") acc.id++;
+      else if (q.quiztype === "enumeration") acc.en++;
+      else if (q.quiztype === "long_answer") acc.la++;
+      return acc;
+    },
+    { mc: 0, id: 0, en: 0, la: 0 }
+  );
+  const totalQuestionCount =
+    questionTypeCounts.mc + questionTypeCounts.id + questionTypeCounts.en + questionTypeCounts.la;
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
@@ -482,6 +549,18 @@ export default function TeacherPage() {
       setNewQuestionOptions((prev) => (prev.length >= 2 ? prev : ["", ""]));
     }
   }, [showAddQuestion, newQuizType]);
+
+  useEffect(() => {
+    if (newQuizType !== "enumeration" || enumScoreMode !== "per_item") return;
+    const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
+    setNewQuestionScore(String(count));
+  }, [newQuizType, enumScoreMode, newQuestionAnswerKey]);
+
+  useEffect(() => {
+    if (editQuestionType !== "enumeration" || editEnumScoreMode !== "per_item") return;
+    const count = parseEnumerationAnswerKey(editAnswerKey).length;
+    setEditScore(String(count));
+  }, [editQuestionType, editEnumScoreMode, editAnswerKey]);
 
   useEffect(() => {
     if (tab === "responses" && rows.length > 0 && (subjects.length === 0 || sections.length === 0)) {
@@ -619,6 +698,7 @@ export default function TeacherPage() {
           timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
           allowRetake: newQuizAllowRetake,
           maxAttempts,
+          saveBestOnly: newQuizSaveBestOnly,
         }),
       });
       if (!res.ok) {
@@ -633,7 +713,8 @@ export default function TeacherPage() {
       setNewQuizQuizName("");
       setNewQuizTimeLimit("");
       setNewQuizAllowRetake(false);
-      setNewQuizMaxAttempts("2");
+      setNewQuizMaxAttempts("1");
+      setNewQuizSaveBestOnly(true);
       fetchQuizzes();
     } finally {
       setSavingQuiz(false);
@@ -651,7 +732,8 @@ export default function TeacherPage() {
       quiz.time_limit_minutes != null ? String(quiz.time_limit_minutes) : ""
     );
     setEditQuizAllowRetake(Boolean(quiz.allow_retake));
-    setEditQuizMaxAttempts(String(quiz.max_attempts ?? 2));
+    setEditQuizMaxAttempts(String(quiz.max_attempts ?? 1));
+    setEditQuizSaveBestOnly(quiz.save_best_only !== false);
     if (subjects.length === 0) fetchSubjects();
     if (sections.length === 0) fetchSections();
   };
@@ -680,6 +762,7 @@ export default function TeacherPage() {
           timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
           allowRetake: editQuizAllowRetake,
           maxAttempts,
+          saveBestOnly: editQuizSaveBestOnly,
         }),
       });
       const data = await res.json();
@@ -716,6 +799,13 @@ export default function TeacherPage() {
         setError("Answer key is required for this question type.");
         return;
       }
+      if (newQuizType === "enumeration" && enumScoreMode === "per_item") {
+        const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
+        if (count <= 0) {
+          setError("Enumeration needs at least 1 answer item.");
+          return;
+        }
+      }
     }
     const scoreNumber = Number(newQuestionScore) || 1;
     if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
@@ -743,6 +833,7 @@ export default function TeacherPage() {
     setNewQuestionOptions(["", ""]);
     setNewQuestionAnswerKey("");
     setNewQuestionScore("1");
+    setEnumScoreMode("fixed");
     setNewQuizType("multiple_choice");
   };
 
@@ -789,6 +880,13 @@ export default function TeacherPage() {
         setError("Answer key is required for this question type.");
         return;
       }
+      if (newQuizType === "enumeration" && enumScoreMode === "per_item") {
+        const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
+        if (count <= 0) {
+          setError("Enumeration needs at least 1 answer item.");
+          return;
+        }
+      }
     }
     const scoreNumber = Number(newQuestionScore) || 1;
     if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
@@ -829,6 +927,7 @@ export default function TeacherPage() {
       setNewQuestionOptions(["", ""]);
       setNewQuestionAnswerKey("");
       setNewQuestionScore("1");
+      setEnumScoreMode("fixed");
       if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
     } finally {
       setSavingQuestion(false);
@@ -890,10 +989,31 @@ export default function TeacherPage() {
     new Set(rows.map((r) => String(r.period ?? "").trim()).filter(Boolean))
   ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
+  // Best attempt per (student_id, quizid) for responses view
+  const bestByStudentQuiz = new Map<string, QuizResponseRow>();
+  for (const r of rows) {
+    const key = `${r.student_id ?? ""}-${r.quizid ?? r.quizcode}`;
+    const existing = bestByStudentQuiz.get(key);
+    if (!existing) {
+      bestByStudentQuiz.set(key, r);
+      continue;
+    }
+    const scoreA = Number(existing.score ?? -Infinity);
+    const scoreB = Number(r.score ?? -Infinity);
+    if (scoreB > scoreA) {
+      bestByStudentQuiz.set(key, r);
+    } else if (scoreB === scoreA) {
+      if (r.created_at && existing.created_at && r.created_at > existing.created_at) {
+        bestByStudentQuiz.set(key, r);
+      }
+    }
+  }
+  const baseResponseRows = responsesViewMode === "best" ? Array.from(bestByStudentQuiz.values()) : rows;
+
   // Filter for responses tab - filter by subjectid
-  const filteredRows = filterSubject 
-    ? rows.filter((r) => r.subjectid === filterSubject) 
-    : rows;
+  const filteredRows = filterSubject
+    ? baseResponseRows.filter((r) => r.subjectid === filterSubject)
+    : baseResponseRows;
 
   const responsesTotalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
   const currentResponsesPage = Math.min(responsesPage, responsesTotalPages);
@@ -966,12 +1086,19 @@ export default function TeacherPage() {
     }
   }
   const consolidatedRows = Array.from(consolidatedByStudent.values());
+  const sortedConsolidatedRows = [...consolidatedRows].sort((a, b) => {
+    const lastA = getLastNameForSort(a.studentname);
+    const lastB = getLastNameForSort(b.studentname);
+    const lastCmp = lastA.localeCompare(lastB, undefined, { sensitivity: "base" });
+    if (lastCmp !== 0) return lastCmp;
+    return a.studentname.localeCompare(b.studentname, undefined, { sensitivity: "base" });
+  });
 
-  const reportsTotalPages = Math.max(1, Math.ceil(consolidatedRows.length / PAGE_SIZE));
+  const reportsTotalPages = Math.max(1, Math.ceil(sortedConsolidatedRows.length / PAGE_SIZE));
   const currentReportsPage = Math.min(reportsPage, reportsTotalPages);
   const reportsStartIndex = (currentReportsPage - 1) * PAGE_SIZE;
   const reportsEndIndex = reportsStartIndex + PAGE_SIZE;
-  const pagedReportRows = consolidatedRows.slice(reportsStartIndex, reportsEndIndex);
+  const pagedReportRows = sortedConsolidatedRows.slice(reportsStartIndex, reportsEndIndex);
 
   // Get unique subjects for current section in reports (filter by sectionid)
   const reportSubjectsForSection = reportFilterSection
@@ -1174,6 +1301,17 @@ export default function TeacherPage() {
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
+              <select
+                value={responsesViewMode}
+                onChange={(e) => {
+                  setResponsesViewMode(e.target.value as "all" | "best");
+                  setResponsesPage(1);
+                }}
+                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              >
+                <option value="all">All attempts</option>
+                <option value="best">Best attempt per student</option>
+              </select>
               <button
                 onClick={() => downloadCsv(filteredRows)}
                 disabled={filteredRows.length === 0}
@@ -1225,7 +1363,7 @@ export default function TeacherPage() {
                       {pagedResponsesRows.map((r) => (
                         <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.quizcode}</td>
-                          <td className="px-4 py-3 text-slate-200">{r.studentname ?? "—"}</td>
+                          <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
                           <td className="px-4 py-3 text-slate-300">
@@ -1364,8 +1502,8 @@ export default function TeacherPage() {
             {/* Export and Refresh Buttons */}
             <div className="flex flex-wrap items-center gap-3 mb-6">
               <button
-                onClick={() => downloadConsolidatedReportCsv(consolidatedRows, quizColumns)}
-                disabled={consolidatedRows.length === 0}
+                onClick={() => downloadConsolidatedReportCsv(sortedConsolidatedRows, quizColumns)}
+                disabled={sortedConsolidatedRows.length === 0}
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
               >
                 Export to CSV
@@ -1387,7 +1525,7 @@ export default function TeacherPage() {
                 <p>No data available.</p>
                 <p className="text-sm mt-2">Total records loaded: {rows.length}</p>
               </div>
-            ) : consolidatedRows.length === 0 ? (
+            ) : sortedConsolidatedRows.length === 0 ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
                 <p>No data matching selected filters.</p>
                 <p className="text-sm mt-2">
@@ -1419,7 +1557,7 @@ export default function TeacherPage() {
                       {pagedReportRows.map((r) => (
                         <tr key={r.student_id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.student_id}</td>
-                          <td className="px-4 py-3 text-slate-200">{r.studentname || "—"}</td>
+                          <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>
                           {quizColumns.map((q) => {
@@ -1444,7 +1582,7 @@ export default function TeacherPage() {
             )}
 
             <div className="mt-4 text-slate-500 text-sm">
-              <p>One row per student. Total students: {consolidatedRows.length}</p>
+              <p>One row per student. Total students: {sortedConsolidatedRows.length}</p>
               {reportFilterPeriod && <p className="mt-1">Period: {reportFilterPeriod}</p>}
               {reportFilterSection && (
                 <p className="mt-1">Section: {getSectionLabelFromRows(reportFilterSection)}</p>
@@ -1455,14 +1593,14 @@ export default function TeacherPage() {
               {reportFilterDate && <p className="mt-1">Date: {reportFilterDate}</p>}
             </div>
 
-            {consolidatedRows.length > 0 && (
+            {sortedConsolidatedRows.length > 0 && (
               <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-slate-400">
                 <p>
                   Showing{" "}
-                  {consolidatedRows.length === 0
+                  {sortedConsolidatedRows.length === 0
                     ? "0"
-                    : `${reportsStartIndex + 1}-${Math.min(reportsEndIndex, consolidatedRows.length)}`}{" "}
-                  of {consolidatedRows.length} students
+                    : `${reportsStartIndex + 1}-${Math.min(reportsEndIndex, sortedConsolidatedRows.length)}`}{" "}
+                  of {sortedConsolidatedRows.length} students
                 </p>
                 <div className="flex items-center gap-2 self-end md:self-auto">
                   <button
@@ -1612,6 +1750,21 @@ export default function TeacherPage() {
                       />
                     </div>
                   )}
+                  <div className="flex items-center gap-3">
+                    <input
+                      id="save-best-only"
+                      type="checkbox"
+                      checked={newQuizSaveBestOnly}
+                      onChange={(e) => setNewQuizSaveBestOnly(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                    />
+                    <label htmlFor="save-best-only" className="text-slate-300 text-sm">
+                      Save only the highest score per student
+                    </label>
+                  </div>
+                  <p className="text-slate-500 text-xs">
+                    When unchecked, the latest attempt score overwrites the stored score. All attempts are still logged.
+                  </p>
                   <p className="text-slate-500 text-sm">A unique quiz code will be generated for students to enter.</p>
                   <div className="flex gap-2">
                     <button
@@ -1772,6 +1925,21 @@ export default function TeacherPage() {
                                   />
                                 </div>
                               )}
+                              <div className="flex items-center gap-3">
+                                <input
+                                  id="edit-save-best-only-inline"
+                                  type="checkbox"
+                                  checked={editQuizSaveBestOnly}
+                                  onChange={(e) => setEditQuizSaveBestOnly(e.target.checked)}
+                                  className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                                />
+                                <label htmlFor="edit-save-best-only-inline" className="text-slate-300 text-xs">
+                                  Save only the highest score per student
+                                </label>
+                              </div>
+                              <p className="text-slate-500 text-xs">
+                                When unchecked, the latest attempt score overwrites the stored score.
+                              </p>
                               <div className="flex gap-2">
                                 <button
                                   type="submit"
@@ -1901,6 +2069,23 @@ export default function TeacherPage() {
                         </button>
                       </div>
                     </div>
+                    <div className="flex flex-wrap items-center gap-2 text-xs mb-3">
+                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+                        Total: <span className="text-slate-100 font-semibold">{totalQuestionCount}</span>
+                      </span>
+                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+                        Multiple Choice: <span className="text-slate-100 font-semibold">{questionTypeCounts.mc}</span>
+                      </span>
+                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+                        Identification: <span className="text-slate-100 font-semibold">{questionTypeCounts.id}</span>
+                      </span>
+                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+                        Enumeration: <span className="text-slate-100 font-semibold">{questionTypeCounts.en}</span>
+                      </span>
+                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+                        Long Answer: <span className="text-slate-100 font-semibold">{questionTypeCounts.la}</span>
+                      </span>
+                    </div>
                     {showAddQuestion && (
                       <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 mb-6">
                         <div className="flex items-center justify-between mb-4">
@@ -1977,6 +2162,10 @@ export default function TeacherPage() {
                                 }
                                 // Clear previous answer key when switching type to avoid confusion
                                 setNewQuestionAnswerKey("");
+                                if (nextType !== "enumeration") {
+                                  setEnumScoreMode("fixed");
+                                  setNewQuestionScore("1");
+                                }
                               }}
                               className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                             >
@@ -2067,6 +2256,28 @@ export default function TeacherPage() {
                               )}
                             </div>
                           )}
+                          {newQuizType === "enumeration" && (
+                            <div>
+                              <label className="block text-slate-400 text-sm mb-1">Enumeration scoring</label>
+                              <select
+                                value={enumScoreMode}
+                                onChange={(e) => {
+                                  const mode = e.target.value as "fixed" | "per_item";
+                                  setEnumScoreMode(mode);
+                                  if (mode === "per_item") {
+                                    const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
+                                    setNewQuestionScore(String(count));
+                                  } else {
+                                    setNewQuestionScore("1");
+                                  }
+                                }}
+                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                              >
+                                <option value="fixed">Fixed score for the whole question</option>
+                                <option value="per_item">1 point per correct item (auto total)</option>
+                              </select>
+                            </div>
+                          )}
                           <div>
                             <label className="block text-slate-400 text-sm mb-1">Score</label>
                             <input
@@ -2075,9 +2286,14 @@ export default function TeacherPage() {
                               step={0.5}
                               value={newQuestionScore}
                               onChange={(e) => setNewQuestionScore(e.target.value)}
+                              disabled={newQuizType === "enumeration" && enumScoreMode === "per_item"}
                               className="w-32 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                             />
-                            <p className="mt-1 text-xs text-slate-500">Default is 1 point per question.</p>
+                            <p className="mt-1 text-xs text-slate-500">
+                              {newQuizType === "enumeration" && enumScoreMode === "per_item"
+                                ? "Score is calculated from the number of items in the answer key."
+                                : "Default is 1 point per question."}
+                            </p>
                           </div>
                           <div className="flex gap-2">
                             <button
@@ -2104,6 +2320,7 @@ export default function TeacherPage() {
                                 setNewQuestionOptions(["", ""]);
                                 setNewQuestionAnswerKey("");
                                 setNewQuestionScore("1");
+                                setEnumScoreMode("fixed");
                               }}
                               className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
                             >
@@ -2124,9 +2341,6 @@ export default function TeacherPage() {
                             )}
                           </div>
                         </form>
-                        <p className="mt-3 text-slate-500 text-xs">
-                          💡 Tip: Add multiple questions to the batch, then click &quot;Save All&quot; to save them at once.
-                        </p>
                       </div>
                     )}
                     {questionsLoading ? (
@@ -2164,6 +2378,7 @@ export default function TeacherPage() {
                                         step={0.5}
                                         value={editScore}
                                         onChange={(e) => setEditScore(e.target.value)}
+                                        disabled={q.quiztype === "enumeration" && editEnumScoreMode === "per_item"}
                                         className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
                                       />
                                     </span>
@@ -2201,6 +2416,26 @@ export default function TeacherPage() {
                                       />
                                     )}
                                   </div>
+                                  {q.quiztype === "enumeration" && (
+                                    <div>
+                                      <label className="block text-slate-400 text-xs mb-1">Enumeration scoring</label>
+                                      <select
+                                        value={editEnumScoreMode}
+                                        onChange={(e) => {
+                                          const mode = e.target.value as "fixed" | "per_item";
+                                          setEditEnumScoreMode(mode);
+                                          if (mode === "per_item") {
+                                            const count = parseEnumerationAnswerKey(editAnswerKey).length;
+                                            setEditScore(String(count));
+                                          }
+                                        }}
+                                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                      >
+                                        <option value="fixed">Fixed score for the whole question</option>
+                                        <option value="per_item">1 point per correct item (auto total)</option>
+                                      </select>
+                                    </div>
+                                  )}
                                   <div className="flex gap-2 justify-end">
                                     <button
                                       type="button"
@@ -2217,6 +2452,13 @@ export default function TeacherPage() {
                                         if (!trimmedAnswer) {
                                           setError("Answer key is required.");
                                           return;
+                                        }
+                                        if (q.quiztype === "enumeration" && editEnumScoreMode === "per_item") {
+                                          const count = parseEnumerationAnswerKey(trimmedAnswer).length;
+                                          if (count <= 0) {
+                                            setError("Enumeration needs at least 1 answer item.");
+                                            return;
+                                          }
                                         }
                                         if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
                                           setError("Score must be a positive number.");
@@ -2295,6 +2537,15 @@ export default function TeacherPage() {
                                         setEditQuestionText(q.question);
                                         setEditAnswerKey(q.answerkey ?? "");
                                         setEditScore(String(q.score ?? 1));
+                                        setEditQuestionType(q.quiztype);
+                                        if (q.quiztype === "enumeration") {
+                                          const itemCount = parseEnumerationAnswerKey(q.answerkey ?? "").length;
+                                          const scoreNum = Number(q.score ?? 1);
+                                          const mode = itemCount > 0 && scoreNum === itemCount ? "per_item" : "fixed";
+                                          setEditEnumScoreMode(mode);
+                                        } else {
+                                          setEditEnumScoreMode("fixed");
+                                        }
                                         // Parse options for multiple choice questions
                                         if (q.quiztype === "multiple_choice" && q.options) {
                                           try {
@@ -2350,7 +2601,7 @@ export default function TeacherPage() {
               </button>
             </div>
             <div className="text-sm text-slate-300 mb-3">
-              <div>Student: <span className="text-slate-100">{answerModal.studentname ?? "—"}</span></div>
+              <div>Student: <span className="text-slate-100">{formatNameLastFirst(answerModal.studentname) || "—"}</span></div>
               <div>Quiz: <span className="text-slate-100">{answerModal.quizcode}</span></div>
               <div>Attempt: <span className="text-slate-100">{answerModal.attempt_number ?? "—"}</span></div>
             </div>
@@ -2359,22 +2610,37 @@ export default function TeacherPage() {
               const mc = Array.isArray(raw.multiple_choice) ? raw.multiple_choice : [];
               const id = Array.isArray(raw.identification) ? raw.identification : [];
               const en = Array.isArray(raw.enumeration) ? raw.enumeration : [];
-              const hasAny = mc.length + id.length + en.length > 0;
-              if (!hasAny) {
-                return (
-                  <div className="rounded-lg bg-slate-800 p-4 text-sm text-slate-400">
-                    No saved answers for this attempt.
-                  </div>
-                );
-              }
+              const mcMap = buildAnswerMap(mc as Array<{ questionId: string; answer: string }>);
+              const idMap = buildAnswerMap(id as Array<{ questionId: string; answer: string }>);
+              const enMap = buildAnswerMap(en as Array<{ questionId: string; answer: string }>);
+
+              const mcItems = buildQuestionItems(answerQuestions, "multiple_choice", mcMap);
+              const idItems = buildQuestionItems(answerQuestions, "identification", idMap);
+              const enItems = buildQuestionItems(answerQuestions, "enumeration", enMap);
+              const laItems = buildQuestionItems(answerQuestions, "long_answer", new Map());
+
+              const hasQuestions =
+                mcItems.length + idItems.length + enItems.length + laItems.length > 0;
+              const hasAnswers = mc.length + id.length + en.length > 0;
               return (
                 <div className="max-h-[60vh] overflow-auto rounded-lg bg-slate-900/40 p-2">
                   {answersLoading && (
                     <div className="mb-3 text-xs text-slate-500">Loading questions…</div>
                   )}
-                  {renderAnswerBlock("Multiple Choice", mc as Array<{ questionId: string; answer: string }>, answerQuestions)}
-                  {renderAnswerBlock("Identification", id as Array<{ questionId: string; answer: string }>, answerQuestions)}
-                  {renderAnswerBlock("Enumeration", en as Array<{ questionId: string; answer: string }>, answerQuestions)}
+                  {!answersLoading && !hasQuestions && (
+                    <div className="rounded-lg bg-slate-800 p-4 text-sm text-slate-400">
+                      No questions found for this quiz.
+                    </div>
+                  )}
+                  {!answersLoading && hasQuestions && !hasAnswers && (
+                    <div className="rounded-lg bg-slate-800 p-3 text-xs text-slate-400 mb-3">
+                      No answers submitted for this attempt. Showing all questions.
+                    </div>
+                  )}
+                  {renderAnswerBlock("Multiple Choice", mcItems, answerQuestions)}
+                  {renderAnswerBlock("Identification", idItems, answerQuestions)}
+                  {renderAnswerBlock("Enumeration", enItems, answerQuestions)}
+                  {renderAnswerBlock("Long Answer", laItems, answerQuestions)}
                 </div>
               );
             })()}
@@ -2384,3 +2650,5 @@ export default function TeacherPage() {
     </div>
   );
 }
+
+

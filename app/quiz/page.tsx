@@ -19,6 +19,7 @@ type ApiQuestion = {
   quiztype: string;
   answerkey?: string | null;
   options?: string | null;
+  score?: number | null;
 };
 type ApiQuiz = {
   id: string;
@@ -71,11 +72,14 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         safeOptions = [...options, `(No options) [${id}-${idx}]`];
       }
 
+      const scoreRaw = Number((q as Record<string, unknown>).score);
+      const score = Number.isFinite(scoreRaw) ? scoreRaw : undefined;
       return {
         id,
         question,
         options: safeOptions,
         correct: options.includes(correct) ? correct : (options[0] ?? ""),
+        score,
       };
     })
     .filter((q) => q.options.length >= 2);
@@ -88,11 +92,16 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         (t === "multiple_choice" && parseOptions(q.options).length < 2)
       );
     })
-    .map((q) => ({
-      id: (q.id ?? "").toString(),
-      question: (q.question ?? "").toString(),
-      correct: (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim(),
-    }));
+    .map((q) => {
+      const scoreRaw = Number((q as Record<string, unknown>).score);
+      const score = Number.isFinite(scoreRaw) ? scoreRaw : undefined;
+      return {
+        id: (q.id ?? "").toString(),
+        question: (q.question ?? "").toString(),
+        correct: (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim(),
+        score,
+      };
+    });
   const enumeration = list
     .filter((q) => getQuizType(q) === "enumeration")
     .map((q) => {
@@ -102,10 +111,13 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         .split("\n")
         .map((a) => a.trim())
         .filter((a) => a.length > 0);
+      const scoreRaw = Number((q as Record<string, unknown>).score);
+      const score = Number.isFinite(scoreRaw) ? scoreRaw : undefined;
       return {
         id: (q.id ?? "").toString(),
         question: (q.question ?? "").toString(),
         correct: answers,
+        score,
       };
     });
   return {
@@ -207,7 +219,7 @@ function QuizContent() {
         quizId={apiQuiz.id}
         timeLimitMinutes={apiQuiz.time_limit_minutes ?? null}
         allowRetake={Boolean(apiQuiz.allow_retake)}
-        maxAttempts={apiQuiz.max_attempts ?? 2}
+        maxAttempts={apiQuiz.max_attempts ?? 1}
       />
     );
   }

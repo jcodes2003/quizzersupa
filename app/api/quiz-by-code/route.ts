@@ -32,6 +32,12 @@ export async function GET(request: NextRequest) {
 
   if (qError) return NextResponse.json({ error: qError.message }, { status: 500 });
 
+  const rawMaxAttempts = (quizRow as { max_attempts?: number | null }).max_attempts ?? 1;
+  const maxAttempts = Math.max(1, rawMaxAttempts);
+  const allowRetake =
+    Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake) ||
+    maxAttempts > 1;
+
   return NextResponse.json({
     quiz: {
       id: quizRow.id,
@@ -39,8 +45,8 @@ export async function GET(request: NextRequest) {
       subjectid: quizRow.subjectid,
       sectionid: quizRow.sectionid,
       time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
-      allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
-      max_attempts: (quizRow as { max_attempts?: number | null }).max_attempts ?? 2,
+      allow_retake: allowRetake,
+      max_attempts: maxAttempts,
       sectionName,
     },
     questions: questions ?? [],

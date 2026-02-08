@@ -33,6 +33,7 @@ export async function PUT(
     timeLimitMinutes?: number | null;
     allowRetake?: boolean;
     maxAttempts?: number | null;
+    saveBestOnly?: boolean;
   };
 
   const update: Record<string, unknown> = {};
@@ -66,6 +67,7 @@ export async function PUT(
     const m = body.maxAttempts;
     update.max_attempts = m === null ? null : Number.isFinite(m) ? m : null;
   }
+  if (body.saveBestOnly !== undefined) update.save_best_only = Boolean(body.saveBestOnly);
 
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });

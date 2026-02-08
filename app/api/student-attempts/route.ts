@@ -27,7 +27,7 @@ export async function POST(request: NextRequest) {
   // Get quiz metadata including sectionid and subjectid
   const { data: quizData } = await supabase
     .from("quiztbl")
-    .select("subjectid, sectionid, time_limit_minutes")
+    .select("subjectid, sectionid, time_limit_minutes, save_best_only")
     .eq("id", quizId)
     .single();
 
@@ -86,43 +86,63 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Check if this student already has an attempt record for this quiz
-  const { data: existingAttempt } = await supabase
-    .from("student_attempts")
-    .select("*")
-    .eq("quizid", quizId)
-    .eq("student_id", studentId)
-    .maybeSingle();
-
+  const saveBestOnly = (quizData as { save_best_only?: boolean | null }).save_best_only !== false;
   let data;
   let error;
 
-  if (existingAttempt) {
-    // Update existing record only if new score is higher
-    if (score > existingAttempt.score) {
+  if (saveBestOnly) {
+    // Keep only the first attempt row; update its score if a later attempt is higher.
+    const { data: firstAttempt } = await supabase
+      .from("student_attempts")
+      .select("*")
+      .eq("quizid", quizId)
+      .eq("student_id", studentId)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (firstAttempt) {
+      if (score > firstAttempt.score) {
+        const result = await supabase
+          .from("student_attempts")
+          .update({
+            score,
+            studentname: studentName,
+            max_score: maxScore,
+            subjectid: quizData.subjectid,
+            sectionid: quizData.sectionid,
+          })
+          .eq("id", firstAttempt.id)
+          .select()
+          .single();
+
+        data = result.data;
+        error = result.error;
+      } else {
+        data = firstAttempt;
+        error = null;
+      }
+    } else {
       const result = await supabase
         .from("student_attempts")
-        .update({
-          score,
+        .insert({
+          quizid: quizId,
           studentname: studentName,
+          student_id: studentId,
+          score,
           attempt_number: attemptNumber,
           max_score: maxScore,
           subjectid: quizData.subjectid,
           sectionid: quizData.sectionid,
         })
-        .eq("id", existingAttempt.id)
         .select()
         .single();
-      
+
       data = result.data;
       error = result.error;
-    } else {
-      // Return existing record if score is not higher
-      data = existingAttempt;
-      error = null;
     }
   } else {
-    // Insert new record if first attempt
+    // Save every attempt as a separate row.
     const result = await supabase
       .from("student_attempts")
       .insert({
@@ -154,33 +174,36 @@ export async function POST(request: NextRequest) {
       .eq("id", quizId);
   }
 
-  // Best-effort log insert for every submission (ensures data even if update path fails)
-  const insertLog = await supabase
-    .from("student_attempts_log")
-    .insert({
-      quizid: quizId,
-      studentname: studentName,
-      student_id: studentId,
-      attempt_number: attemptNumber,
-      score,
-      max_score: maxScore,
-      answers: answers ?? null,
-      started_at: new Date().toISOString(),
-      submitted_at: new Date().toISOString(),
-      is_submitted: true,
-      subjectid: quizData.subjectid,
-      sectionid: quizData.sectionid,
-    });
-  const logSaved = !insertLog.error;
-  if (!logSaved) {
-    console.error("student_attempts_log insert failed:", insertLog.error);
-    if (!insertLog.error?.message.toLowerCase().includes("student_attempts_log")) {
-      return NextResponse.json({ error: insertLog.error.message }, { status: 500 });
+  // Best-effort log insert (only when we did not already update an open attempt)
+  let logSaved = logUpdated;
+  if (!logUpdated) {
+    const insertLog = await supabase
+      .from("student_attempts_log")
+      .insert({
+        quizid: quizId,
+        studentname: studentName,
+        student_id: studentId,
+        attempt_number: attemptNumber,
+        score,
+        max_score: maxScore,
+        answers: answers ?? null,
+        started_at: new Date().toISOString(),
+        submitted_at: new Date().toISOString(),
+        is_submitted: true,
+        subjectid: quizData.subjectid,
+        sectionid: quizData.sectionid,
+      });
+    logSaved = !insertLog.error;
+    if (!logSaved) {
+      const logError = insertLog.error;
+      console.error("student_attempts_log insert failed:", logError);
+      if (logError && !logError.message.toLowerCase().includes("student_attempts_log")) {
+        return NextResponse.json({ error: logError.message }, { status: 500 });
+      }
+    } else {
+      console.log("student_attempts_log insert ok for quiz:", quizId, "student:", studentId);
     }
-  } else {
-    console.log("student_attempts_log insert ok for quiz:", quizId, "student:", studentId);
   }
 
   return NextResponse.json({ ok: true, best: data, logSaved });
 }
-

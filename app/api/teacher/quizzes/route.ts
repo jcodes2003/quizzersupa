@@ -8,7 +8,7 @@ export async function GET() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("quiztbl")
-    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname, time_limit_minutes, allow_retake, max_attempts")
+    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname, time_limit_minutes, allow_retake, max_attempts, save_best_only")
     .eq("teacherid", teacherId)
     .order("quizcode");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -35,6 +35,7 @@ export async function POST(request: NextRequest) {
     timeLimitMinutes?: number | null;
     allowRetake?: boolean;
     maxAttempts?: number | null;
+    saveBestOnly?: boolean;
   };
   const { subjectId, sectionId, period, quizname, timeLimitMinutes, allowRetake, maxAttempts } = body;
   if (!subjectId?.trim() || !sectionId?.trim()) {
@@ -58,7 +59,8 @@ export async function POST(request: NextRequest) {
       quizname: (quizname ?? "").toString().trim(),
       time_limit_minutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
       allow_retake: Boolean(allowRetake),
-      max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 2,
+      max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 1,
+      save_best_only: body.saveBestOnly !== false,
     })
     .select()
     .single();

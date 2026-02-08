@@ -85,6 +85,10 @@ function checkIdentification(user: string, correct: string | string[]): boolean 
   return answers.some((a) => normalizeAnswer(a) === userNorm);
 }
 
+function getQuestionScore(score?: number, fallback = 1): number {
+  return Number.isFinite(score) && (score ?? 0) > 0 ? (score as number) : fallback;
+}
+
 const ATTEMPT_KEY = "quiz_attempts";
 
 function getAttemptKey(topic: string, section: string, studentId: string): string {
@@ -140,11 +144,12 @@ export default function Quiz({
   quizData,
   quizId,
   timeLimitMinutes = null,
-  allowRetake = false,
-  maxAttempts = 2,
+  allowRetake,
+  maxAttempts,
 }: QuizProps) {
   const { multipleChoice: multipleChoiceQuestions, identification: identificationQuestions, enumeration: enumerationQuestions = [], programming: programmingSection } = quizData;
-  const [studentName, setStudentName] = useState("");
+  const [studentFirstName, setStudentFirstName] = useState("");
+  const [studentLastName, setStudentLastName] = useState("");
   const [studentId, setStudentId] = useState("");
   const [mcAnswers, setMcAnswers] = useState<Record<string, string>>({});
   const [idAnswers, setIdAnswers] = useState<Record<string, string>>({});
@@ -162,7 +167,10 @@ export default function Quiz({
   const [attemptNumber, setAttemptNumber] = useState<number | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [maxAttemptsState, setMaxAttemptsState] = useState<number>(maxAttempts);
+  const resolvedMaxAttempts =
+    Number.isFinite(maxAttempts) && (maxAttempts ?? 0) > 0 ? (maxAttempts as number) : 1;
+  const resolvedAllowRetake = allowRetake === true || resolvedMaxAttempts > 1;
+  const [maxAttemptsState, setMaxAttemptsState] = useState<number>(resolvedMaxAttempts);
 
   const hasMc = multipleChoiceQuestions.length > 0;
   const hasId = identificationQuestions.length > 0;
@@ -177,7 +185,7 @@ export default function Quiz({
   );
   const totalPages = sectionOrder.length;
   const currentSection = totalPages > 0 && currentPage < totalPages ? sectionOrder[currentPage]! : SECTION_MC;
-  const attemptsLimit = quizId ? maxAttemptsState : 2;
+  const attemptsLimit = quizId ? maxAttemptsState : resolvedMaxAttempts;
 
   const getSetLabelForSection = (sectionConst: number): string => {
     const idx = sectionOrder.indexOf(sectionConst);
@@ -200,14 +208,25 @@ export default function Quiz({
   }, [hasMc, hasId, hasEnumOrProg, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, sectionOrder]);
 
   const isComplete = useCallback(() => {
-    if (!studentName.trim()) return false;
+    if (!studentFirstName.trim() || !studentLastName.trim()) return false;
     return getUnansweredPages().length === 0;
-  }, [studentName, getUnansweredPages]);
+  }, [studentFirstName, studentLastName, getUnansweredPages]);
+
+  const getFullName = useCallback(() => {
+    const first = studentFirstName.trim();
+    const last = studentLastName.trim();
+    return `${first} ${last}`.trim();
+  }, [studentFirstName, studentLastName]);
 
   const handleStart = async () => {
     setSubmitError(null);
-    if (!studentName.trim()) {
-      setSubmitError("Please enter your name.");
+    if (!studentFirstName.trim()) {
+      setSubmitError("Please enter your first name.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!studentLastName.trim()) {
+      setSubmitError("Please enter your last name.");
       setCurrentPage(0);
       return;
     }
@@ -227,7 +246,7 @@ export default function Quiz({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           quizId,
-          studentName: studentName.trim(),
+          studentName: getFullName(),
           studentId: studentId.trim(),
         }),
       });
@@ -238,7 +257,8 @@ export default function Quiz({
       }
       setAttemptId(data.attemptId ?? null);
       setAttemptNumber(data.attemptNumber ?? null);
-      if (typeof data.maxAttempts === "number") setMaxAttemptsState(data.maxAttempts);
+      const nextMax = Number(data.maxAttempts);
+      if (Number.isFinite(nextMax)) setMaxAttemptsState(nextMax);
       if (data.expiresAt) {
         setExpiresAt(data.expiresAt);
       } else if (timeLimitMinutes) {
@@ -256,10 +276,20 @@ export default function Quiz({
   };
 
   const gradeQuiz = useCallback(async () => {
-    const name = studentName.trim();
+    const name = getFullName();
     const id = studentId.trim();
     if (!id) {
       setSubmitError("Please enter your student ID.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!studentFirstName.trim()) {
+      setSubmitError("Please enter your first name.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!studentLastName.trim()) {
+      setSubmitError("Please enter your last name.");
       setCurrentPage(0);
       return;
     }
@@ -275,8 +305,11 @@ export default function Quiz({
       nextAttemptNumber = attemptNumber;
     } else {
       currentAttempts = getAttemptCount(topic, section, id);
-      if (currentAttempts >= 2) {
-        setSubmitError("You've used all 2 attempts for this quiz. You cannot retake it.");
+      if (currentAttempts >= resolvedMaxAttempts) {
+        const msg = resolvedMaxAttempts === 1
+          ? "You've used your only attempt for this quiz. You cannot retake it."
+          : `You've used all ${resolvedMaxAttempts} attempts for this quiz. You cannot retake it.`;
+        setSubmitError(msg);
         setCurrentPage(0);
         return;
       }
@@ -286,7 +319,7 @@ export default function Quiz({
     let mcScore = 0;
     for (const q of multipleChoiceQuestions) {
       if (normalizeAnswer(mcAnswers[q.id] || "") === normalizeAnswer(q.correct)) {
-        mcScore++;
+        mcScore += getQuestionScore(q.score, 1);
       }
     }
 
@@ -300,10 +333,10 @@ export default function Quiz({
 
       if (hasAnswerKey) {
         if (checkIdentification(userAnswer, q.correct)) {
-          idScore++;
+          idScore += getQuestionScore(q.score, 1);
         }
       } else if (checkIdentification(userAnswer, q.correct)) {
-        idScore++;
+        idScore += getQuestionScore(q.score, 1);
       }
     }
 
@@ -315,18 +348,30 @@ export default function Quiz({
         if (Array.isArray(q.correct) && q.correct.length > 0) {
           const matched = checkEnumerationMatch(userItems, q.correct);
           const expected = q.correct.length;
-          enumPoints += expected > 0 && matched / expected >= 0.8 ? 1 : 0;
+          const questionScore = getQuestionScore(q.score, 1);
+          if (expected > 0) {
+            enumPoints += questionScore === expected ? matched : matched / expected >= 0.8 ? questionScore : 0;
+          }
         } else {
           const matched = checkEnumerationMatch(userItems, q.correct);
           const expected = q.correct.length;
-          enumPoints += expected > 0 && matched / expected >= 0.8 ? 1 : 0;
+          const questionScore = getQuestionScore(q.score, 1);
+          if (expected > 0) {
+            enumPoints += questionScore === expected ? matched : matched / expected >= 0.8 ? questionScore : 0;
+          }
         }
       }
     }
 
-    const maxScore = programmingSection
-      ? multipleChoiceQuestions.length + identificationQuestions.length
-      : multipleChoiceQuestions.length + identificationQuestions.length + (enumerationQuestions?.length ?? 0);
+    const mcMax = multipleChoiceQuestions.reduce((sum, q) => sum + getQuestionScore(q.score, 1), 0);
+    const idMax = identificationQuestions.reduce((sum, q) => sum + getQuestionScore(q.score, 1), 0);
+    const enumMax = enumerationQuestions.reduce((sum, q) => {
+      const expected = q.correct.length;
+      const questionScore = getQuestionScore(q.score, 1);
+      if (questionScore === expected && expected > 0) return sum + expected;
+      return sum + questionScore;
+    }, 0);
+    const maxScore = programmingSection ? mcMax + idMax : mcMax + idMax + enumMax;
     const totalScore = mcScore + idScore + enumPoints;
     const percentage = Math.round((totalScore / maxScore) * 100);
 
@@ -393,7 +438,7 @@ export default function Quiz({
         })();
       }
     }
-  }, [topic, studentName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started]);
+  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started]);
 
   useEffect(() => {
     if (!expiresAt || submitted) {
@@ -444,8 +489,13 @@ export default function Quiz({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
-    if (!studentName.trim()) {
-      setSubmitError("Please enter your name.");
+    if (!studentFirstName.trim()) {
+      setSubmitError("Please enter your first name.");
+      setCurrentPage(0);
+      return;
+    }
+    if (!studentLastName.trim()) {
+      setSubmitError("Please enter your last name.");
       setCurrentPage(0);
       return;
     }
@@ -580,12 +630,22 @@ export default function Quiz({
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 md:p-6 shadow-2xl space-y-4">
             <div>
-              <label className="block text-slate-300 font-medium mb-2">Your Name</label>
+              <label className="block text-slate-300 font-medium mb-2">First Name</label>
               <input
                 type="text"
-                value={studentName}
-                onChange={(e) => setStudentName(e.target.value)}
-                placeholder="Enter your full name..."
+                value={studentFirstName}
+                onChange={(e) => setStudentFirstName(e.target.value)}
+                placeholder="Enter your first name..."
+                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              />
+            </div>
+            <div>
+              <label className="block text-slate-300 font-medium mb-2">Last Name</label>
+              <input
+                type="text"
+                value={studentLastName}
+                onChange={(e) => setStudentLastName(e.target.value)}
+                placeholder="Enter your last name..."
                 className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
               />
             </div>
@@ -697,7 +757,7 @@ export default function Quiz({
                 <h2 className="text-xl font-bold text-amber-400 mb-1">
                   Set {getSetLabelForSection(SECTION_ENUM)}: Enumeration
                 </h2>
-                <p className="text-slate-400 text-sm mb-4">3 items — 1 point each</p>
+                <p className="text-slate-400 text-sm mb-4">Items are scored based on the answer key.</p>
                 <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100">
                   <p className="font-semibold mb-2">📋 How to answer enumeration questions:</p>
                   <ul className="text-sm space-y-1 list-disc list-inside mb-3">

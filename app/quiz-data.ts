@@ -6,18 +6,21 @@ export interface MultipleChoiceQuestion {
   question: string;
   options: string[];
   correct: string;
+  score?: number;
 }
 
 export interface IdentificationQuestion {
   id: string;
   question: string;
   correct: string | string[];
+  score?: number;
 }
 
 export interface EnumerationQuestion {
   id: string;
   question: string;
   correct: string[];
+  score?: number;
 }
 
 export const multipleChoiceQuestions: MultipleChoiceQuestion[] = [

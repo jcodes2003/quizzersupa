@@ -25,10 +25,11 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: quizError.message }, { status: 500 });
   }
 
-  const allowRetake = Boolean((quizSettings as { allow_retake?: boolean | null })?.allow_retake);
-  const maxAttempts = allowRetake
-    ? (quizSettings as { max_attempts?: number | null })?.max_attempts ?? 2
-    : 1;
+  const rawMaxAttempts = (quizSettings as { max_attempts?: number | null })?.max_attempts ?? 1;
+  const maxAttempts = Math.max(1, rawMaxAttempts);
+  const allowRetake =
+    Boolean((quizSettings as { allow_retake?: boolean | null })?.allow_retake) ||
+    maxAttempts > 1;
 
   // Get the count of submitted attempts for this student on this quiz
   const { count, error } = await supabase

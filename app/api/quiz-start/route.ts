@@ -4,14 +4,14 @@ import { getSupabase } from "../../lib/supabase-server";
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as {
-      quizId?: string;
+      quizId?: string | number;
       studentName?: string;
       studentId?: string;
     };
 
-    const quizId = body.quizId?.trim();
-    const studentName = body.studentName?.trim();
-    const studentId = body.studentId?.trim();
+    const quizId = body.quizId !== undefined && body.quizId !== null ? String(body.quizId).trim() : "";
+    const studentName = body.studentName?.trim() ?? "";
+    const studentId = body.studentId?.trim() ?? "";
 
     if (!quizId || !studentName || !studentId) {
       return NextResponse.json({ error: "quizId, studentName, and studentId required" }, { status: 400 });
@@ -40,14 +40,35 @@ export async function POST(request: NextRequest) {
   }
 
     if (quizError) {
-      return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 2, allowRetake: false });
+      return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });
     }
     if (!quizSettings) return NextResponse.json({ error: "Quiz not found" }, { status: 404 });
 
-  const allowRetake = Boolean((quizSettings as { allow_retake?: boolean | null }).allow_retake);
-  const maxAttempts = allowRetake
-    ? (quizSettings as { max_attempts?: number | null }).max_attempts ?? 2
-    : 1;
+  const rawMaxAttempts = (quizSettings as { max_attempts?: number | null }).max_attempts ?? 1;
+  let maxAttempts = Math.max(1, rawMaxAttempts);
+  const allowRetake =
+    Boolean((quizSettings as { allow_retake?: boolean | null }).allow_retake) ||
+    maxAttempts > 1;
+  console.log("[quiz-start] settings", {
+    quizId,
+    rawMaxAttempts,
+    maxAttempts,
+    allowRetake,
+    allowRetakeDb: (quizSettings as { allow_retake?: boolean | null }).allow_retake,
+  });
+
+  if (maxAttempts === 1) {
+    const { data: maxRow } = await supabase
+      .from("quiztbl")
+      .select("max_attempts")
+      .eq("id", quizId)
+      .maybeSingle();
+    const fallbackMax = Number((maxRow as { max_attempts?: number | null })?.max_attempts);
+    console.log("[quiz-start] fallback max_attempts", { quizId, fallbackMax, maxRow });
+    if (Number.isFinite(fallbackMax) && fallbackMax > 1) {
+      maxAttempts = fallbackMax;
+    }
+  }
 
   let { data: existingOpen, error: existingOpenError } = await supabase
     .from("student_attempts_log")
@@ -139,7 +160,7 @@ export async function POST(request: NextRequest) {
     allowRetake,
   });
   } catch {
-    return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 2, allowRetake: false });
+    return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });
   }
 }
 
