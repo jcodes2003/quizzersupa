@@ -8,9 +8,9 @@ export async function GET() {
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("quiztbl")
-    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname, time_limit_minutes, allow_retake, max_attempts, save_best_only")
+    .select("id, teacherid, subjectid, quizcode, sectionid, period, quizname, time_limit_minutes, allow_retake, max_attempts, save_best_only, source_quiz_id")
     .eq("teacherid", teacherId)
-    .order("quizcode");
+    .order("created_at", { ascending: false });
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data ?? []);
 }

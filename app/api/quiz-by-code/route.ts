@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
 
   const { data: quizRow, error: quizError } = await supabase
     .from("quiztbl")
-    .select("id, quizcode, subjectid, sectionid, time_limit_minutes, allow_retake, max_attempts")
+    .select("id, quizcode, subjectid, sectionid, time_limit_minutes, allow_retake, max_attempts, source_quiz_id")
     .eq("quizcode", code)
     .maybeSingle();
 
@@ -24,10 +24,11 @@ export async function GET(request: NextRequest) {
     ? String((sectionRow as Record<string, unknown>).sectionname ?? (sectionRow as Record<string, unknown>).name ?? "")
     : "";
 
+  const sourceQuizId = (quizRow as { source_quiz_id?: string | null }).source_quiz_id ?? quizRow.id;
   const { data: questions, error: qError } = await supabase
     .from("questiontbl")
     .select("*")
-    .eq("quizid", quizRow.id)
+    .eq("quizid", sourceQuizId)
     .order("id");
 
   if (qError) return NextResponse.json({ error: qError.message }, { status: 500 });
@@ -47,6 +48,7 @@ export async function GET(request: NextRequest) {
       time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
       allow_retake: allowRetake,
       max_attempts: maxAttempts,
+      source_quiz_id: (quizRow as { source_quiz_id?: string | null }).source_quiz_id ?? null,
       sectionName,
     },
     questions: questions ?? [],

@@ -70,10 +70,17 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  const sourceQuizId = (quizSettings as { source_quiz_id?: string | null }).source_quiz_id ?? quizId;
+  const { data: relatedQuizzes } = await supabase
+    .from("quiztbl")
+    .select("id")
+    .or(`id.eq.${sourceQuizId},source_quiz_id.eq.${sourceQuizId}`);
+  const quizIds = (relatedQuizzes ?? []).map((q) => (q as { id: string }).id);
+
   let { data: existingOpen, error: existingOpenError } = await supabase
     .from("student_attempts_log")
-    .select("id, attempt_number, started_at")
-    .eq("quizid", quizId)
+    .select("id, attempt_number, started_at, quizid")
+    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
     .eq("student_id", studentId)
     .eq("is_submitted", false)
     .order("created_at", { ascending: false })
@@ -85,6 +92,9 @@ export async function POST(request: NextRequest) {
   }
 
   if (existingOpen) {
+    if (existingOpen.quizid !== quizId) {
+      return NextResponse.json({ error: "Attempt already started for this quiz group" }, { status: 403 });
+    }
     const expiresAt = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes
       ? new Date(new Date(existingOpen.started_at).getTime() + ((quizSettings as { time_limit_minutes?: number }).time_limit_minutes ?? 0) * 60 * 1000).toISOString()
       : null;
@@ -101,7 +111,7 @@ export async function POST(request: NextRequest) {
   const countResult = await supabase
     .from("student_attempts_log")
     .select("*", { count: "exact" })
-    .eq("quizid", quizId)
+    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
     .eq("student_id", studentId)
     .eq("is_submitted", true);
   if (countResult.error?.message && countResult.error.message.toLowerCase().includes("student_attempts_log")) {

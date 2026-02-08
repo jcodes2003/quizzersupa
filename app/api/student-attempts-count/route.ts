@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
 
   const { data: quizSettings, error: quizError } = await supabase
     .from("quiztbl")
-    .select("allow_retake, max_attempts")
+    .select("allow_retake, max_attempts, source_quiz_id")
     .eq("id", quizId)
     .maybeSingle();
 
@@ -31,11 +31,18 @@ export async function GET(request: NextRequest) {
     Boolean((quizSettings as { allow_retake?: boolean | null })?.allow_retake) ||
     maxAttempts > 1;
 
+  const sourceQuizId = (quizSettings as { source_quiz_id?: string | null })?.source_quiz_id ?? quizId;
+  const { data: relatedQuizzes } = await supabase
+    .from("quiztbl")
+    .select("id")
+    .or(`id.eq.${sourceQuizId},source_quiz_id.eq.${sourceQuizId}`);
+  const quizIds = (relatedQuizzes ?? []).map((q) => (q as { id: string }).id);
+
   // Get the count of submitted attempts for this student on this quiz
   const { count, error } = await supabase
     .from("student_attempts_log")
     .select("*", { count: "exact" })
-    .eq("quizid", quizId)
+    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
     .eq("student_id", studentId)
     .eq("is_submitted", true);
 

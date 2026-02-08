@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 
 type QuizResponseRow = {
@@ -40,6 +40,7 @@ type QuizRow = {
   allow_retake?: boolean;
   max_attempts?: number | null;
   save_best_only?: boolean;
+  source_quiz_id?: string | null;
 };
 
 type QuestionRow = {
@@ -78,6 +79,62 @@ function escapeCsvCell(value: string | number): string {
   const s = String(value);
   if (s.includes(",") || s.includes('"') || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`;
   return s;
+}
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  const flushField = () => {
+    row.push(field);
+    field = "";
+  };
+  const flushRow = () => {
+    if (row.length > 1 || row[0]?.trim()) rows.push(row);
+    row = [];
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const next = text[i + 1];
+    if (inQuotes) {
+      if (c === '"' && next === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') {
+        inQuotes = false;
+      } else {
+        field += c;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      flushField();
+    } else if (c === "\n") {
+      flushField();
+      flushRow();
+    } else if (c === "\r") {
+      continue;
+    } else {
+      field += c;
+    }
+  }
+  flushField();
+  flushRow();
+  return rows;
+}
+
+function normalizeQuizType(value: string): typeof QUESTION_TYPES[number]["value"] | "" {
+  const t = value.toLowerCase().trim().replace(/\s+/g, "_");
+  if (t === "multiple_choice" || t === "mc" || t === "multiplechoice") return "multiple_choice";
+  if (t === "true_false" || t === "truefalse" || t === "tf") return "multiple_choice";
+  if (t === "identification" || t === "id") return "identification";
+  if (t === "enumeration" || t === "enum") return "enumeration";
+  if (t === "long_answer" || t === "longanswer" || t === "essay") return "long_answer";
+  return "";
 }
 
 function getLastNameForSort(name?: string | null): string {
@@ -376,6 +433,7 @@ export default function TeacherPage() {
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
   const [selectedQuizId, setSelectedQuizId] = useState<string | null>(null);
   const [questionsForQuiz, setQuestionsForQuiz] = useState<QuestionRow[]>([]);
+  const [orderedQuestions, setOrderedQuestions] = useState<QuestionRow[]>([]);
   const [quizzesLoading, setQuizzesLoading] = useState(false);
   const [questionsLoading, setQuestionsLoading] = useState(false);
   const [showCreateQuiz, setShowCreateQuiz] = useState(false);
@@ -398,6 +456,8 @@ export default function TeacherPage() {
   const [editQuizAllowRetake, setEditQuizAllowRetake] = useState(false);
   const [editQuizMaxAttempts, setEditQuizMaxAttempts] = useState("1");
   const [editQuizSaveBestOnly, setEditQuizSaveBestOnly] = useState(true);
+  const [reuseSectionId, setReuseSectionId] = useState("");
+  const [reusePeriod, setReusePeriod] = useState("");
   const [newQuestionText, setNewQuestionText] = useState("");
   const [newQuizType, setNewQuizType] = useState<typeof QUESTION_TYPES[number]["value"]>("multiple_choice");
   const [newQuestionOptions, setNewQuestionOptions] = useState<string[]>(["", ""]);
@@ -406,6 +466,7 @@ export default function TeacherPage() {
   const [savingQuestion, setSavingQuestion] = useState(false);
   const [newQuestionScore, setNewQuestionScore] = useState<string>("1");
   const [enumScoreMode, setEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
+  const [importStatus, setImportStatus] = useState<string>("");
   const [batchQuestions, setBatchQuestions] = useState<Array<{
     question: string;
     quizType: typeof QUESTION_TYPES[number]["value"];
@@ -431,6 +492,7 @@ export default function TeacherPage() {
   const [editEnumScoreMode, setEditEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
   const [editQuestionOptions, setEditQuestionOptions] = useState<string[]>([]);
   const [savingEdit, setSavingEdit] = useState(false);
+  const dragQuestionIdRef = useRef<string | null>(null);
   const PAGE_SIZE = 10;
   const QUIZ_PAGE_SIZE = 6;
   const batchCounts = batchQuestions.reduce(
@@ -454,6 +516,18 @@ export default function TeacherPage() {
   );
   const totalQuestionCount =
     questionTypeCounts.mc + questionTypeCounts.id + questionTypeCounts.en + questionTypeCounts.la;
+  const filteredQuestions = orderedQuestions.filter((q) =>
+    questionTypeFilter === "all" ? true : q.quiztype === questionTypeFilter
+  );
+  const typeOrder = new Map<string, number>(QUESTION_TYPES.map((t, i) => [t.value, i]));
+  const displayQuestions = [...filteredQuestions].sort((a, b) => {
+    const ta = typeOrder.get(a.quiztype) ?? 99;
+    const tb = typeOrder.get(b.quiztype) ?? 99;
+    if (ta !== tb) return ta - tb;
+    const ia = orderedQuestions.findIndex((q) => q.id === a.id);
+    const ib = orderedQuestions.findIndex((q) => q.id === b.id);
+    return ia - ib;
+  });
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
@@ -541,6 +615,10 @@ export default function TeacherPage() {
     if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
     else setQuestionsForQuiz([]);
   }, [selectedQuizId, fetchQuestionsForQuiz]);
+
+  useEffect(() => {
+    setOrderedQuestions(questionsForQuiz);
+  }, [questionsForQuiz]);
 
   useEffect(() => {
     if (showCreateQuiz) {
@@ -739,6 +817,8 @@ export default function TeacherPage() {
     setEditQuizAllowRetake(Boolean(quiz.allow_retake));
     setEditQuizMaxAttempts(String(quiz.max_attempts ?? 1));
     setEditQuizSaveBestOnly(quiz.save_best_only !== false);
+    setReuseSectionId(quiz.sectionid);
+    setReusePeriod(quiz.period ?? "");
     if (subjects.length === 0) fetchSubjects();
     if (sections.length === 0) fetchSections();
   };
@@ -779,6 +859,55 @@ export default function TeacherPage() {
       fetchQuizzes();
     } catch {
       setError("Failed to update quiz");
+    }
+  };
+
+  const handleReuseQuiz = async (action: "duplicate" | "assign") => {
+    if (!editingQuizId) return;
+    if (!reuseSectionId) {
+      setError("Select a target section.");
+      return;
+    }
+    setError("");
+    try {
+      const res = await fetch(`/api/teacher/quizzes/${editingQuizId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          action,
+          sectionId: reuseSectionId,
+          period: reusePeriod,
+        }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? "Failed to reuse quiz");
+        return;
+      }
+      await fetchQuizzes();
+    } catch {
+      setError("Failed to reuse quiz");
+    }
+  };
+
+  const handleDeleteQuiz = async (quizId: string) => {
+    if (!confirm("Delete this quiz? This will also remove its questions and attempts. Proceed?")) return;
+    setError("");
+    try {
+      const res = await fetch(`/api/teacher/quizzes/${quizId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? "Failed to delete quiz");
+        return;
+      }
+      if (selectedQuizId === quizId) setSelectedQuizId(null);
+      await fetchQuizzes();
+    } catch {
+      setError("Failed to delete quiz");
     }
   };
 
@@ -842,6 +971,132 @@ export default function TeacherPage() {
     setNewQuizType("multiple_choice");
   };
 
+  const handleImportCsv = async (file: File | null) => {
+    if (!file) return;
+    if (!selectedQuizId) {
+      setError("Select a quiz first before importing.");
+      return;
+    }
+    setImportStatus("");
+    setError("");
+    try {
+      const text = await file.text();
+      const rows = parseCsv(text);
+      if (rows.length === 0) {
+        setError("CSV is empty.");
+        return;
+      }
+      const headerRow = rows[0].map((h) => h.trim().toLowerCase());
+      const hasHeader = headerRow.includes("quiztype") || headerRow.includes("type");
+      const dataRows = hasHeader ? rows.slice(1) : rows;
+      const colIndex = (name: string) => headerRow.indexOf(name);
+      const optionIndexes = headerRow
+        .map((h, i) => ({ h, i }))
+        .filter((x) => x.h === "options")
+        .map((x) => x.i);
+
+      const parsed: typeof batchQuestions = [];
+      const errors: string[] = [];
+      dataRows.forEach((r, idx) => {
+        try {
+          const get = (ix: number) => (ix >= 0 ? (r[ix] ?? "") : "");
+          const typeRaw = hasHeader
+            ? get(colIndex("quiztype") >= 0 ? colIndex("quiztype") : colIndex("type"))
+            : r[0] ?? "";
+          const quizType = normalizeQuizType(typeRaw);
+          const question = hasHeader ? get(colIndex("question")) : r[1] ?? "";
+          const answerkey = hasHeader
+            ? get(
+                colIndex("answerkey") >= 0
+                  ? colIndex("answerkey")
+                  : colIndex("correct_index/answer") >= 0
+                    ? colIndex("correct_index/answer")
+                    : colIndex("answer")
+              )
+            : r[2] ?? "";
+          const optionsRaw = hasHeader ? get(colIndex("options")) : r[3] ?? "";
+          const scoreRaw = hasHeader ? get(colIndex("score")) : r[4] ?? "";
+
+          if (!quizType) throw new Error(`Unknown quiz type: "${typeRaw}"`);
+          if (!String(question).trim()) throw new Error("Question text is required.");
+          if (quizType !== "multiple_choice" && !String(answerkey).trim()) {
+            throw new Error("Answer key is required for this question type.");
+          }
+
+          let scoreNumber = Number(scoreRaw);
+          if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) scoreNumber = 1;
+
+          const item: typeof batchQuestions[0] = {
+            question: String(question).trim(),
+            quizType,
+            score: scoreNumber,
+          };
+
+          if (quizType === "multiple_choice") {
+            let opts = hasHeader && optionIndexes.length > 0
+              ? optionIndexes.map((i) => get(i)).map((o) => String(o).trim()).filter(Boolean)
+              : String(optionsRaw)
+                  .split("|")
+                  .map((o) => o.trim())
+                  .filter(Boolean);
+            if (opts.length === 0 && typeRaw.toLowerCase().includes("true")) {
+              opts = ["TRUE", "FALSE"];
+            }
+            if (opts.length < 2) throw new Error("Multiple choice needs at least 2 options.");
+            const answerRaw = String(answerkey).trim();
+            let answer = answerRaw;
+            const indexNum = Number(answerRaw);
+            if (Number.isFinite(indexNum)) {
+              if (indexNum === 0 && opts.length > 0) {
+                answer = opts[0] ?? "";
+              } else if (indexNum >= 1 && indexNum <= opts.length) {
+                answer = opts[indexNum - 1] ?? "";
+              } else if (indexNum >= 0 && indexNum < opts.length) {
+                answer = opts[indexNum] ?? "";
+              }
+            }
+            if (!answer || !opts.includes(answer)) {
+              const match = opts.find((o) => o.toLowerCase() === answer.toLowerCase());
+              if (match) answer = match;
+            }
+            if (!answer || !opts.includes(answer)) {
+              throw new Error(`Multiple choice answer must match one of the options or be a valid index. (answer="${answerRaw}", options="${opts.join(" | ")}")`);
+            }
+            item.options = opts;
+            item.answerkey = answer;
+          } else if (quizType === "enumeration") {
+            item.answerkey = String(answerkey)
+              .split(/\|/g)
+              .map((a) => a.trim())
+              .filter(Boolean)
+              .join("\n");
+          } else {
+            item.answerkey = String(answerkey).trim();
+          }
+
+          parsed.push(item);
+        } catch (e) {
+          const message = e instanceof Error ? e.message : String(e);
+          errors.push(`Row ${idx + 1}: ${message}`);
+        }
+      });
+
+      if (parsed.length === 0) {
+        setError(errors.length > 0 ? errors.slice(0, 5).join(" | ") : "No valid rows found in CSV.");
+        return;
+      }
+      if (errors.length > 0) {
+        setError(errors.slice(0, 5).join(" | "));
+        return;
+      }
+
+      setBatchQuestions((prev) => [...prev, ...parsed]);
+      setImportStatus(`Imported ${parsed.length} question${parsed.length !== 1 ? "s" : ""} from CSV.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to import CSV.");
+    }
+  };
+
   const handleSaveAllQuestions = async () => {
     if (!selectedQuizId || batchQuestions.length === 0) return;
     setSavingQuestion(true);
@@ -863,6 +1118,27 @@ export default function TeacherPage() {
       if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
     } finally {
       setSavingQuestion(false);
+    }
+  };
+
+  const handleDeleteAllQuestions = async () => {
+    if (!selectedQuizId) return;
+    if (!confirm("Delete ALL questions for this quiz? This cannot be undone.")) return;
+    setError("");
+    try {
+      const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setError(d.error ?? "Failed to delete questions");
+        return;
+      }
+      setQuestionsForQuiz([]);
+      setBatchQuestions([]);
+    } catch {
+      setError("Failed to delete questions");
     }
   };
 
@@ -943,6 +1219,28 @@ export default function TeacherPage() {
     if (!confirm("Delete this question?")) return;
     const res = await fetch(`/api/teacher/questions/${id}`, { method: "DELETE", credentials: "include" });
     if (res.ok && selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
+  };
+
+  const handleDragStart = (id: string) => {
+    dragQuestionIdRef.current = id;
+  };
+
+  const handleDrop = (targetId: string) => {
+    const sourceId = dragQuestionIdRef.current;
+    dragQuestionIdRef.current = null;
+    if (!sourceId || sourceId === targetId) return;
+    setOrderedQuestions((prev) => {
+      const sourceIndex = prev.findIndex((q) => q.id === sourceId);
+      const targetIndex = prev.findIndex((q) => q.id === targetId);
+      if (sourceIndex < 0 || targetIndex < 0) return prev;
+      const source = prev[sourceIndex];
+      const target = prev[targetIndex];
+      if (source.quiztype !== target.quiztype) return prev;
+      const next = [...prev];
+      next.splice(sourceIndex, 1);
+      next.splice(targetIndex, 0, source);
+      return next;
+    });
   };
 
   const getSubjectName = (id: string) => subjects.find((s) => s.id === id)?.name ?? id;
@@ -1724,13 +2022,17 @@ export default function TeacherPage() {
                   </div>
                   <div>
                     <label className="block text-slate-400 text-sm mb-1">Period</label>
-                    <input
-                      type="text"
+                    <select
                       value={newQuizPeriod}
                       onChange={(e) => setNewQuizPeriod(e.target.value)}
-                      placeholder="e.g. 1, 2, Prelim, Midterm"
-                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                    />
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    >
+                      <option value="">Select period...</option>
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                      <option value="4">4</option>
+                    </select>
                   </div>
                   <div>
                     <label className="block text-slate-400 text-sm mb-1">Quiz Name</label>
@@ -1847,6 +2149,11 @@ export default function TeacherPage() {
                               <>{getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong></>
                             )}
                           </button>
+                          {quiz.source_quiz_id && (
+                            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs">
+                              Shared
+                            </span>
+                          )}
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -1854,6 +2161,13 @@ export default function TeacherPage() {
                               className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
                             >
                               Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteQuiz(quiz.id)}
+                              className="px-3 py-1 rounded bg-red-600/80 hover:bg-red-600 text-xs text-white"
+                            >
+                              Delete
                             </button>
                             <span className="text-slate-500 text-xs">Select to add questions</span>
                           </div>
@@ -1892,12 +2206,17 @@ export default function TeacherPage() {
                               </div>
                               <div>
                                 <label className="block text-slate-400 text-xs mb-1">Period</label>
-                                <input
-                                  type="text"
+                                <select
                                   value={editQuizPeriod}
                                   onChange={(e) => setEditQuizPeriod(e.target.value)}
-                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
-                                />
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                >
+                                  <option value="">Select period...</option>
+                                  <option value="1">1</option>
+                                  <option value="2">2</option>
+                                  <option value="3">3</option>
+                                  <option value="4">4</option>
+                                </select>
                               </div>
                               <div>
                                 <label className="block text-slate-400 text-xs mb-1">Quiz Name</label>
@@ -1967,12 +2286,61 @@ export default function TeacherPage() {
                               <p className="text-slate-500 text-xs">
                                 When unchecked, the latest attempt score overwrites the stored score.
                               </p>
+                              <div className="rounded-lg border border-slate-600/60 bg-slate-800/60 p-3">
+                                <div className="text-xs text-slate-400 mb-2">Reuse quiz</div>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                  <div>
+                                    <label className="block text-slate-400 text-xs mb-1">Target Section</label>
+                                    <select
+                                      value={reuseSectionId}
+                                      onChange={(e) => setReuseSectionId(e.target.value)}
+                                      className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                    >
+                                      <option value="">Select section...</option>
+                                      {sections.map((s) => (
+                                        <option key={s.id} value={s.id}>{s.name}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                  <div>
+                                    <label className="block text-slate-400 text-xs mb-1">Target Period</label>
+                                    <select
+                                      value={reusePeriod}
+                                      onChange={(e) => setReusePeriod(e.target.value)}
+                                      className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                    >
+                                      <option value="">Select period...</option>
+                                      <option value="1">1</option>
+                                      <option value="2">2</option>
+                                      <option value="3">3</option>
+                                      <option value="4">4</option>
+                                    </select>
+                                  </div>
+                                </div>
+                                <p className="text-xs text-slate-500 mt-2">
+                                  Duplicate copies questions. Assign shares questions across sections (different code).
+                                </p>
+                              </div>
                               <div className="flex gap-2">
                                 <button
                                   type="submit"
                                   className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold"
                                 >
                                   Save Changes
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleReuseQuiz("duplicate")}
+                                  className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-semibold"
+                                >
+                                  Duplicate Quiz
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleReuseQuiz("assign")}
+                                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold"
+                                >
+                                  Assign to Section
                                 </button>
                                 <button
                                   type="button"
@@ -2094,6 +2462,13 @@ export default function TeacherPage() {
                             </span>
                           )}
                         </button>
+                        <button
+                          onClick={handleDeleteAllQuestions}
+                          disabled={questionsForQuiz.length === 0}
+                          className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 disabled:opacity-50 text-white font-semibold"
+                        >
+                          Delete All
+                        </button>
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 text-xs mb-3">
@@ -2122,6 +2497,26 @@ export default function TeacherPage() {
                               {batchQuestions.length} question{batchQuestions.length !== 1 ? "s" : ""} ready to save
                             </span>
                           )}
+                        </div>
+
+                        <div className="mb-4 p-4 rounded-lg bg-slate-700/40 border border-slate-600/50">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <label className="text-slate-300 text-sm font-medium">Import CSV</label>
+                            <input
+                              type="file"
+                              accept=".csv,text/csv"
+                              onChange={(e) => handleImportCsv(e.target.files?.[0] ?? null)}
+                              className="text-slate-300 text-sm"
+                            />
+                            {importStatus && <span className="text-emerald-300 text-sm">{importStatus}</span>}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-2">
+                            CSV columns: <span className="font-mono">quiztype,question,answerkey,options,score</span>
+                          </p>
+                          <p className="text-xs text-slate-500 mt-1">
+                            Use <span className="font-mono">|</span> to separate options and enumeration items.
+                            Example: <span className="font-mono">multiple_choice,1+1,2,1|2|3|4,1</span>
+                          </p>
                         </div>
                         
                         {batchQuestions.length > 0 && (
@@ -2378,19 +2773,30 @@ export default function TeacherPage() {
                       </div>
                     ) : (
                       <ul className="space-y-3">
-                        {questionsForQuiz
-                          .filter((q) =>
-                            questionTypeFilter === "all" ? true : q.quiztype === questionTypeFilter
-                          )
-                          .map((q) => {
+                        {displayQuestions.flatMap((q, idx) => {
+                          const prev = displayQuestions[idx - 1];
+                          const showHeader = !prev || prev.quiztype !== q.quiztype;
+                          const label = QUESTION_TYPES.find((t) => t.value === q.quiztype)?.label ?? q.quiztype;
                           let optionsParsed: string[] = [];
                           try {
                             if (q.options) optionsParsed = JSON.parse(q.options);
                           } catch {
                             // ignore
                           }
-                            return (
-                            <li key={q.id} className="p-3 rounded-lg bg-slate-700/50 border border-slate-600/60">
+                          const header = showHeader ? (
+                            <li key={`${q.quiztype}-header`} className="px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-600/50 text-slate-200 text-sm font-semibold">
+                              {label}
+                            </li>
+                          ) : null;
+                          const item = (
+                            <li
+                              key={q.id}
+                              draggable
+                              onDragStart={() => handleDragStart(q.id)}
+                              onDragOver={(e) => e.preventDefault()}
+                              onDrop={() => handleDrop(q.id)}
+                              className="p-3 rounded-lg bg-slate-700/50 border border-slate-600/60 cursor-move"
+                            >
                               {editingQuestionId === q.id ? (
                                 <div className="space-y-3">
                                   <div className="flex items-center justify-between gap-2">
@@ -2602,6 +3008,7 @@ export default function TeacherPage() {
                               )}
                             </li>
                           );
+                          return header ? [header, item] : [item];
                         })}
                       </ul>
                     )}

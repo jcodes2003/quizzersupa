@@ -8,6 +8,17 @@ async function ensureQuizBelongsToTeacher(quizId: string, teacherId: string): Pr
   return !!data;
 }
 
+async function resolveSourceQuizId(quizId: string): Promise<string> {
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from("quiztbl")
+    .select("id, source_quiz_id")
+    .eq("id", quizId)
+    .maybeSingle();
+  const sourceId = (data as { source_quiz_id?: string | null })?.source_quiz_id;
+  return sourceId ?? quizId;
+}
+
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ quizId: string }> }
@@ -17,11 +28,12 @@ export async function GET(
   const { quizId } = await params;
   const ok = await ensureQuizBelongsToTeacher(quizId, teacherId);
   if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const effectiveQuizId = await resolveSourceQuizId(quizId);
   const supabase = getSupabase();
   const { data, error } = await supabase
     .from("questiontbl")
     .select("*")
-    .eq("quizid", quizId)
+    .eq("quizid", effectiveQuizId)
     .order("created_at");
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data ?? []);
@@ -36,6 +48,7 @@ export async function POST(
   const { quizId } = await params;
   const ok = await ensureQuizBelongsToTeacher(quizId, teacherId);
   if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const effectiveQuizId = await resolveSourceQuizId(quizId);
   const body = await request.json() as {
     question?: string;
     quizType?: string;
@@ -92,7 +105,7 @@ export async function POST(
     }
 
     const insert: Record<string, unknown> = {
-      quizid: quizId,
+      quizid: effectiveQuizId,
       question: question.trim(),
       quiztype: type,
       score: typeof score === "number" && score > 0 ? score : 1,
@@ -112,4 +125,20 @@ export async function POST(
     .select();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(isBatch ? data : data[0]);
+}
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ quizId: string }> }
+) {
+  const teacherId = await getTeacherId();
+  if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { quizId } = await params;
+  const ok = await ensureQuizBelongsToTeacher(quizId, teacherId);
+  if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const effectiveQuizId = await resolveSourceQuizId(quizId);
+  const supabase = getSupabase();
+  const { error } = await supabase.from("questiontbl").delete().eq("quizid", effectiveQuizId);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ ok: true });
 }
