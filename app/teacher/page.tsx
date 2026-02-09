@@ -51,6 +51,7 @@ type QuestionRow = {
   answerkey?: string | null;
   options?: string | null;
   score?: number | null;
+  image_url?: string | null;
 };
 
 type QuestionInfo = {
@@ -465,6 +466,9 @@ export default function TeacherPage() {
   const [savingQuiz, setSavingQuiz] = useState(false);
   const [savingQuestion, setSavingQuestion] = useState(false);
   const [newQuestionScore, setNewQuestionScore] = useState<string>("1");
+  const [newQuestionImageUrl, setNewQuestionImageUrl] = useState<string>("");
+  const [newQuestionImageUploading, setNewQuestionImageUploading] = useState(false);
+  const [newQuestionImageError, setNewQuestionImageError] = useState<string>("");
   const [enumScoreMode, setEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
   const [importStatus, setImportStatus] = useState<string>("");
   const [batchQuestions, setBatchQuestions] = useState<Array<{
@@ -473,6 +477,7 @@ export default function TeacherPage() {
     options?: string[];
     answerkey?: string;
     score: number;
+    imageUrl?: string;
   }>>([]);
   const [responsesPage, setResponsesPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
@@ -493,6 +498,9 @@ export default function TeacherPage() {
   const [editQuestionType, setEditQuestionType] = useState<QuestionRow["quiztype"] | "">("");
   const [editEnumScoreMode, setEditEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
   const [editQuestionOptions, setEditQuestionOptions] = useState<string[]>([]);
+  const [editQuestionImageUrl, setEditQuestionImageUrl] = useState<string>("");
+  const [editQuestionImageUploading, setEditQuestionImageUploading] = useState(false);
+  const [editQuestionImageError, setEditQuestionImageError] = useState<string>("");
   const [savingEdit, setSavingEdit] = useState(false);
   const dragQuestionIdRef = useRef<string | null>(null);
   const PAGE_SIZE = 10;
@@ -985,6 +993,9 @@ export default function TeacherPage() {
       quizType: newQuizType,
       score: scoreNumber,
     };
+    if (newQuestionImageUrl.trim()) {
+      questionToAdd.imageUrl = newQuestionImageUrl.trim();
+    }
     
     if (newQuizType === "multiple_choice") {
       questionToAdd.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
@@ -1000,8 +1011,71 @@ export default function TeacherPage() {
     setNewQuestionOptions(["", ""]);
     setNewQuestionAnswerKey("");
     setNewQuestionScore("1");
+    setNewQuestionImageUrl("");
+    setNewQuestionImageError("");
     setEnumScoreMode("fixed");
     setNewQuizType("multiple_choice");
+  };
+
+  const uploadQuestionImage = async (
+    file: File,
+    quizId: string,
+    setUrl: (v: string) => void,
+    setUploading: (v: boolean) => void,
+    setUploadError: (v: string) => void
+  ) => {
+    setUploadError("");
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("quizId", quizId);
+      const res = await fetch("/api/teacher/quiz-images", {
+        method: "POST",
+        credentials: "include",
+        body: form,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setUploadError(data.error ?? "Failed to upload image");
+        return;
+      }
+      if (data.url) setUrl(String(data.url));
+    } catch {
+      setUploadError("Failed to upload image");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const deleteQuestionImage = async (
+    url: string,
+    setUrl: (v: string) => void,
+    setUploading: (v: boolean) => void,
+    setUploadError: (v: string) => void
+  ) => {
+    const value = String(url ?? "").trim();
+    if (!value) return;
+    setUploadError("");
+    setUploading(true);
+    try {
+      const res = await fetch("/api/teacher/quiz-images", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ url: value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setUploadError(data.error ?? "Failed to delete image");
+        return;
+      }
+      setUrl("");
+    } catch {
+      setUploadError("Failed to delete image");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const handleImportCsv = async (file: File | null) => {
@@ -1210,7 +1284,14 @@ export default function TeacherPage() {
     setSavingQuestion(true);
     setError("");
     try {
-      const body: { question: string; quizType: string; options?: string[]; answerkey?: string; score?: number } = {
+      const body: {
+        question: string;
+        quizType: string;
+        options?: string[];
+        answerkey?: string;
+        score?: number;
+        imageUrl?: string;
+      } = {
         question: newQuestionText.trim(),
         quizType: newQuizType,
       };
@@ -1224,6 +1305,7 @@ export default function TeacherPage() {
       ) {
         body.answerkey = newQuestionAnswerKey.trim();
       }
+      if (newQuestionImageUrl.trim()) body.imageUrl = newQuestionImageUrl.trim();
       body.score = scoreNumber;
       const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
         method: "POST",
@@ -1241,6 +1323,8 @@ export default function TeacherPage() {
       setNewQuestionOptions(["", ""]);
       setNewQuestionAnswerKey("");
       setNewQuestionScore("1");
+      setNewQuestionImageUrl("");
+      setNewQuestionImageError("");
       setEnumScoreMode("fixed");
       if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
     } finally {
@@ -2595,6 +2679,9 @@ export default function TeacherPage() {
                                   <span className="flex-1">
                                     {q.question.substring(0, 60)}{q.question.length > 60 ? "..." : ""}
                                     <span className="text-slate-500 ml-2">({q.quizType.replace("_", " ")}, {q.score} pt{q.score !== 1 ? "s" : ""})</span>
+                                    {q.imageUrl && (
+                                      <span className="text-emerald-300 ml-2">[Image]</span>
+                                    )}
                                   </span>
                                   <button
                                     type="button"
@@ -2637,6 +2724,60 @@ export default function TeacherPage() {
                               className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                               placeholder="Enter the question..."
                             />
+                          </div>
+                          <div>
+                            <label className="block text-slate-400 text-sm mb-1">Question Image (optional)</label>
+                            <div className="flex flex-wrap items-center gap-2">
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file && selectedQuizId) {
+                                    uploadQuestionImage(
+                                      file,
+                                      selectedQuizId,
+                                      setNewQuestionImageUrl,
+                                      setNewQuestionImageUploading,
+                                      setNewQuestionImageError
+                                    );
+                                  }
+                                }}
+                                disabled={newQuestionImageUploading || !selectedQuizId}
+                                className="text-slate-300 text-sm"
+                              />
+                              {newQuestionImageUploading && (
+                                <span className="text-xs text-slate-400">Uploading...</span>
+                              )}
+                              {newQuestionImageUrl && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    deleteQuestionImage(
+                                      newQuestionImageUrl,
+                                      setNewQuestionImageUrl,
+                                      setNewQuestionImageUploading,
+                                      setNewQuestionImageError
+                                    )
+                                  }
+                                  className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
+                                >
+                                  Remove Image
+                                </button>
+                              )}
+                            </div>
+                            {newQuestionImageError && (
+                              <div className="text-xs text-red-400 mt-1">{newQuestionImageError}</div>
+                            )}
+                            {newQuestionImageUrl && (
+                              <div className="mt-2">
+                                <img
+                                  src={newQuestionImageUrl}
+                                  alt="Question preview"
+                                  className="w-full max-h-56 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
+                                />
+                              </div>
+                            )}
                           </div>
                           <div>
                             <label className="block text-slate-400 text-sm mb-1">Type</label>
@@ -2915,6 +3056,60 @@ export default function TeacherPage() {
                                       />
                                     )}
                                   </div>
+                                  <div>
+                                    <label className="block text-slate-400 text-xs mb-1">Question Image (optional)</label>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={(e) => {
+                                          const file = e.target.files?.[0];
+                                          if (file && selectedQuizId) {
+                                            uploadQuestionImage(
+                                              file,
+                                              selectedQuizId,
+                                              setEditQuestionImageUrl,
+                                              setEditQuestionImageUploading,
+                                              setEditQuestionImageError
+                                            );
+                                          }
+                                        }}
+                                        disabled={editQuestionImageUploading || !selectedQuizId}
+                                        className="text-slate-300 text-xs"
+                                      />
+                                      {editQuestionImageUploading && (
+                                        <span className="text-xs text-slate-400">Uploading...</span>
+                                      )}
+                                      {editQuestionImageUrl && (
+                                        <button
+                                          type="button"
+                                          onClick={() =>
+                                            deleteQuestionImage(
+                                              editQuestionImageUrl,
+                                              setEditQuestionImageUrl,
+                                              setEditQuestionImageUploading,
+                                              setEditQuestionImageError
+                                            )
+                                          }
+                                          className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
+                                        >
+                                          Remove Image
+                                        </button>
+                                      )}
+                                    </div>
+                                    {editQuestionImageError && (
+                                      <div className="text-xs text-red-400 mt-1">{editQuestionImageError}</div>
+                                    )}
+                                    {editQuestionImageUrl && (
+                                      <div className="mt-2">
+                                        <img
+                                          src={editQuestionImageUrl}
+                                          alt="Question preview"
+                                          className="w-full max-h-56 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
+                                        />
+                                      </div>
+                                    )}
+                                  </div>
                                   {q.quiztype === "enumeration" && (
                                     <div>
                                       <label className="block text-slate-400 text-xs mb-1">Enumeration scoring</label>
@@ -2973,6 +3168,7 @@ export default function TeacherPage() {
                                               question: trimmedQuestion,
                                               answerkey: trimmedAnswer,
                                               score: scoreNumber,
+                                              imageUrl: editQuestionImageUrl.trim() ? editQuestionImageUrl.trim() : null,
                                             }),
                                           });
                                           if (!res.ok) {
@@ -3011,6 +3207,15 @@ export default function TeacherPage() {
                                         {q.score && q.score !== 1 ? `${q.score} pts` : "1 pt"}
                                       </span>
                                     </div>
+                                    {q.image_url && (
+                                      <div className="mb-2">
+                                        <img
+                                          src={q.image_url}
+                                          alt="Question illustration"
+                                          className="w-full max-h-40 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
+                                        />
+                                      </div>
+                                    )}
                                     <p className="text-slate-200">{q.question}</p>
                                     {q.quiztype === "multiple_choice" && (optionsParsed.length > 0 || q.answerkey) && (
                                       <p className="text-slate-500 text-sm mt-1">
@@ -3037,6 +3242,8 @@ export default function TeacherPage() {
                                         setEditAnswerKey(q.answerkey ?? "");
                                         setEditScore(String(q.score ?? 1));
                                         setEditQuestionType(q.quiztype);
+                                        setEditQuestionImageUrl(q.image_url ?? "");
+                                        setEditQuestionImageError("");
                                         if (q.quiztype === "enumeration") {
                                           const itemCount = parseEnumerationAnswerKey(q.answerkey ?? "").length;
                                           const scoreNum = Number(q.score ?? 1);

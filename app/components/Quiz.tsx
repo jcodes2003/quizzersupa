@@ -868,6 +868,15 @@ function MCQuestion({
 }) {
   return (
     <div className="p-4 rounded-xl bg-slate-700/30 border border-slate-600/30">
+      {question.imageUrl && (
+        <div className="mb-3">
+          <img
+            src={question.imageUrl}
+            alt="Question illustration"
+            className="w-full max-h-80 object-contain rounded-lg border border-slate-600/50 bg-slate-900/40"
+          />
+        </div>
+      )}
       <p className="font-medium text-slate-200 mb-3">
         {index}. {question.question}
       </p>
@@ -911,6 +920,15 @@ function IdQuestion({
 }) {
   return (
     <div className="p-4 rounded-xl bg-slate-700/30 border border-slate-600/30">
+      {question.imageUrl && (
+        <div className="mb-3">
+          <img
+            src={question.imageUrl}
+            alt="Question illustration"
+            className="w-full max-h-80 object-contain rounded-lg border border-slate-600/50 bg-slate-900/40"
+          />
+        </div>
+      )}
       <p className="font-medium text-slate-200 mb-3">
         {index}. {question.question}
       </p>
@@ -938,6 +956,15 @@ function EnumQuestion({
 }) {
   return (
     <div className="p-4 rounded-xl bg-slate-700/30 border border-slate-600/30">
+      {question.imageUrl && (
+        <div className="mb-3">
+          <img
+            src={question.imageUrl}
+            alt="Question illustration"
+            className="w-full max-h-80 object-contain rounded-lg border border-slate-600/50 bg-slate-900/40"
+          />
+        </div>
+      )}
       <p className="font-medium text-slate-200 mb-3">
         {index}. {question.question}
       </p>

@@ -6,7 +6,7 @@ async function getQuestionForTeacher(questionId: string, teacherId: string) {
   const supabase = getSupabase();
   const { data: q, error } = await supabase
     .from("questiontbl")
-    .select("id, quizid, question, quiztype, options, answerkey, score")
+    .select("id, quizid, question, quiztype, options, answerkey, score, image_url")
     .eq("id", questionId)
     .single();
   if (error || !q?.quizid) return null;
@@ -49,6 +49,7 @@ export async function PATCH(
     question?: string;
     answerkey?: string;
     score?: number;
+    imageUrl?: string | null;
   };
 
   const supabase = getSupabase();
@@ -89,6 +90,11 @@ export async function PATCH(
       return NextResponse.json({ error: "score must be a positive number" }, { status: 400 });
     }
     update.score = s;
+  }
+
+  if (body.imageUrl !== undefined) {
+    const val = body.imageUrl;
+    update.image_url = typeof val === "string" ? val.trim() : null;
   }
 
   if (Object.keys(update).length === 0) {

@@ -55,12 +55,14 @@ export async function POST(
     options?: string[];
     answerkey?: string;
     score?: number;
+    imageUrl?: string;
     questions?: Array<{
       question: string;
       quizType: string;
       options?: string[];
       answerkey?: string;
       score?: number;
+      imageUrl?: string;
     }>;
   };
   
@@ -115,6 +117,9 @@ export async function POST(
       insert.options = JSON.stringify(options.map((o) => String(o).trim()).filter(Boolean));
     } else if (type === "identification" || type === "long_answer" || type === "enumeration") {
       insert.answerkey = (answerkey ?? "").trim();
+    }
+    if (typeof q.imageUrl === "string" && q.imageUrl.trim()) {
+      insert.image_url = q.imageUrl.trim();
     }
     inserts.push(insert);
   }

@@ -7,6 +7,7 @@ export interface MultipleChoiceQuestion {
   options: string[];
   correct: string;
   score?: number;
+  imageUrl?: string;
 }
 
 export interface IdentificationQuestion {
@@ -14,6 +15,7 @@ export interface IdentificationQuestion {
   question: string;
   correct: string | string[];
   score?: number;
+  imageUrl?: string;
 }
 
 export interface EnumerationQuestion {
@@ -21,6 +23,7 @@ export interface EnumerationQuestion {
   question: string;
   correct: string[];
   score?: number;
+  imageUrl?: string;
 }
 
 export const multipleChoiceQuestions: MultipleChoiceQuestion[] = [

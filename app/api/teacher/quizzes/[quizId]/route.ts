@@ -174,6 +174,7 @@ export async function POST(
         answerkey: q.answerkey,
         options: q.options,
         score: q.score ?? 1,
+        image_url: (q as { image_url?: string | null }).image_url ?? null,
       }));
       const { error: insertQErr } = await supabase.from("questiontbl").insert(inserts);
       if (insertQErr) return NextResponse.json({ error: insertQErr.message }, { status: 500 });
@@ -195,6 +196,36 @@ export async function DELETE(
   if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const supabase = getSupabase();
+  // If this is a source quiz, delete assigned quizzes and their attempts first.
+  const { data: relatedQuizzes } = await supabase
+    .from("quiztbl")
+    .select("id")
+    .eq("source_quiz_id", quizId);
+  const relatedIds = Array.isArray(relatedQuizzes)
+    ? relatedQuizzes.map((q) => String((q as { id?: string }).id)).filter(Boolean)
+    : [];
+  const quizIds = [quizId, ...relatedIds];
+
+  const { error: logErr } = await supabase.from("student_attempts_log").delete().in("quizid", quizIds);
+  if (logErr && !logErr.message.toLowerCase().includes("student_attempts_log")) {
+    return NextResponse.json({ error: logErr.message }, { status: 500 });
+  }
+  const { error: attemptsErr } = await supabase.from("student_attempts").delete().in("quizid", quizIds);
+  if (attemptsErr && !attemptsErr.message.toLowerCase().includes("student_attempts")) {
+    return NextResponse.json({ error: attemptsErr.message }, { status: 500 });
+  }
+
+  // Questions belong to the source quiz id (quizId).
+  const { error: qErr } = await supabase.from("questiontbl").delete().eq("quizid", quizId);
+  if (qErr && !qErr.message.toLowerCase().includes("questiontbl")) {
+    return NextResponse.json({ error: qErr.message }, { status: 500 });
+  }
+
+  if (relatedIds.length > 0) {
+    const { error: relErr } = await supabase.from("quiztbl").delete().in("id", relatedIds);
+    if (relErr) return NextResponse.json({ error: relErr.message }, { status: 500 });
+  }
+
   const { error } = await supabase.from("quiztbl").delete().eq("id", quizId);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });

@@ -20,6 +20,7 @@ type ApiQuestion = {
   answerkey?: string | null;
   options?: string | null;
   score?: number | null;
+  image_url?: string | null;
 };
 type ApiQuiz = {
   id: string;
@@ -80,6 +81,7 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         options: safeOptions,
         correct: options.includes(correct) ? correct : (options[0] ?? ""),
         score,
+        imageUrl: (q.image_url ?? "").toString().trim() || undefined,
       };
     })
     .filter((q) => q.options.length >= 2);
@@ -100,6 +102,7 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         question: (q.question ?? "").toString(),
         correct: (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim(),
         score,
+        imageUrl: (q.image_url ?? "").toString().trim() || undefined,
       };
     });
   const enumeration = list
@@ -118,6 +121,7 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         question: (q.question ?? "").toString(),
         correct: answers,
         score,
+        imageUrl: (q.image_url ?? "").toString().trim() || undefined,
       };
     });
   return {
