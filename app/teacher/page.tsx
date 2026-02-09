@@ -60,6 +60,27 @@ type QuestionInfo = {
   quiztype: string;
 };
 
+type PendingQuizDraft = {
+  subjectId: string;
+  sectionIds: string[];
+  period: string;
+  quizname: string;
+  timeLimitMinutes: number | null;
+  allowRetake: boolean;
+  maxAttempts: number;
+  saveBestOnly: boolean;
+};
+
+async function readJsonSafe(res: Response): Promise<any> {
+  try {
+    const text = await res.text();
+    if (!text) return {};
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
 type ConsolidatedRow = {
   student_id: string;
   studentname: string;
@@ -411,6 +432,8 @@ const QUESTION_TYPES = [
   { value: "long_answer", label: "Long Answer" },
 ] as const;
 
+const QUIZ_FORM_DRAFT_KEY = "quiz_form_draft_v1";
+
 export default function TeacherPage() {
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
@@ -439,6 +462,8 @@ export default function TeacherPage() {
   const [questionsLoading, setQuestionsLoading] = useState(false);
   const [showCreateQuiz, setShowCreateQuiz] = useState(false);
   const [showAddQuestion, setShowAddQuestion] = useState(false);
+  const [pendingQuizDraft, setPendingQuizDraft] = useState<PendingQuizDraft | null>(null);
+  const [quizFormDraftAvailable, setQuizFormDraftAvailable] = useState(false);
   const [newQuizSubjectId, setNewQuizSubjectId] = useState("");
   const [newQuizSectionIds, setNewQuizSectionIds] = useState<string[]>([]);
   const [newQuizPeriod, setNewQuizPeriod] = useState("");
@@ -505,6 +530,77 @@ export default function TeacherPage() {
   const dragQuestionIdRef = useRef<string | null>(null);
   const PAGE_SIZE = 10;
   const QUIZ_PAGE_SIZE = 6;
+
+  const saveQuizFormDraft = () => {
+    if (typeof window === "undefined") return;
+    const draft = {
+      subjectId: newQuizSubjectId,
+      sectionIds: newQuizSectionIds,
+      period: newQuizPeriod,
+      quizname: newQuizQuizName,
+      timeLimit: newQuizTimeLimit,
+      allowRetake: newQuizAllowRetake,
+      maxAttempts: newQuizMaxAttempts,
+      saveBestOnly: newQuizSaveBestOnly,
+    };
+    const hasContent = Boolean(
+      (draft.subjectId && draft.subjectId.trim()) ||
+      (draft.quizname && draft.quizname.trim()) ||
+      (draft.period && draft.period.trim()) ||
+      (draft.timeLimit && draft.timeLimit.trim()) ||
+      (Array.isArray(draft.sectionIds) && draft.sectionIds.length > 0)
+    );
+    try {
+      if (!hasContent) {
+        localStorage.removeItem(QUIZ_FORM_DRAFT_KEY);
+        setQuizFormDraftAvailable(false);
+        return;
+      }
+      localStorage.setItem(QUIZ_FORM_DRAFT_KEY, JSON.stringify(draft));
+      setQuizFormDraftAvailable(true);
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  const clearQuizFormDraft = () => {
+    if (typeof window === "undefined") return;
+    try {
+      localStorage.removeItem(QUIZ_FORM_DRAFT_KEY);
+    } catch {
+      // ignore storage errors
+    }
+    setQuizFormDraftAvailable(false);
+  };
+
+  const openDraftQuizForm = () => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem(QUIZ_FORM_DRAFT_KEY);
+      if (!raw) return;
+      const draft = JSON.parse(raw) as {
+        subjectId?: string;
+        sectionIds?: string[];
+        period?: string;
+        quizname?: string;
+        timeLimit?: string;
+        allowRetake?: boolean;
+        maxAttempts?: string;
+        saveBestOnly?: boolean;
+      };
+      setNewQuizSubjectId(draft.subjectId ?? "");
+      setNewQuizSectionIds(Array.isArray(draft.sectionIds) ? draft.sectionIds : []);
+      setNewQuizPeriod(draft.period ?? "");
+      setNewQuizQuizName(draft.quizname ?? "");
+      setNewQuizTimeLimit(draft.timeLimit ?? "");
+      setNewQuizAllowRetake(Boolean(draft.allowRetake));
+      setNewQuizMaxAttempts(draft.maxAttempts ?? "1");
+      setNewQuizSaveBestOnly(draft.saveBestOnly !== false);
+      setShowCreateQuiz(true);
+    } catch {
+      // ignore storage errors
+    }
+  };
   const batchCounts = batchQuestions.reduce(
     (acc, q) => {
       if (q.quizType === "multiple_choice") acc.mc++;
@@ -538,6 +634,399 @@ export default function TeacherPage() {
     const ib = orderedQuestions.findIndex((q) => q.id === b.id);
     return ia - ib;
   });
+  const renderQuestionsPanel = () => (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
+        <h3 className="text-lg font-semibold text-slate-200">Questions in this quiz</h3>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-2 rounded-xl bg-slate-800/80 border border-slate-600/60 p-1">
+            <button
+              type="button"
+              onClick={() => setQuestionTypeFilter("all")}
+              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+                questionTypeFilter === "all" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              All
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuestionTypeFilter("multiple_choice")}
+              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+                questionTypeFilter === "multiple_choice" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              Multiple Choice
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuestionTypeFilter("identification")}
+              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+                questionTypeFilter === "identification" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              Identification
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuestionTypeFilter("enumeration")}
+              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+                questionTypeFilter === "enumeration" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              Enumeration
+            </button>
+            <button
+              type="button"
+              onClick={() => setQuestionTypeFilter("long_answer")}
+              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+                questionTypeFilter === "long_answer" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+              }`}
+            >
+              Long Answer
+            </button>
+          </div>
+          <button
+            onClick={handleDeleteAllQuestions}
+            disabled={questionsForQuiz.length === 0}
+            className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 disabled:opacity-50 text-white font-semibold"
+          >
+            Delete All
+          </button>
+        </div>
+      </div>
+      <div className="flex flex-wrap items-center gap-2 text-xs mb-3">
+        <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+          Total: <span className="text-slate-100 font-semibold">{totalQuestionCount}</span>
+        </span>
+        <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+          Multiple Choice: <span className="text-slate-100 font-semibold">{questionTypeCounts.mc}</span>
+        </span>
+        <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+          Identification: <span className="text-slate-100 font-semibold">{questionTypeCounts.id}</span>
+        </span>
+        <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+          Enumeration: <span className="text-slate-100 font-semibold">{questionTypeCounts.en}</span>
+        </span>
+        <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
+          Long Answer: <span className="text-slate-100 font-semibold">{questionTypeCounts.la}</span>
+        </span>
+      </div>
+      {questionsLoading ? (
+        <p className="text-slate-400 py-4">Loading questions...</p>
+      ) : questionsForQuiz.length === 0 ? (
+        <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 text-center text-slate-400">
+          No questions in this quiz yet. Click &quot;Add Questions&quot; above.
+        </div>
+      ) : (
+        <ul className="space-y-3">
+          {displayQuestions.flatMap((q, idx) => {
+            const prev = displayQuestions[idx - 1];
+            const showHeader = !prev || prev.quiztype !== q.quiztype;
+            const label = QUESTION_TYPES.find((t) => t.value === q.quiztype)?.label ?? q.quiztype;
+            let optionsParsed: string[] = [];
+            try {
+              if (q.options) optionsParsed = JSON.parse(q.options);
+            } catch {
+              // ignore
+            }
+            const header = showHeader ? (
+              <li
+                key={`${q.quiztype}-header`}
+                className="px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-600/50 text-slate-200 text-sm font-semibold"
+              >
+                {label}
+              </li>
+            ) : null;
+            const item = (
+              <li
+                key={q.id}
+                draggable
+                onDragStart={() => handleDragStart(q.id)}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={() => handleDrop(q.id)}
+                className="p-3 rounded-lg bg-slate-700/50 border border-slate-600/60 cursor-move"
+              >
+                {editingQuestionId === q.id ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-500 text-xs uppercase">
+                        Editing {q.quiztype.replace("_", " ")}
+                      </span>
+                      <span className="text-slate-400 text-xs">
+                        Score:&nbsp;
+                        <input
+                          type="number"
+                          min={0.5}
+                          step={0.5}
+                          value={editScore}
+                          onChange={(e) => setEditScore(e.target.value)}
+                          disabled={q.quiztype === "enumeration" && editEnumScoreMode === "per_item"}
+                          className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                        />
+                      </span>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 text-xs mb-1">Question</label>
+                      <textarea
+                        value={editQuestionText}
+                        onChange={(e) => setEditQuestionText(e.target.value)}
+                        rows={3}
+                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 text-xs mb-1">Answer key</label>
+                      {q.quiztype === "multiple_choice" && editQuestionOptions.length > 0 ? (
+                        <select
+                          value={editAnswerKey}
+                          onChange={(e) => setEditAnswerKey(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="">Select the correct option...</option>
+                          {editQuestionOptions.map((opt, i) => (
+                            <option key={`edit-answer-${i}-${opt}`} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <textarea
+                          value={editAnswerKey}
+                          onChange={(e) => setEditAnswerKey(e.target.value)}
+                          rows={q.quiztype === "enumeration" ? 3 : 2}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                      )}
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 text-xs mb-1">Question Image (optional)</label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file && selectedQuizId) {
+                              uploadQuestionImage(
+                                file,
+                                selectedQuizId,
+                                setEditQuestionImageUrl,
+                                setEditQuestionImageUploading,
+                                setEditQuestionImageError
+                              );
+                            }
+                          }}
+                          disabled={editQuestionImageUploading || !selectedQuizId}
+                          className="text-slate-300 text-xs"
+                        />
+                        {editQuestionImageUploading && (
+                          <span className="text-xs text-slate-400">Uploading...</span>
+                        )}
+                        {editQuestionImageUrl && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              deleteQuestionImage(
+                                editQuestionImageUrl,
+                                setEditQuestionImageUrl,
+                                setEditQuestionImageUploading,
+                                setEditQuestionImageError
+                              )
+                            }
+                            className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
+                          >
+                            Remove Image
+                          </button>
+                        )}
+                      </div>
+                      {editQuestionImageError && (
+                        <div className="text-xs text-red-400 mt-1">{editQuestionImageError}</div>
+                      )}
+                      {editQuestionImageUrl && (
+                        <div className="mt-2">
+                          <img
+                            src={editQuestionImageUrl}
+                            alt="Question preview"
+                            className="w-full max-h-56 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
+                          />
+                        </div>
+                      )}
+                    </div>
+                    {q.quiztype === "enumeration" && (
+                      <div>
+                        <label className="block text-slate-400 text-xs mb-1">Enumeration scoring</label>
+                        <select
+                          value={editEnumScoreMode}
+                          onChange={(e) => {
+                            const mode = e.target.value as "fixed" | "per_item";
+                            setEditEnumScoreMode(mode);
+                            if (mode === "per_item") {
+                              const count = parseEnumerationAnswerKey(editAnswerKey).length;
+                              setEditScore(String(count));
+                            }
+                          }}
+                          className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="fixed">Fixed score for the whole question</option>
+                          <option value="per_item">1 point per correct item (auto total)</option>
+                        </select>
+                      </div>
+                    )}
+                    <div className="flex gap-2 justify-end">
+                      <button
+                        type="button"
+                        disabled={savingEdit}
+                        onClick={async () => {
+                          setError("");
+                          const trimmedQuestion = editQuestionText.trim();
+                          const trimmedAnswer = editAnswerKey.trim();
+                          const scoreNumber = Number(editScore) || 1;
+                          if (!trimmedQuestion) {
+                            setError("Question text is required.");
+                            return;
+                          }
+                          if (!trimmedAnswer) {
+                            setError("Answer key is required.");
+                            return;
+                          }
+                          if (q.quiztype === "enumeration" && editEnumScoreMode === "per_item") {
+                            const count = parseEnumerationAnswerKey(trimmedAnswer).length;
+                            if (count <= 0) {
+                              setError("Enumeration needs at least 1 answer item.");
+                              return;
+                            }
+                          }
+                          if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+                            setError("Score must be a positive number.");
+                            return;
+                          }
+                          setSavingEdit(true);
+                          try {
+                            const res = await fetch(`/api/teacher/questions/${q.id}`, {
+                              method: "PATCH",
+                              headers: { "Content-Type": "application/json" },
+                              credentials: "include",
+                              body: JSON.stringify({
+                                question: trimmedQuestion,
+                                answerkey: trimmedAnswer,
+                                score: scoreNumber,
+                                imageUrl: editQuestionImageUrl.trim() ? editQuestionImageUrl.trim() : null,
+                              }),
+                            });
+                            if (!res.ok) {
+                              const d = await res.json().catch(() => ({}));
+                              setError(d.error ?? "Failed to update question");
+                            } else if (selectedQuizId) {
+                              await fetchQuestionsForQuiz(selectedQuizId);
+                              setEditingQuestionId(null);
+                            }
+                          } finally {
+                            setSavingEdit(false);
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm disabled:opacity-50"
+                      >
+                        {savingEdit ? "Saving..." : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={savingEdit}
+                        onClick={() => setEditingQuestionId(null)}
+                        className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-slate-500 text-xs uppercase">
+                          {q.quiztype.replace("_", " ")}
+                        </span>
+                        <span className="text-xs text-emerald-300">
+                          {q.score && q.score !== 1 ? `${q.score} pts` : "1 pt"}
+                        </span>
+                      </div>
+                      {q.image_url && (
+                        <div className="mb-2">
+                          <img
+                            src={q.image_url}
+                            alt="Question illustration"
+                            className="w-full max-h-40 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
+                          />
+                        </div>
+                      )}
+                      <p className="text-slate-200">{q.question}</p>
+                      {q.quiztype === "multiple_choice" && (optionsParsed.length > 0 || q.answerkey) && (
+                        <p className="text-slate-500 text-sm mt-1">
+                          Options: {optionsParsed.join(", ")}
+                          {q.answerkey && (
+                            <span className="text-emerald-400 ml-2">Answer: {q.answerkey}</span>
+                          )}
+                        </p>
+                      )}
+                      {q.quiztype !== "multiple_choice" && q.answerkey && (
+                        <p className="text-slate-500 text-sm mt-1">
+                          <span className="text-slate-400">Answer key:</span>{" "}
+                          <span className="text-emerald-400 whitespace-pre-line">{q.answerkey}</span>
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <button
+                        onClick={() => {
+                          setEditingQuestionId(q.id);
+                          setEditQuestionText(q.question);
+                          setEditAnswerKey(q.answerkey ?? "");
+                          setEditScore(String(q.score ?? 1));
+                          setEditQuestionType(q.quiztype);
+                          setEditQuestionImageUrl(q.image_url ?? "");
+                          setEditQuestionImageError("");
+                          if (q.quiztype === "enumeration") {
+                            const itemCount = parseEnumerationAnswerKey(q.answerkey ?? "").length;
+                            const scoreNum = Number(q.score ?? 1);
+                            const mode = itemCount > 0 && scoreNum === itemCount ? "per_item" : "fixed";
+                            setEditEnumScoreMode(mode);
+                          } else {
+                            setEditEnumScoreMode("fixed");
+                          }
+                          if (q.quiztype === "multiple_choice" && q.options) {
+                            try {
+                              const parsed = JSON.parse(q.options);
+                              setEditQuestionOptions(
+                                Array.isArray(parsed) ? parsed.map((o: unknown) => String(o)) : []
+                              );
+                            } catch {
+                              setEditQuestionOptions([]);
+                            }
+                          } else {
+                            setEditQuestionOptions([]);
+                          }
+                        }}
+                        className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-white text-xs"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        onClick={() => deleteQuestion(q.id)}
+                        className="px-3 py-1 rounded bg-red-600/80 hover:bg-red-600 text-white text-xs"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+            return header ? [header, item] : [item];
+          })}
+        </ul>
+      )}
+    </>
+  );
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
@@ -619,6 +1108,34 @@ export default function TeacherPage() {
       } else setAuthenticated(false);
     })();
     return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem(QUIZ_FORM_DRAFT_KEY);
+      if (!raw) {
+        setQuizFormDraftAvailable(false);
+        return;
+      }
+      const draft = JSON.parse(raw) as {
+        subjectId?: string;
+        sectionIds?: string[];
+        period?: string;
+        quizname?: string;
+        timeLimit?: string;
+      };
+      const hasContent = Boolean(
+        (draft.subjectId && draft.subjectId.trim()) ||
+        (draft.quizname && draft.quizname.trim()) ||
+        (draft.period && draft.period.trim()) ||
+        (draft.timeLimit && draft.timeLimit.trim()) ||
+        (Array.isArray(draft.sectionIds) && draft.sectionIds.length > 0)
+      );
+      setQuizFormDraftAvailable(hasContent);
+    } catch {
+      // ignore storage errors
+    }
   }, []);
 
   useEffect(() => {
@@ -813,53 +1330,24 @@ export default function TeacherPage() {
       const maxAttempts = newQuizAllowRetake
         ? Math.max(2, Number(newQuizMaxAttempts) || 2)
         : 1;
-      const primarySectionId = newQuizSectionIds[0];
-      const res = await fetch("/api/teacher/quizzes", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          subjectId: newQuizSubjectId,
-          sectionId: primarySectionId,
-          period: newQuizPeriod.trim(),
-          quizname: newQuizQuizName.trim(),
-          timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
-          allowRetake: newQuizAllowRetake,
-          maxAttempts,
-          saveBestOnly: newQuizSaveBestOnly,
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json();
-        setError(d.error ?? "Failed to create quiz");
-        return;
-      }
-      const created = await res.json().catch(() => null);
-      if (created?.id && newQuizSectionIds.length > 1) {
-        const failures: Array<{ sectionId: string; message: string }> = [];
-        for (const sectionId of newQuizSectionIds.slice(1)) {
-          const aRes = await fetch(`/api/teacher/quizzes/${created.id}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
-            body: JSON.stringify({
-              action: "assign",
-              sectionId,
-              period: newQuizPeriod.trim(),
-            }),
-          });
-          if (!aRes.ok) {
-            const d = await aRes.json().catch(() => ({}));
-            failures.push({ sectionId, message: d.error ?? aRes.statusText ?? "Failed to assign quiz" });
-          }
-        }
-        if (failures.length > 0) {
-          const summary = failures
-            .map((f) => `${sections.find((s) => s.id === f.sectionId)?.name ?? f.sectionId}: ${f.message}`)
-            .join(" | ");
-          setError(`Assigned quiz created, but failed for: ${summary}`);
-        }
-      }
+      const draft: PendingQuizDraft = {
+        subjectId: newQuizSubjectId,
+        sectionIds: [...newQuizSectionIds],
+        period: newQuizPeriod.trim(),
+        quizname: newQuizQuizName.trim(),
+        timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
+        allowRetake: newQuizAllowRetake,
+        maxAttempts,
+        saveBestOnly: newQuizSaveBestOnly,
+      };
+      setPendingQuizDraft(draft);
+      setSelectedQuizId(null);
+      setQuestionsForQuiz([]);
+      setOrderedQuestions([]);
+      setBatchQuestions([]);
+      setShowAddQuestion(true);
+      setTab("questions");
+      clearQuizFormDraft();
       setShowCreateQuiz(false);
       setNewQuizSubjectId("");
       setNewQuizSectionIds([]);
@@ -869,7 +1357,6 @@ export default function TeacherPage() {
       setNewQuizAllowRetake(false);
       setNewQuizMaxAttempts("1");
       setNewQuizSaveBestOnly(true);
-      fetchQuizzes();
     } finally {
       setSavingQuiz(false);
     }
@@ -1126,7 +1613,7 @@ export default function TeacherPage() {
 
   const handleImportCsv = async (file: File | null) => {
     if (!file) return;
-    if (!selectedQuizId) {
+    if (!selectedQuizId && !pendingQuizDraft) {
       setError("Select a quiz first before importing.");
       return;
     }
@@ -1147,6 +1634,10 @@ export default function TeacherPage() {
         .map((h, i) => ({ h, i }))
         .filter((x) => x.h === "options")
         .map((x) => x.i);
+      const optionColOrder = ["option1", "option2", "option3", "option4", "optiona", "optionb", "optionc", "optiond"];
+      const optionColIndexes = optionColOrder
+        .map((name) => headerRow.indexOf(name))
+        .filter((ix) => ix >= 0);
 
       const parsed: typeof batchQuestions = [];
       const errors: string[] = [];
@@ -1186,7 +1677,9 @@ export default function TeacherPage() {
           };
 
           if (quizType === "multiple_choice") {
-            let opts = hasHeader && optionIndexes.length > 0
+          let opts = hasHeader && optionColIndexes.length > 0
+            ? optionColIndexes.map((i) => get(i)).map((o) => String(o).trim()).filter(Boolean)
+            : hasHeader && optionIndexes.length > 0
               ? optionIndexes.map((i) => get(i)).map((o) => String(o).trim()).filter(Boolean)
               : String(optionsRaw)
                   .split("|")
@@ -1251,24 +1744,80 @@ export default function TeacherPage() {
   };
 
   const handleSaveAllQuestions = async () => {
-    if (!selectedQuizId || batchQuestions.length === 0) return;
+    if (batchQuestions.length === 0) return;
     setSavingQuestion(true);
     setError("");
     try {
-      const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
+      let quizId = selectedQuizId;
+      if (!quizId) {
+        if (!pendingQuizDraft) {
+          setError("Select a quiz first.");
+          return;
+        }
+        const primarySectionId = pendingQuizDraft.sectionIds[0];
+        const createRes = await fetch("/api/teacher/quizzes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            subjectId: pendingQuizDraft.subjectId,
+            sectionId: primarySectionId,
+            period: pendingQuizDraft.period,
+            quizname: pendingQuizDraft.quizname,
+            timeLimitMinutes: pendingQuizDraft.timeLimitMinutes,
+            allowRetake: pendingQuizDraft.allowRetake,
+            maxAttempts: pendingQuizDraft.maxAttempts,
+            saveBestOnly: pendingQuizDraft.saveBestOnly,
+          }),
+        });
+        const created = await readJsonSafe(createRes);
+        if (!createRes.ok || !created?.id) {
+          setError(created?.error ?? "Failed to create quiz");
+          return;
+        }
+        quizId = created.id;
+        if (pendingQuizDraft.sectionIds.length > 1) {
+          const failures: Array<{ sectionId: string; message: string }> = [];
+          for (const sectionId of pendingQuizDraft.sectionIds.slice(1)) {
+            const aRes = await fetch(`/api/teacher/quizzes/${quizId}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                action: "assign",
+                sectionId,
+                period: pendingQuizDraft.period,
+              }),
+            });
+            if (!aRes.ok) {
+              const d = await readJsonSafe(aRes);
+              failures.push({ sectionId, message: d?.error ?? aRes.statusText ?? "Failed to assign quiz" });
+            }
+          }
+          if (failures.length > 0) {
+            const summary = failures
+              .map((f) => `${sections.find((s) => s.id === f.sectionId)?.name ?? f.sectionId}: ${f.message}`)
+              .join(" | ");
+            setError(`Assigned quiz created, but failed for: ${summary}`);
+          }
+        }
+        setPendingQuizDraft(null);
+        setSelectedQuizId(quizId);
+        await fetchQuizzes();
+      }
+      const res = await fetch(`/api/teacher/quizzes/${quizId}/questions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ questions: batchQuestions }),
       });
       if (!res.ok) {
-        const d = await res.json();
+        const d = await readJsonSafe(res);
         setError(d.error ?? "Failed to save questions");
         return;
       }
       setBatchQuestions([]);
-      setShowAddQuestion(false);
-      if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
+      if (quizId) fetchQuestionsForQuiz(quizId);
     } finally {
       setSavingQuestion(false);
     }
@@ -1364,7 +1913,6 @@ export default function TeacherPage() {
         setError(d.error ?? "Failed to save");
         return;
       }
-      setShowAddQuestion(false);
       setNewQuestionText("");
       setNewQuestionOptions(["", ""]);
       setNewQuestionAnswerKey("");
@@ -2131,17 +2679,388 @@ export default function TeacherPage() {
               <>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold text-slate-200">My Quizzes & Questions</h2>
-              <button
-                onClick={() => setShowCreateQuiz(true)}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-              >
-                Create Quiz
-              </button>
+              <div className="flex items-center gap-2">
+                {!showAddQuestion && (
+                  <button
+                    onClick={() => setShowAddQuestion(true)}
+                    disabled={!(selectedQuizId || pendingQuizDraft)}
+                    className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
+                  >
+                    Add Questions
+                  </button>
+                )}
+                {quizFormDraftAvailable && !showCreateQuiz && (
+                  <button
+                    onClick={openDraftQuizForm}
+                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold"
+                  >
+                    Resume Draft
+                  </button>
+                )}
+                <button
+                  onClick={() => setShowCreateQuiz(true)}
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                >
+                  Create Quiz
+                </button>
+              </div>
             </div>
 
             {error && (
               <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
                 {error}
+              </div>
+            )}
+
+            {showAddQuestion && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+                <div className="w-full max-w-4xl max-h-[90vh] overflow-auto rounded-2xl bg-slate-900 border border-slate-700 p-6 shadow-2xl">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-cyan-300 font-semibold">Add Questions (Batch Mode)</h4>
+                  <div className="flex items-center gap-3">
+                    {batchQuestions.length > 0 && (
+                      <span className="text-slate-400 text-sm">
+                        {batchQuestions.length} question{batchQuestions.length !== 1 ? "s" : ""} ready to save
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddQuestion(false);
+                        setNewQuestionText("");
+                        setNewQuestionOptions(["", ""]);
+                        setNewQuestionAnswerKey("");
+                        setNewQuestionScore("1");
+                        setEnumScoreMode("fixed");
+                      }}
+                      className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+
+                <div className="mb-4 p-4 rounded-lg bg-slate-700/40 border border-slate-600/50">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label className="text-slate-300 text-sm font-medium">Import CSV</label>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(e) => handleImportCsv(e.target.files?.[0] ?? null)}
+                      className="text-slate-300 text-sm"
+                    />
+                    {importStatus && <span className="text-emerald-300 text-sm">{importStatus}</span>}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-2">
+                    CSV columns: <span className="font-mono">quiztype,question,answerkey,options,score</span>
+                  </p>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Use <span className="font-mono">|</span> to separate options and enumeration items.
+                    Example: <span className="font-mono">multiple_choice,1+1,2,1|2|3|4,1</span>
+                  </p>
+                </div>
+                
+                {batchQuestions.length > 0 && (
+                  <div className="mb-4 p-4 rounded-lg bg-slate-700/50 border border-slate-600/50">
+                    <h5 className="text-slate-300 font-medium mb-2 text-sm">Questions to be saved ({batchQuestions.length}):</h5>
+                    <ul className="space-y-2 max-h-40 overflow-y-auto">
+                      {batchQuestions.map((q, idx) => (
+                        <li key={idx} className="text-sm text-slate-400 flex items-start gap-2">
+                          <span className="text-cyan-400">{idx + 1}.</span>
+                          <span className="flex-1">
+                            {q.question.substring(0, 60)}{q.question.length > 60 ? "..." : ""}
+                            <span className="text-slate-500 ml-2">({q.quizType.replace("_", " ")}, {q.score} pt{q.score !== 1 ? "s" : ""})</span>
+                            {q.imageUrl && (
+                              <span className="text-emerald-300 ml-2">[Image]</span>
+                            )}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setBatchQuestions(batchQuestions.filter((_, i) => i !== idx))}
+                            className="text-red-400 hover:text-red-300 text-xs"
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleSaveAllQuestions}
+                        disabled={savingQuestion}
+                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm"
+                      >
+                        {savingQuestion ? "Saving..." : `Save All ${batchQuestions.length} Question${batchQuestions.length !== 1 ? "s" : ""}`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setBatchQuestions([])}
+                        className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium text-sm"
+                      >
+                        Clear All
+                      </button>
+                    </div>
+                  </div>
+                )}
+                
+                <form onSubmit={handleAddQuestionToBatch} className="space-y-4">
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Question</label>
+                    <textarea
+                      value={newQuestionText}
+                      onChange={(e) => setNewQuestionText(e.target.value)}
+                      required
+                      rows={3}
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      placeholder="Enter the question..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Question Image (optional)</label>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (file && selectedQuizId) {
+                            uploadQuestionImage(
+                              file,
+                              selectedQuizId,
+                              setNewQuestionImageUrl,
+                              setNewQuestionImageUploading,
+                              setNewQuestionImageError
+                            );
+                          }
+                        }}
+                        disabled={newQuestionImageUploading || !selectedQuizId}
+                        className="text-slate-300 text-sm"
+                      />
+                      {newQuestionImageUploading && (
+                        <span className="text-xs text-slate-400">Uploading...</span>
+                      )}
+                      {newQuestionImageUrl && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            deleteQuestionImage(
+                              newQuestionImageUrl,
+                              setNewQuestionImageUrl,
+                              setNewQuestionImageUploading,
+                              setNewQuestionImageError
+                            )
+                          }
+                          className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
+                        >
+                          Remove Image
+                        </button>
+                      )}
+                    </div>
+                    {newQuestionImageError && (
+                      <div className="text-xs text-red-400 mt-1">{newQuestionImageError}</div>
+                    )}
+                    {newQuestionImageUrl && (
+                      <div className="mt-2">
+                        <img
+                          src={newQuestionImageUrl}
+                          alt="Question preview"
+                          className="w-full max-h-56 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
+                        />
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Type</label>
+                    <select
+                      value={newQuizType}
+                      onChange={(e) => {
+                        const nextType = e.target.value as typeof newQuizType;
+                        setNewQuizType(nextType);
+                        if (nextType === "multiple_choice" && newQuestionOptions.length === 0) {
+                          setNewQuestionOptions(["", ""]);
+                        }
+                        setNewQuestionAnswerKey("");
+                        if (nextType !== "enumeration") {
+                          setEnumScoreMode("fixed");
+                          setNewQuestionScore("1");
+                        }
+                      }}
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    >
+                      {QUESTION_TYPES.map((t) => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {newQuizType === "multiple_choice" && (
+                    <>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Options (add as many as you want)</label>
+                        <div className="space-y-2">
+                                  {newQuestionOptions.map((opt, i) => (
+                                    <div key={`new-opt-${i}`} className="flex gap-2">
+                              <input
+                                type="text"
+                                value={opt}
+                                onChange={(e) => {
+                                  const next = [...newQuestionOptions];
+                                  next[i] = e.target.value;
+                                  setNewQuestionOptions(next);
+                                }}
+                                placeholder={`Option ${i + 1}`}
+                                className="flex-1 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (newQuestionOptions.length > 2) {
+                                    const next = newQuestionOptions.filter((_, j) => j !== i);
+                                    setNewQuestionOptions(next);
+                                    if (newQuestionAnswerKey === opt) setNewQuestionAnswerKey("");
+                                  }
+                                }}
+                                disabled={newQuestionOptions.length <= 2}
+                                className="px-3 py-2 rounded-lg bg-red-600/80 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                          <button
+                            type="button"
+                            onClick={() => setNewQuestionOptions([...newQuestionOptions, ""])}
+                            className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm font-medium"
+                          >
+                            + Add option
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-slate-400 text-sm mb-1">Correct answer (answer key)</label>
+                        <select
+                          value={newQuestionAnswerKey}
+                          onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+                          required={newQuizType === "multiple_choice"}
+                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="">Select the correct option...</option>
+                                  {newQuestionOptions.filter((o) => o.trim()).map((o, i) => (
+                                    <option key={`new-answer-${i}-${o}`} value={o.trim()}>{o.trim()}</option>
+                                  ))}
+                        </select>
+                      </div>
+                    </>
+                  )}
+                  {newQuizType !== "multiple_choice" && (
+                    <div>
+                      <label className="block text-slate-400 text-sm mb-1">Answer key</label>
+                      <textarea
+                        value={newQuestionAnswerKey}
+                        onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+                        required
+                        rows={newQuizType === "enumeration" ? 3 : 2}
+                        className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        placeholder={
+                          newQuizType === "enumeration"
+                            ? "Enter the correct items (one per line). Matching will be case-insensitive."
+                            : "Enter the correct answer. Matching will be case-insensitive."
+                        }
+                      />
+                      {newQuizType === "enumeration" && (
+                        <p className="mt-1 text-xs text-slate-500">
+                          Tip: put one correct item per line. Students&apos; answers are compared in a
+                          case-insensitive way.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {newQuizType === "enumeration" && (
+                    <div>
+                      <label className="block text-slate-400 text-sm mb-1">Enumeration scoring</label>
+                      <select
+                        value={enumScoreMode}
+                        onChange={(e) => {
+                          const mode = e.target.value as "fixed" | "per_item";
+                          setEnumScoreMode(mode);
+                          if (mode === "per_item") {
+                            const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
+                            setNewQuestionScore(String(count));
+                          } else {
+                            setNewQuestionScore("1");
+                          }
+                        }}
+                        className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                      >
+                        <option value="fixed">Fixed score for the whole question</option>
+                        <option value="per_item">1 point per correct item (auto total)</option>
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Score</label>
+                    <input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={newQuestionScore}
+                      onChange={(e) => setNewQuestionScore(e.target.value)}
+                      disabled={newQuizType === "enumeration" && enumScoreMode === "per_item"}
+                      className="w-32 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    />
+                    <p className="mt-1 text-xs text-slate-500">
+                      {newQuizType === "enumeration" && enumScoreMode === "per_item"
+                        ? "Score is calculated from the number of items in the answer key."
+                        : "Default is 1 point per question."}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold"
+                    >
+                      Add to Batch
+                    </button>
+                    {batchQuestions.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleSaveAllQuestions}
+                        disabled={savingQuestion}
+                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+                      >
+                        {savingQuestion ? "Saving..." : `Save All ${batchQuestions.length}`}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAddQuestion(false);
+                        setNewQuestionText("");
+                        setNewQuestionOptions(["", ""]);
+                        setNewQuestionAnswerKey("");
+                        setNewQuestionScore("1");
+                        setEnumScoreMode("fixed");
+                      }}
+                      className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
+                    >
+                      Close Form
+                    </button>
+                    {batchQuestions.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (confirm("Clear all unsaved questions?")) {
+                            setBatchQuestions([]);
+                          }
+                        }}
+                        className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 text-white font-medium"
+                      >
+                        Clear Batch
+                      </button>
+                    )}
+                  </div>
+                </form>
+              </div>
               </div>
             )}
 
@@ -2300,7 +3219,10 @@ export default function TeacherPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setShowCreateQuiz(false)}
+                      onClick={() => {
+                        saveQuizFormDraft();
+                        setShowCreateQuiz(false);
+                      }}
                       className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
                     >
                       Cancel
@@ -2312,12 +3234,17 @@ export default function TeacherPage() {
 
             {quizzesLoading ? (
               <p className="text-slate-400 text-center py-8">Loading quizzes...</p>
-            ) : quizzes.length === 0 ? (
+            ) : quizzes.length === 0 && !pendingQuizDraft ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
                 No quizzes yet. Create a quiz, then add questions to it.
               </div>
             ) : (
               <div className="space-y-6">
+                {pendingQuizDraft && (
+                  <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4 text-amber-200 text-sm">
+                    Draft quiz in progress. If you closed the modal, click "Add Questions" to continue creating questions. Click "Save All" to create and assign this quiz to all selected sections.
+                  </div>
+                )}
                 <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
                   <h3 className="text-lg font-semibold text-cyan-300 mb-4">Your quizzes</h3>
                   <ul className="space-y-2">
@@ -2581,36 +3508,41 @@ export default function TeacherPage() {
                                   Duplicate copies questions. Assign shares questions across sections (different code).
                                 </p>
                               </div>
-                              <div className="flex gap-2">
+                              <div className="flex flex-wrap gap-2">
                                 <button
                                   type="submit"
-                                  className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold"
+                                  className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-semibold"
                                 >
                                   Save Changes
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => handleReuseQuiz("duplicate")}
-                                  className="px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-semibold"
+                                  className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-semibold"
                                 >
                                   Duplicate Quiz
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => handleReuseQuiz("assign")}
-                                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold"
+                                  className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold"
                                 >
                                   Assign to Section
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => setEditingQuizId(null)}
-                                  className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm"
+                                  className="w-full sm:w-auto px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm"
                                 >
                                   Cancel
                                 </button>
                               </div>
                             </form>
+                          </div>
+                        )}
+                        {selectedQuizId === quiz.id && editingQuizId !== quiz.id && (
+                          <div className="w-full mt-6">
+                            {renderQuestionsPanel()}
                           </div>
                         )}
                       </li>
@@ -2648,754 +3580,10 @@ export default function TeacherPage() {
                   )}
                 </div>
 
-                {selectedQuizId && (
-                  <>
-                    <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
-                      <h3 className="text-lg font-semibold text-slate-200">Questions in this quiz</h3>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {/* Question type sections */}
-                        <div className="inline-flex rounded-xl bg-slate-800/80 border border-slate-600/60 overflow-hidden">
-                          <button
-                            type="button"
-                            onClick={() => setQuestionTypeFilter("all")}
-                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
-                              questionTypeFilter === "all"
-                                ? "bg-cyan-600 text-white"
-                                : "text-slate-300 hover:bg-slate-700"
-                            }`}
-                          >
-                            All
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setQuestionTypeFilter("multiple_choice")}
-                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
-                              questionTypeFilter === "multiple_choice"
-                                ? "bg-cyan-600 text-white"
-                                : "text-slate-300 hover:bg-slate-700"
-                            }`}
-                          >
-                            Multiple Choice
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setQuestionTypeFilter("identification")}
-                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
-                              questionTypeFilter === "identification"
-                                ? "bg-cyan-600 text-white"
-                                : "text-slate-300 hover:bg-slate-700"
-                            }`}
-                          >
-                            Identification
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setQuestionTypeFilter("enumeration")}
-                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
-                              questionTypeFilter === "enumeration"
-                                ? "bg-cyan-600 text-white"
-                                : "text-slate-300 hover:bg-slate-700"
-                            }`}
-                          >
-                            Enumeration
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setQuestionTypeFilter("long_answer")}
-                            className={`px-3 py-1.5 text-xs md:text-sm font-medium ${
-                              questionTypeFilter === "long_answer"
-                                ? "bg-cyan-600 text-white"
-                                : "text-slate-300 hover:bg-slate-700"
-                            }`}
-                          >
-                            Long Answer
-                          </button>
-                        </div>
-                        <button
-                          onClick={() => setShowAddQuestion(true)}
-                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold relative"
-                        >
-                          Add Question
-                          {batchQuestions.length > 0 && (
-                            <span className="absolute -top-2 -right-2 bg-cyan-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center">
-                              {batchQuestions.length}
-                            </span>
-                          )}
-                        </button>
-                        <button
-                          onClick={handleDeleteAllQuestions}
-                          disabled={questionsForQuiz.length === 0}
-                          className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 disabled:opacity-50 text-white font-semibold"
-                        >
-                          Delete All
-                        </button>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 text-xs mb-3">
-                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
-                        Total: <span className="text-slate-100 font-semibold">{totalQuestionCount}</span>
-                      </span>
-                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
-                        Multiple Choice: <span className="text-slate-100 font-semibold">{questionTypeCounts.mc}</span>
-                      </span>
-                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
-                        Identification: <span className="text-slate-100 font-semibold">{questionTypeCounts.id}</span>
-                      </span>
-                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
-                        Enumeration: <span className="text-slate-100 font-semibold">{questionTypeCounts.en}</span>
-                      </span>
-                      <span className="px-2 py-1 rounded-full bg-slate-800/80 border border-slate-600/60 text-slate-300">
-                        Long Answer: <span className="text-slate-100 font-semibold">{questionTypeCounts.la}</span>
-                      </span>
-                    </div>
-                    {showAddQuestion && (
-                      <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 mb-6">
-                        <div className="flex items-center justify-between mb-4">
-                          <h4 className="text-cyan-300 font-semibold">Add Questions (Batch Mode)</h4>
-                          {batchQuestions.length > 0 && (
-                            <span className="text-slate-400 text-sm">
-                              {batchQuestions.length} question{batchQuestions.length !== 1 ? "s" : ""} ready to save
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="mb-4 p-4 rounded-lg bg-slate-700/40 border border-slate-600/50">
-                          <div className="flex flex-wrap items-center gap-3">
-                            <label className="text-slate-300 text-sm font-medium">Import CSV</label>
-                            <input
-                              type="file"
-                              accept=".csv,text/csv"
-                              onChange={(e) => handleImportCsv(e.target.files?.[0] ?? null)}
-                              className="text-slate-300 text-sm"
-                            />
-                            {importStatus && <span className="text-emerald-300 text-sm">{importStatus}</span>}
-                          </div>
-                          <p className="text-xs text-slate-400 mt-2">
-                            CSV columns: <span className="font-mono">quiztype,question,answerkey,options,score</span>
-                          </p>
-                          <p className="text-xs text-slate-500 mt-1">
-                            Use <span className="font-mono">|</span> to separate options and enumeration items.
-                            Example: <span className="font-mono">multiple_choice,1+1,2,1|2|3|4,1</span>
-                          </p>
-                        </div>
-                        
-                        {batchQuestions.length > 0 && (
-                          <div className="mb-4 p-4 rounded-lg bg-slate-700/50 border border-slate-600/50">
-                            <h5 className="text-slate-300 font-medium mb-2 text-sm">Questions to be saved ({batchQuestions.length}):</h5>
-                            <ul className="space-y-2 max-h-40 overflow-y-auto">
-                              {batchQuestions.map((q, idx) => (
-                                <li key={idx} className="text-sm text-slate-400 flex items-start gap-2">
-                                  <span className="text-cyan-400">{idx + 1}.</span>
-                                  <span className="flex-1">
-                                    {q.question.substring(0, 60)}{q.question.length > 60 ? "..." : ""}
-                                    <span className="text-slate-500 ml-2">({q.quizType.replace("_", " ")}, {q.score} pt{q.score !== 1 ? "s" : ""})</span>
-                                    {q.imageUrl && (
-                                      <span className="text-emerald-300 ml-2">[Image]</span>
-                                    )}
-                                  </span>
-                                  <button
-                                    type="button"
-                                    onClick={() => setBatchQuestions(batchQuestions.filter((_, i) => i !== idx))}
-                                    className="text-red-400 hover:text-red-300 text-xs"
-                                  >
-                                    Remove
-                                  </button>
-                                </li>
-                              ))}
-                            </ul>
-                            <div className="mt-3 flex gap-2">
-                              <button
-                                type="button"
-                                onClick={handleSaveAllQuestions}
-                                disabled={savingQuestion}
-                                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold text-sm"
-                              >
-                                {savingQuestion ? "Saving..." : `Save All ${batchQuestions.length} Question${batchQuestions.length !== 1 ? "s" : ""}`}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setBatchQuestions([])}
-                                className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium text-sm"
-                              >
-                                Clear All
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                        
-                        <form onSubmit={handleAddQuestionToBatch} className="space-y-4">
-                          <div>
-                            <label className="block text-slate-400 text-sm mb-1">Question</label>
-                            <textarea
-                              value={newQuestionText}
-                              onChange={(e) => setNewQuestionText(e.target.value)}
-                              required
-                              rows={3}
-                              className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                              placeholder="Enter the question..."
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-slate-400 text-sm mb-1">Question Image (optional)</label>
-                            <div className="flex flex-wrap items-center gap-2">
-                              <input
-                                type="file"
-                                accept="image/*"
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0];
-                                  if (file && selectedQuizId) {
-                                    uploadQuestionImage(
-                                      file,
-                                      selectedQuizId,
-                                      setNewQuestionImageUrl,
-                                      setNewQuestionImageUploading,
-                                      setNewQuestionImageError
-                                    );
-                                  }
-                                }}
-                                disabled={newQuestionImageUploading || !selectedQuizId}
-                                className="text-slate-300 text-sm"
-                              />
-                              {newQuestionImageUploading && (
-                                <span className="text-xs text-slate-400">Uploading...</span>
-                              )}
-                              {newQuestionImageUrl && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    deleteQuestionImage(
-                                      newQuestionImageUrl,
-                                      setNewQuestionImageUrl,
-                                      setNewQuestionImageUploading,
-                                      setNewQuestionImageError
-                                    )
-                                  }
-                                  className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
-                                >
-                                  Remove Image
-                                </button>
-                              )}
-                            </div>
-                            {newQuestionImageError && (
-                              <div className="text-xs text-red-400 mt-1">{newQuestionImageError}</div>
-                            )}
-                            {newQuestionImageUrl && (
-                              <div className="mt-2">
-                                <img
-                                  src={newQuestionImageUrl}
-                                  alt="Question preview"
-                                  className="w-full max-h-56 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
-                                />
-                              </div>
-                            )}
-                          </div>
-                          <div>
-                            <label className="block text-slate-400 text-sm mb-1">Type</label>
-                            <select
-                              value={newQuizType}
-                              onChange={(e) => {
-                                const nextType = e.target.value as typeof newQuizType;
-                                setNewQuizType(nextType);
-                                if (nextType === "multiple_choice" && newQuestionOptions.length === 0) {
-                                  setNewQuestionOptions(["", ""]);
-                                }
-                                // Clear previous answer key when switching type to avoid confusion
-                                setNewQuestionAnswerKey("");
-                                if (nextType !== "enumeration") {
-                                  setEnumScoreMode("fixed");
-                                  setNewQuestionScore("1");
-                                }
-                              }}
-                              className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                            >
-                              {QUESTION_TYPES.map((t) => (
-                                <option key={t.value} value={t.value}>{t.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          {newQuizType === "multiple_choice" && (
-                            <>
-                              <div>
-                                <label className="block text-slate-400 text-sm mb-1">Options (add as many as you want)</label>
-                                <div className="space-y-2">
-                                  {newQuestionOptions.map((opt, i) => (
-                                    <div key={i} className="flex gap-2">
-                                      <input
-                                        type="text"
-                                        value={opt}
-                                        onChange={(e) => {
-                                          const next = [...newQuestionOptions];
-                                          next[i] = e.target.value;
-                                          setNewQuestionOptions(next);
-                                        }}
-                                        placeholder={`Option ${i + 1}`}
-                                        className="flex-1 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                      />
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          if (newQuestionOptions.length > 2) {
-                                            const next = newQuestionOptions.filter((_, j) => j !== i);
-                                            setNewQuestionOptions(next);
-                                            if (newQuestionAnswerKey === opt) setNewQuestionAnswerKey("");
-                                          }
-                                        }}
-                                        disabled={newQuestionOptions.length <= 2}
-                                        className="px-3 py-2 rounded-lg bg-red-600/80 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm"
-                                      >
-                                        Remove
-                                      </button>
-                                    </div>
-                                  ))}
-                                  <button
-                                    type="button"
-                                    onClick={() => setNewQuestionOptions([...newQuestionOptions, ""])}
-                                    className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm font-medium"
-                                  >
-                                    + Add option
-                                  </button>
-                                </div>
-                              </div>
-                              <div>
-                                <label className="block text-slate-400 text-sm mb-1">Correct answer (answer key)</label>
-                                <select
-                                  value={newQuestionAnswerKey}
-                                  onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
-                                  required={newQuizType === "multiple_choice"}
-                                  className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                >
-                                  <option value="">Select the correct option...</option>
-                                  {newQuestionOptions.filter((o) => o.trim()).map((o) => (
-                                    <option key={o} value={o.trim()}>{o.trim()}</option>
-                                  ))}
-                                </select>
-                              </div>
-                            </>
-                          )}
-                          {newQuizType !== "multiple_choice" && (
-                            <div>
-                              <label className="block text-slate-400 text-sm mb-1">Answer key</label>
-                              <textarea
-                                value={newQuestionAnswerKey}
-                                onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
-                                required
-                                rows={newQuizType === "enumeration" ? 3 : 2}
-                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                placeholder={
-                                  newQuizType === "enumeration"
-                                    ? "Enter the correct items (one per line). Matching will be case-insensitive."
-                                    : "Enter the correct answer. Matching will be case-insensitive."
-                                }
-                              />
-                              {newQuizType === "enumeration" && (
-                                <p className="mt-1 text-xs text-slate-500">
-                                  Tip: put one correct item per line. Students&apos; answers are compared in a
-                                  case-insensitive way.
-                                </p>
-                              )}
-                            </div>
-                          )}
-                          {newQuizType === "enumeration" && (
-                            <div>
-                              <label className="block text-slate-400 text-sm mb-1">Enumeration scoring</label>
-                              <select
-                                value={enumScoreMode}
-                                onChange={(e) => {
-                                  const mode = e.target.value as "fixed" | "per_item";
-                                  setEnumScoreMode(mode);
-                                  if (mode === "per_item") {
-                                    const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
-                                    setNewQuestionScore(String(count));
-                                  } else {
-                                    setNewQuestionScore("1");
-                                  }
-                                }}
-                                className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                              >
-                                <option value="fixed">Fixed score for the whole question</option>
-                                <option value="per_item">1 point per correct item (auto total)</option>
-                              </select>
-                            </div>
-                          )}
-                          <div>
-                            <label className="block text-slate-400 text-sm mb-1">Score</label>
-                            <input
-                              type="number"
-                              min={0.5}
-                              step={0.5}
-                              value={newQuestionScore}
-                              onChange={(e) => setNewQuestionScore(e.target.value)}
-                              disabled={newQuizType === "enumeration" && enumScoreMode === "per_item"}
-                              className="w-32 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                            />
-                            <p className="mt-1 text-xs text-slate-500">
-                              {newQuizType === "enumeration" && enumScoreMode === "per_item"
-                                ? "Score is calculated from the number of items in the answer key."
-                                : "Default is 1 point per question."}
-                            </p>
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              type="submit"
-                              className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold"
-                            >
-                              Add to Batch
-                            </button>
-                            {batchQuestions.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={handleSaveAllQuestions}
-                                disabled={savingQuestion}
-                                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
-                              >
-                                {savingQuestion ? "Saving..." : `Save All ${batchQuestions.length}`}
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setShowAddQuestion(false);
-                                setNewQuestionText("");
-                                setNewQuestionOptions(["", ""]);
-                                setNewQuestionAnswerKey("");
-                                setNewQuestionScore("1");
-                                setEnumScoreMode("fixed");
-                              }}
-                              className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-slate-200 font-medium"
-                            >
-                              Close Form
-                            </button>
-                            {batchQuestions.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (confirm("Clear all unsaved questions?")) {
-                                    setBatchQuestions([]);
-                                  }
-                                }}
-                                className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 text-white font-medium"
-                              >
-                                Clear Batch
-                              </button>
-                            )}
-                          </div>
-                        </form>
-                      </div>
-                    )}
-                    {questionsLoading ? (
-                      <p className="text-slate-400 py-4">Loading questions...</p>
-                    ) : questionsForQuiz.length === 0 ? (
-                      <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 text-center text-slate-400">
-                        No questions in this quiz yet. Click &quot;Add Question&quot; above.
-                      </div>
-                    ) : (
-                      <ul className="space-y-3">
-                        {displayQuestions.flatMap((q, idx) => {
-                          const prev = displayQuestions[idx - 1];
-                          const showHeader = !prev || prev.quiztype !== q.quiztype;
-                          const label = QUESTION_TYPES.find((t) => t.value === q.quiztype)?.label ?? q.quiztype;
-                          let optionsParsed: string[] = [];
-                          try {
-                            if (q.options) optionsParsed = JSON.parse(q.options);
-                          } catch {
-                            // ignore
-                          }
-                          const header = showHeader ? (
-                            <li key={`${q.quiztype}-header`} className="px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-600/50 text-slate-200 text-sm font-semibold">
-                              {label}
-                            </li>
-                          ) : null;
-                          const item = (
-                            <li
-                              key={q.id}
-                              draggable
-                              onDragStart={() => handleDragStart(q.id)}
-                              onDragOver={(e) => e.preventDefault()}
-                              onDrop={() => handleDrop(q.id)}
-                              className="p-3 rounded-lg bg-slate-700/50 border border-slate-600/60 cursor-move"
-                            >
-                              {editingQuestionId === q.id ? (
-                                <div className="space-y-3">
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="text-slate-500 text-xs uppercase">
-                                      Editing {q.quiztype.replace("_", " ")}
-                                    </span>
-                                    <span className="text-slate-400 text-xs">
-                                      Score:&nbsp;
-                                      <input
-                                        type="number"
-                                        min={0.5}
-                                        step={0.5}
-                                        value={editScore}
-                                        onChange={(e) => setEditScore(e.target.value)}
-                                        disabled={q.quiztype === "enumeration" && editEnumScoreMode === "per_item"}
-                                        className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                                      />
-                                    </span>
-                                  </div>
-                                  <div>
-                                    <label className="block text-slate-400 text-xs mb-1">Question</label>
-                                    <textarea
-                                      value={editQuestionText}
-                                      onChange={(e) => setEditQuestionText(e.target.value)}
-                                      rows={3}
-                                      className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                    />
-                                  </div>
-                                  <div>
-                                    <label className="block text-slate-400 text-xs mb-1">Answer key</label>
-                                    {q.quiztype === "multiple_choice" && editQuestionOptions.length > 0 ? (
-                                      <select
-                                        value={editAnswerKey}
-                                        onChange={(e) => setEditAnswerKey(e.target.value)}
-                                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                      >
-                                        <option value="">Select the correct option...</option>
-                                        {editQuestionOptions.map((opt) => (
-                                          <option key={opt} value={opt}>
-                                            {opt}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    ) : (
-                                      <textarea
-                                        value={editAnswerKey}
-                                        onChange={(e) => setEditAnswerKey(e.target.value)}
-                                        rows={q.quiztype === "enumeration" ? 3 : 2}
-                                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                      />
-                                    )}
-                                  </div>
-                                  <div>
-                                    <label className="block text-slate-400 text-xs mb-1">Question Image (optional)</label>
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <input
-                                        type="file"
-                                        accept="image/*"
-                                        onChange={(e) => {
-                                          const file = e.target.files?.[0];
-                                          if (file && selectedQuizId) {
-                                            uploadQuestionImage(
-                                              file,
-                                              selectedQuizId,
-                                              setEditQuestionImageUrl,
-                                              setEditQuestionImageUploading,
-                                              setEditQuestionImageError
-                                            );
-                                          }
-                                        }}
-                                        disabled={editQuestionImageUploading || !selectedQuizId}
-                                        className="text-slate-300 text-xs"
-                                      />
-                                      {editQuestionImageUploading && (
-                                        <span className="text-xs text-slate-400">Uploading...</span>
-                                      )}
-                                      {editQuestionImageUrl && (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            deleteQuestionImage(
-                                              editQuestionImageUrl,
-                                              setEditQuestionImageUrl,
-                                              setEditQuestionImageUploading,
-                                              setEditQuestionImageError
-                                            )
-                                          }
-                                          className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
-                                        >
-                                          Remove Image
-                                        </button>
-                                      )}
-                                    </div>
-                                    {editQuestionImageError && (
-                                      <div className="text-xs text-red-400 mt-1">{editQuestionImageError}</div>
-                                    )}
-                                    {editQuestionImageUrl && (
-                                      <div className="mt-2">
-                                        <img
-                                          src={editQuestionImageUrl}
-                                          alt="Question preview"
-                                          className="w-full max-h-56 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
-                                        />
-                                      </div>
-                                    )}
-                                  </div>
-                                  {q.quiztype === "enumeration" && (
-                                    <div>
-                                      <label className="block text-slate-400 text-xs mb-1">Enumeration scoring</label>
-                                      <select
-                                        value={editEnumScoreMode}
-                                        onChange={(e) => {
-                                          const mode = e.target.value as "fixed" | "per_item";
-                                          setEditEnumScoreMode(mode);
-                                          if (mode === "per_item") {
-                                            const count = parseEnumerationAnswerKey(editAnswerKey).length;
-                                            setEditScore(String(count));
-                                          }
-                                        }}
-                                        className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                                      >
-                                        <option value="fixed">Fixed score for the whole question</option>
-                                        <option value="per_item">1 point per correct item (auto total)</option>
-                                      </select>
-                                    </div>
-                                  )}
-                                  <div className="flex gap-2 justify-end">
-                                    <button
-                                      type="button"
-                                      disabled={savingEdit}
-                                      onClick={async () => {
-                                        setError("");
-                                        const trimmedQuestion = editQuestionText.trim();
-                                        const trimmedAnswer = editAnswerKey.trim();
-                                        const scoreNumber = Number(editScore) || 1;
-                                        if (!trimmedQuestion) {
-                                          setError("Question text is required.");
-                                          return;
-                                        }
-                                        if (!trimmedAnswer) {
-                                          setError("Answer key is required.");
-                                          return;
-                                        }
-                                        if (q.quiztype === "enumeration" && editEnumScoreMode === "per_item") {
-                                          const count = parseEnumerationAnswerKey(trimmedAnswer).length;
-                                          if (count <= 0) {
-                                            setError("Enumeration needs at least 1 answer item.");
-                                            return;
-                                          }
-                                        }
-                                        if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
-                                          setError("Score must be a positive number.");
-                                          return;
-                                        }
-                                        setSavingEdit(true);
-                                        try {
-                                          const res = await fetch(`/api/teacher/questions/${q.id}`, {
-                                            method: "PATCH",
-                                            headers: { "Content-Type": "application/json" },
-                                            credentials: "include",
-                                            body: JSON.stringify({
-                                              question: trimmedQuestion,
-                                              answerkey: trimmedAnswer,
-                                              score: scoreNumber,
-                                              imageUrl: editQuestionImageUrl.trim() ? editQuestionImageUrl.trim() : null,
-                                            }),
-                                          });
-                                          if (!res.ok) {
-                                            const d = await res.json().catch(() => ({}));
-                                            setError(d.error ?? "Failed to update question");
-                                          } else if (selectedQuizId) {
-                                            await fetchQuestionsForQuiz(selectedQuizId);
-                                            setEditingQuestionId(null);
-                                          }
-                                        } finally {
-                                          setSavingEdit(false);
-                                        }
-                                      }}
-                                      className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm disabled:opacity-50"
-                                    >
-                                      {savingEdit ? "Saving..." : "Save"}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      disabled={savingEdit}
-                                      onClick={() => setEditingQuestionId(null)}
-                                      className="px-3 py-1.5 rounded-lg bg-slate-600 hover:bg-slate-500 text-slate-200 text-sm"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="flex items-start justify-between gap-4">
-                                  <div className="flex-1 min-w-0">
-                                    <div className="flex items-center gap-2 mb-1">
-                                      <span className="text-slate-500 text-xs uppercase">
-                                        {q.quiztype.replace("_", " ")}
-                                      </span>
-                                      <span className="text-xs text-emerald-300">
-                                        {q.score && q.score !== 1 ? `${q.score} pts` : "1 pt"}
-                                      </span>
-                                    </div>
-                                    {q.image_url && (
-                                      <div className="mb-2">
-                                        <img
-                                          src={q.image_url}
-                                          alt="Question illustration"
-                                          className="w-full max-h-40 object-contain rounded-lg border border-slate-600/60 bg-slate-900/40"
-                                        />
-                                      </div>
-                                    )}
-                                    <p className="text-slate-200">{q.question}</p>
-                                    {q.quiztype === "multiple_choice" && (optionsParsed.length > 0 || q.answerkey) && (
-                                      <p className="text-slate-500 text-sm mt-1">
-                                        Options: {optionsParsed.join(", ")}
-                                        {q.answerkey && (
-                                          <span className="text-emerald-400 ml-2">Answer: {q.answerkey}</span>
-                                        )}
-                                      </p>
-                                    )}
-                                    {q.quiztype !== "multiple_choice" && q.answerkey && (
-                                      <p className="text-slate-500 text-sm mt-1">
-                                        <span className="text-slate-400">Answer key:</span>{" "}
-                                        <span className="text-emerald-400 whitespace-pre-line">
-                                          {q.answerkey}
-                                        </span>
-                                      </p>
-                                    )}
-                                  </div>
-                                  <div className="flex flex-col gap-1 shrink-0">
-                                    <button
-                                      onClick={() => {
-                                        setEditingQuestionId(q.id);
-                                        setEditQuestionText(q.question);
-                                        setEditAnswerKey(q.answerkey ?? "");
-                                        setEditScore(String(q.score ?? 1));
-                                        setEditQuestionType(q.quiztype);
-                                        setEditQuestionImageUrl(q.image_url ?? "");
-                                        setEditQuestionImageError("");
-                                        if (q.quiztype === "enumeration") {
-                                          const itemCount = parseEnumerationAnswerKey(q.answerkey ?? "").length;
-                                          const scoreNum = Number(q.score ?? 1);
-                                          const mode = itemCount > 0 && scoreNum === itemCount ? "per_item" : "fixed";
-                                          setEditEnumScoreMode(mode);
-                                        } else {
-                                          setEditEnumScoreMode("fixed");
-                                        }
-                                        // Parse options for multiple choice questions
-                                        if (q.quiztype === "multiple_choice" && q.options) {
-                                          try {
-                                            const parsed = JSON.parse(q.options);
-                                            setEditQuestionOptions(
-                                              Array.isArray(parsed) ? parsed.map((o: unknown) => String(o)) : []
-                                            );
-                                          } catch {
-                                            setEditQuestionOptions([]);
-                                          }
-                                        } else {
-                                          setEditQuestionOptions([]);
-                                        }
-                                      }}
-                                      className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-white text-xs"
-                                    >
-                                      Edit
-                                    </button>
-                                    <button
-                                      onClick={() => deleteQuestion(q.id)}
-                                      className="px-3 py-1 rounded bg-red-600/80 hover:bg-red-600 text-white text-xs"
-                                    >
-                                      Delete
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </li>
-                          );
-                          return header ? [header, item] : [item];
-                        })}
-                      </ul>
-                    )}
-                  </>
+                {pendingQuizDraft && !selectedQuizId && (
+                  <div className="mt-6">
+                    {renderQuestionsPanel()}
+                  </div>
                 )}
               </div>
             )}

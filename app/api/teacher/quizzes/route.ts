@@ -38,7 +38,9 @@ export async function POST(request: NextRequest) {
     saveBestOnly?: boolean;
   };
   const { subjectId, sectionId, period, quizname, timeLimitMinutes, allowRetake, maxAttempts } = body;
-  if (!subjectId?.trim() || !sectionId?.trim()) {
+  const subjectIdStr = subjectId == null ? "" : String(subjectId).trim();
+  const sectionIdStr = sectionId == null ? "" : String(sectionId).trim();
+  if (!subjectIdStr || !sectionIdStr) {
     return NextResponse.json({ error: "subjectId and sectionId required" }, { status: 400 });
   }
   const supabase = getSupabase();
@@ -52,9 +54,9 @@ export async function POST(request: NextRequest) {
     .from("quiztbl")
     .insert({
       teacherid: teacherId,
-      subjectid: subjectId.trim(),
+      subjectid: subjectIdStr,
       quizcode,
-      sectionid: sectionId.trim(),
+      sectionid: sectionIdStr,
       period: (period ?? "").toString().trim(),
       quizname: (quizname ?? "").toString().trim(),
       time_limit_minutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
