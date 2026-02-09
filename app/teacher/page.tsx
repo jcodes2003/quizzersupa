@@ -479,6 +479,8 @@ export default function TeacherPage() {
   const [quizzesPage, setQuizzesPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
   const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
+  const [copiedQuizCode, setCopiedQuizCode] = useState<string | null>(null);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
   const [answersLoading, setAnswersLoading] = useState(false);
   const [questionTypeFilter, setQuestionTypeFilter] = useState<
@@ -693,6 +695,37 @@ export default function TeacherPage() {
   useEffect(() => {
     setQuizzesPage(1);
   }, [quizzes.length]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+    };
+  }, []);
+
+  const handleCopyQuizCode = async (code: string) => {
+    const value = String(code ?? "").trim();
+    if (!value) return;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(value);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = value;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopiedQuizCode(value);
+      if (copyTimeoutRef.current) clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = setTimeout(() => setCopiedQuizCode(null), 1500);
+    } catch {
+      // Ignore clipboard errors.
+    }
+  };
 
   // Debug: log retrieved section/subject names from API rows
   useEffect(() => {
@@ -2144,9 +2177,42 @@ export default function TeacherPage() {
                             className="text-left text-slate-200"
                           >
                             {quiz.quizname ? (
-                              <><strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} · {quiz.quizcode}</>
+                              <>
+                                <strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} ·{" "}
+                                {getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} ·{" "}
+                                <span
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleCopyQuizCode(quiz.quizcode);
+                                  }}
+                                  className="font-semibold text-cyan-200 hover:text-cyan-100 cursor-pointer"
+                                  title="Click to copy quiz code"
+                                >
+                                  {quiz.quizcode}
+                                </span>
+                                {copiedQuizCode === quiz.quizcode && (
+                                  <span className="ml-2 text-xs text-emerald-300">Copied!</span>
+                                )}
+                              </>
                             ) : (
-                              <>{getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} · <strong>{quiz.quizcode}</strong></>
+                              <>
+                                {getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} ·{" "}
+                                <span
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    handleCopyQuizCode(quiz.quizcode);
+                                  }}
+                                  className="font-semibold text-cyan-200 hover:text-cyan-100 cursor-pointer"
+                                  title="Click to copy quiz code"
+                                >
+                                  {quiz.quizcode}
+                                </span>
+                                {copiedQuizCode === quiz.quizcode && (
+                                  <span className="ml-2 text-xs text-emerald-300">Copied!</span>
+                                )}
+                              </>
                             )}
                           </button>
                           {quiz.source_quiz_id && (
