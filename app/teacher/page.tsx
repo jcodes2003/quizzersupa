@@ -2164,27 +2164,50 @@ export default function TeacherPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-slate-400 text-sm mb-1">Sections</label>
-                    <div className="max-h-40 overflow-auto rounded-lg border border-slate-600/60 bg-slate-900/40 p-2 space-y-1">
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-slate-400 text-sm">Sections</label>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setNewQuizSectionIds(sections.map((s) => s.id))}
+                          className="px-2 py-1 rounded bg-slate-700/70 hover:bg-slate-600 text-xs text-slate-200"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setNewQuizSectionIds([])}
+                          className="px-2 py-1 rounded bg-slate-700/70 hover:bg-slate-600 text-xs text-slate-200"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+                    <div className="max-h-48 overflow-auto rounded-xl border border-slate-600/60 bg-slate-900/40 p-3">
                       {sections.length === 0 && (
                         <div className="text-slate-500 text-xs">No sections yet ? add in Admin</div>
                       )}
-                      {sections.map((s) => (
-                        <label key={s.id} className="flex items-center gap-2 text-slate-200 text-xs">
-                          <input
-                            type="checkbox"
-                            checked={newQuizSectionIds.includes(s.id)}
-                            onChange={(e) => {
-                              const checked = e.target.checked;
-                              setNewQuizSectionIds((prev) =>
-                                checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
-                              );
-                            }}
-                            className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
-                          />
-                          <span>{s.name}</span>
-                        </label>
-                      ))}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {sections.map((s) => (
+                          <label key={s.id} className="flex items-center gap-2 rounded-lg bg-slate-800/60 px-3 py-2 text-slate-200 text-xs border border-slate-700/60 hover:border-cyan-500/60">
+                            <input
+                              type="checkbox"
+                              checked={newQuizSectionIds.includes(s.id)}
+                              onChange={(e) => {
+                                const checked = e.target.checked;
+                                setNewQuizSectionIds((prev) =>
+                                  checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
+                                );
+                              }}
+                              className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                            />
+                            <span className="truncate">{s.name}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-2 text-xs text-slate-500">
+                      Selected: {newQuizSectionIds.length}
                     </div>
                     {showCreateQuiz && sections.length === 0 && (
                       <button type="button" onClick={() => fetchSections()} className="mt-2 text-sm text-cyan-400 hover:underline">
@@ -2495,28 +2518,49 @@ export default function TeacherPage() {
                                 <div className="text-xs text-slate-400 mb-2">Reuse quiz</div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                   <div>
-                                    <label className="block text-slate-400 text-xs mb-1">Target Sections</label>
-                                    <div className="max-h-40 overflow-auto rounded-lg border border-slate-600/60 bg-slate-900/40 p-2 space-y-1">
+                                    <div className="flex items-center justify-between mb-1">
+                                      <label className="block text-slate-400 text-xs">Target Sections</label>
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          type="button"
+                                          onClick={() => setReuseSectionIds(sections.map((s) => s.id))}
+                                          className="px-2 py-1 rounded bg-slate-700/70 hover:bg-slate-600 text-xs text-slate-200"
+                                        >
+                                          Select All
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => setReuseSectionIds([])}
+                                          className="px-2 py-1 rounded bg-slate-700/70 hover:bg-slate-600 text-xs text-slate-200"
+                                        >
+                                          Clear
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div className="max-h-40 overflow-auto rounded-xl border border-slate-600/60 bg-slate-900/40 p-3">
                                       {sections.length === 0 && (
                                         <div className="text-slate-500 text-xs">No sections available.</div>
                                       )}
-                                      {sections.map((s) => (
-                                        <label key={s.id} className="flex items-center gap-2 text-slate-200 text-xs">
-                                          <input
-                                            type="checkbox"
-                                            checked={reuseSectionIds.includes(s.id)}
-                                            onChange={(e) => {
-                                              const checked = e.target.checked;
-                                              setReuseSectionIds((prev) =>
-                                                checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
-                                              );
-                                            }}
-                                            className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
-                                          />
-                                          <span>{s.name}</span>
-                                        </label>
-                                      ))}
+                                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                                        {sections.map((s) => (
+                                          <label key={s.id} className="flex items-center gap-2 rounded-lg bg-slate-800/60 px-3 py-2 text-slate-200 text-xs border border-slate-700/60 hover:border-cyan-500/60">
+                                            <input
+                                              type="checkbox"
+                                              checked={reuseSectionIds.includes(s.id)}
+                                              onChange={(e) => {
+                                                const checked = e.target.checked;
+                                                setReuseSectionIds((prev) =>
+                                                  checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
+                                                );
+                                              }}
+                                              className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                                            />
+                                            <span className="truncate">{s.name}</span>
+                                          </label>
+                                        ))}
+                                      </div>
                                     </div>
+                                    <div className="mt-2 text-xs text-slate-500">Selected: {reuseSectionIds.length}</div>
                                   </div>
                                   <div>
                                     <label className="block text-slate-400 text-xs mb-1">Target Period</label>
