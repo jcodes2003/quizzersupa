@@ -171,6 +171,7 @@ export default function Quiz({
   const [attemptNumber, setAttemptNumber] = useState<number | null>(null);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const resolvedMaxAttempts =
     Number.isFinite(maxAttempts) && (maxAttempts ?? 0) > 0 ? (maxAttempts as number) : 1;
   const resolvedAllowRetake = allowRetake === true || resolvedMaxAttempts > 1;
@@ -199,6 +200,14 @@ export default function Quiz({
   useEffect(() => {
     if (submitError) errorRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [submitError]);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onChange);
+    onChange();
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
 
   const getUnansweredPages = useCallback((): number[] => {
     const pages: number[] = [];
@@ -672,6 +681,25 @@ export default function Quiz({
                   className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
                 >
                   {started ? "Quiz Started" : startLoading ? "Starting..." : "Start Quiz"}
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (typeof document === "undefined") return;
+                    try {
+                      if (!document.fullscreenElement) {
+                        await document.documentElement.requestFullscreen();
+                      } else {
+                        await document.exitFullscreen();
+                      }
+                    } catch {
+                      // Ignore fullscreen errors (browser or permissions).
+                    }
+                  }}
+                  disabled={Boolean(quizId) && !started}
+                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-semibold"
+                >
+                  {isFullscreen ? "Exit Focus Mode" : "Focus Mode"}
                 </button>
                 <span className="text-slate-400 text-sm">
                   Attempts allowed: {attemptsLimit}
