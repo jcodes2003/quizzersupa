@@ -92,11 +92,17 @@ export async function POST(request: NextRequest) {
   }
 
   if (existingOpen) {
-    if (existingOpen.quizid !== quizId) {
-      return NextResponse.json({ error: "Attempt already started for this quiz group" }, { status: 403 });
+    let timeLimitMinutes = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;
+    if (!timeLimitMinutes && existingOpen.quizid && existingOpen.quizid !== quizId) {
+      const { data: attemptQuiz } = await supabase
+        .from("quiztbl")
+        .select("time_limit_minutes")
+        .eq("id", existingOpen.quizid)
+        .maybeSingle();
+      timeLimitMinutes = (attemptQuiz as { time_limit_minutes?: number | null })?.time_limit_minutes ?? null;
     }
-    const expiresAt = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes
-      ? new Date(new Date(existingOpen.started_at).getTime() + ((quizSettings as { time_limit_minutes?: number }).time_limit_minutes ?? 0) * 60 * 1000).toISOString()
+    const expiresAt = timeLimitMinutes
+      ? new Date(new Date(existingOpen.started_at).getTime() + timeLimitMinutes * 60 * 1000).toISOString()
       : null;
     return NextResponse.json({
       attemptId: existingOpen.id,
