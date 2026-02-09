@@ -440,7 +440,7 @@ export default function TeacherPage() {
   const [showCreateQuiz, setShowCreateQuiz] = useState(false);
   const [showAddQuestion, setShowAddQuestion] = useState(false);
   const [newQuizSubjectId, setNewQuizSubjectId] = useState("");
-  const [newQuizSectionId, setNewQuizSectionId] = useState("");
+  const [newQuizSectionIds, setNewQuizSectionIds] = useState<string[]>([]);
   const [newQuizPeriod, setNewQuizPeriod] = useState("");
   const [newQuizQuizName, setNewQuizQuizName] = useState("");
   const [newQuizTimeLimit, setNewQuizTimeLimit] = useState("");
@@ -457,7 +457,7 @@ export default function TeacherPage() {
   const [editQuizAllowRetake, setEditQuizAllowRetake] = useState(false);
   const [editQuizMaxAttempts, setEditQuizMaxAttempts] = useState("1");
   const [editQuizSaveBestOnly, setEditQuizSaveBestOnly] = useState(true);
-  const [reuseSectionId, setReuseSectionId] = useState("");
+  const [reuseSectionIds, setReuseSectionIds] = useState<string[]>([]);
   const [reusePeriod, setReusePeriod] = useState("");
   const [newQuestionText, setNewQuestionText] = useState("");
   const [newQuizType, setNewQuizType] = useState<typeof QUESTION_TYPES[number]["value"]>("multiple_choice");
@@ -800,7 +800,10 @@ export default function TeacherPage() {
 
   const handleCreateQuiz = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newQuizSubjectId || !newQuizSectionId) return;
+    if (!newQuizSubjectId || newQuizSectionIds.length === 0) {
+      setError("Select a subject and at least one section.");
+      return;
+    }
     setSavingQuiz(true);
     setError("");
     try {
@@ -810,13 +813,14 @@ export default function TeacherPage() {
       const maxAttempts = newQuizAllowRetake
         ? Math.max(2, Number(newQuizMaxAttempts) || 2)
         : 1;
+      const primarySectionId = newQuizSectionIds[0];
       const res = await fetch("/api/teacher/quizzes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
           subjectId: newQuizSubjectId,
-          sectionId: newQuizSectionId,
+          sectionId: primarySectionId,
           period: newQuizPeriod.trim(),
           quizname: newQuizQuizName.trim(),
           timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
@@ -830,9 +834,35 @@ export default function TeacherPage() {
         setError(d.error ?? "Failed to create quiz");
         return;
       }
+      const created = await res.json().catch(() => null);
+      if (created?.id && newQuizSectionIds.length > 1) {
+        const failures: Array<{ sectionId: string; message: string }> = [];
+        for (const sectionId of newQuizSectionIds.slice(1)) {
+          const aRes = await fetch(`/api/teacher/quizzes/${created.id}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              action: "assign",
+              sectionId,
+              period: newQuizPeriod.trim(),
+            }),
+          });
+          if (!aRes.ok) {
+            const d = await aRes.json().catch(() => ({}));
+            failures.push({ sectionId, message: d.error ?? aRes.statusText ?? "Failed to assign quiz" });
+          }
+        }
+        if (failures.length > 0) {
+          const summary = failures
+            .map((f) => `${sections.find((s) => s.id === f.sectionId)?.name ?? f.sectionId}: ${f.message}`)
+            .join(" | ");
+          setError(`Assigned quiz created, but failed for: ${summary}`);
+        }
+      }
       setShowCreateQuiz(false);
       setNewQuizSubjectId("");
-      setNewQuizSectionId("");
+      setNewQuizSectionIds([]);
       setNewQuizPeriod("");
       setNewQuizQuizName("");
       setNewQuizTimeLimit("");
@@ -858,7 +888,7 @@ export default function TeacherPage() {
     setEditQuizAllowRetake(Boolean(quiz.allow_retake));
     setEditQuizMaxAttempts(String(quiz.max_attempts ?? 1));
     setEditQuizSaveBestOnly(quiz.save_best_only !== false);
-    setReuseSectionId(quiz.sectionid);
+    setReuseSectionIds(quiz.sectionid ? [quiz.sectionid] : []);
     setReusePeriod(quiz.period ?? "");
     if (subjects.length === 0) fetchSubjects();
     if (sections.length === 0) fetchSections();
@@ -905,25 +935,41 @@ export default function TeacherPage() {
 
   const handleReuseQuiz = async (action: "duplicate" | "assign") => {
     if (!editingQuizId) return;
-    if (!reuseSectionId) {
-      setError("Select a target section.");
+    if (reuseSectionIds.length === 0) {
+      setError("Select at least one target section.");
+      return;
+    }
+    if (action === "duplicate" && reuseSectionIds.length !== 1) {
+      setError("Select exactly one section for duplicate.");
       return;
     }
     setError("");
     try {
-      const res = await fetch(`/api/teacher/quizzes/${editingQuizId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          action,
-          sectionId: reuseSectionId,
-          period: reusePeriod,
-        }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        setError(d.error ?? "Failed to reuse quiz");
+      const targets = action === "assign" ? reuseSectionIds : [reuseSectionIds[0]];
+      const failures: Array<{ sectionId: string; message: string }> = [];
+      for (const sectionId of targets) {
+        const res = await fetch(`/api/teacher/quizzes/${editingQuizId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            action,
+            sectionId,
+            period: reusePeriod,
+          }),
+        });
+        if (!res.ok) {
+          const d = await res.json().catch(() => ({}));
+          const sectionName = sections.find((s) => s.id === sectionId)?.name ?? sectionId;
+          failures.push({ sectionId, message: d.error ?? res.statusText ?? "Failed to reuse quiz" });
+          console.warn("[reuse-quiz] failed", { action, sectionId, sectionName, error: d.error, status: res.status });
+        }
+      }
+      if (failures.length > 0) {
+        const summary = failures
+          .map((f) => `${sections.find((s) => s.id === f.sectionId)?.name ?? f.sectionId}: ${f.message}`)
+          .join(" | ");
+        setError(`Failed to reuse quiz for: ${summary}`);
         return;
       }
       await fetchQuizzes();
@@ -1792,7 +1838,6 @@ export default function TeacherPage() {
                       <tr className="border-b border-slate-600 bg-slate-700/50">
                         <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Attempt</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
@@ -2119,18 +2164,28 @@ export default function TeacherPage() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-slate-400 text-sm mb-1">Section</label>
-                    <select
-                      value={newQuizSectionId}
-                      onChange={(e) => setNewQuizSectionId(e.target.value)}
-                      required
-                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                    >
-                      <option value="">{sections.length === 0 ? "No sections yet — add in Admin" : "Select section..."}</option>
+                    <label className="block text-slate-400 text-sm mb-1">Sections</label>
+                    <div className="max-h-40 overflow-auto rounded-lg border border-slate-600/60 bg-slate-900/40 p-2 space-y-1">
+                      {sections.length === 0 && (
+                        <div className="text-slate-500 text-xs">No sections yet ? add in Admin</div>
+                      )}
                       {sections.map((s) => (
-                        <option key={s.id} value={s.id}>{s.name}</option>
+                        <label key={s.id} className="flex items-center gap-2 text-slate-200 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={newQuizSectionIds.includes(s.id)}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setNewQuizSectionIds((prev) =>
+                                checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
+                              );
+                            }}
+                            className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                          />
+                          <span>{s.name}</span>
+                        </label>
                       ))}
-                    </select>
+                    </div>
                     {showCreateQuiz && sections.length === 0 && (
                       <button type="button" onClick={() => fetchSections()} className="mt-2 text-sm text-cyan-400 hover:underline">
                         Refresh sections
@@ -2440,17 +2495,28 @@ export default function TeacherPage() {
                                 <div className="text-xs text-slate-400 mb-2">Reuse quiz</div>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                   <div>
-                                    <label className="block text-slate-400 text-xs mb-1">Target Section</label>
-                                    <select
-                                      value={reuseSectionId}
-                                      onChange={(e) => setReuseSectionId(e.target.value)}
-                                      className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
-                                    >
-                                      <option value="">Select section...</option>
+                                    <label className="block text-slate-400 text-xs mb-1">Target Sections</label>
+                                    <div className="max-h-40 overflow-auto rounded-lg border border-slate-600/60 bg-slate-900/40 p-2 space-y-1">
+                                      {sections.length === 0 && (
+                                        <div className="text-slate-500 text-xs">No sections available.</div>
+                                      )}
                                       {sections.map((s) => (
-                                        <option key={s.id} value={s.id}>{s.name}</option>
+                                        <label key={s.id} className="flex items-center gap-2 text-slate-200 text-xs">
+                                          <input
+                                            type="checkbox"
+                                            checked={reuseSectionIds.includes(s.id)}
+                                            onChange={(e) => {
+                                              const checked = e.target.checked;
+                                              setReuseSectionIds((prev) =>
+                                                checked ? [...prev, s.id] : prev.filter((id) => id !== s.id)
+                                              );
+                                            }}
+                                            className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                                          />
+                                          <span>{s.name}</span>
+                                        </label>
                                       ))}
-                                    </select>
+                                    </div>
                                   </div>
                                   <div>
                                     <label className="block text-slate-400 text-xs mb-1">Target Period</label>

@@ -89,99 +89,104 @@ export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ quizId: string }> }
 ) {
-  const teacherId = await getTeacherId();
-  if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  const { quizId } = await params;
+  try {
+    const teacherId = await getTeacherId();
+    if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    const { quizId } = await params;
 
-  const ok = await ensureQuizBelongsToTeacher(quizId, teacherId);
-  if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    const ok = await ensureQuizBelongsToTeacher(quizId, teacherId);
+    if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const body = (await request.json()) as {
-    action?: "duplicate" | "assign";
-    sectionId?: string;
-    period?: string;
-    quizname?: string;
-  };
+    const body = (await request.json()) as {
+      action?: "duplicate" | "assign";
+      sectionId?: string;
+      period?: string;
+      quizname?: string;
+    };
 
-  const supabase = getSupabase();
-  const { data: quizRow, error: quizErr } = await supabase
-    .from("quiztbl")
-    .select("*")
-    .eq("id", quizId)
-    .single();
-  if (quizErr || !quizRow) return NextResponse.json({ error: quizErr?.message ?? "Quiz not found" }, { status: 404 });
+    const supabase = getSupabase();
+    const { data: quizRow, error: quizErr } = await supabase
+      .from("quiztbl")
+      .select("*")
+      .eq("id", quizId)
+      .single();
+    if (quizErr || !quizRow) return NextResponse.json({ error: quizErr?.message ?? "Quiz not found" }, { status: 404 });
 
-  const action = body.action;
-  if (action !== "duplicate" && action !== "assign") {
-    return NextResponse.json({ error: "Invalid action" }, { status: 400 });
-  }
+    const action = body.action;
+    if (action !== "duplicate" && action !== "assign") {
+      return NextResponse.json({ error: "Invalid action" }, { status: 400 });
+    }
 
-  const sectionId = body.sectionId?.trim();
-  if (!sectionId) return NextResponse.json({ error: "sectionId required" }, { status: 400 });
+    const sectionId = body.sectionId !== undefined && body.sectionId !== null ? String(body.sectionId).trim() : "";
+    if (!sectionId) return NextResponse.json({ error: "sectionId required" }, { status: 400 });
 
-  const period = (body.period ?? "").toString().trim();
-  const baseQuizname = (quizRow as { quizname?: string | null }).quizname ?? "";
-  const quizname = (body.quizname ?? baseQuizname).toString().trim();
+    const period = (body.period ?? "").toString().trim();
+    const baseQuizname = (quizRow as { quizname?: string | null }).quizname ?? "";
+    const quizname = (body.quizname ?? baseQuizname).toString().trim();
 
-  // Create new quiz code
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let quizcode = "";
-  for (let i = 0; i < 8; i++) {
-    quizcode += chars[Math.floor(Math.random() * chars.length)];
-  }
-  for (let attempt = 0; attempt < 10; attempt++) {
-    const { data: existing } = await supabase.from("quiztbl").select("id").eq("quizcode", quizcode).limit(1).maybeSingle();
-    if (!existing) break;
-    quizcode = "";
+    // Create new quiz code
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let quizcode = "";
     for (let i = 0; i < 8; i++) {
       quizcode += chars[Math.floor(Math.random() * chars.length)];
     }
-  }
-
-  const sourceQuizId = (quizRow as { source_quiz_id?: string | null }).source_quiz_id ?? quizRow.id;
-  const insertRow: Record<string, unknown> = {
-    teacherid: (quizRow as { teacherid: string }).teacherid,
-    subjectid: (quizRow as { subjectid: string }).subjectid,
-    sectionid: sectionId,
-    period,
-    quizname,
-    quizcode,
-    time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
-    allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
-    max_attempts: (quizRow as { max_attempts?: number | null }).max_attempts ?? 1,
-    save_best_only: (quizRow as { save_best_only?: boolean | null }).save_best_only !== false,
-    source_quiz_id: action === "assign" ? sourceQuizId : null,
-  };
-
-  const { data: newQuiz, error: insertErr } = await supabase
-    .from("quiztbl")
-    .insert(insertRow)
-    .select()
-    .single();
-  if (insertErr || !newQuiz) return NextResponse.json({ error: insertErr?.message ?? "Failed to create quiz" }, { status: 500 });
-
-  if (action === "duplicate") {
-    const { data: questions, error: qErr } = await supabase
-      .from("questiontbl")
-      .select("*")
-      .eq("quizid", sourceQuizId);
-    if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 });
-    if (questions && questions.length > 0) {
-      const inserts = questions.map((q) => ({
-        quizid: newQuiz.id,
-        question: q.question,
-        quiztype: q.quiztype,
-        answerkey: q.answerkey,
-        options: q.options,
-        score: q.score ?? 1,
-        image_url: (q as { image_url?: string | null }).image_url ?? null,
-      }));
-      const { error: insertQErr } = await supabase.from("questiontbl").insert(inserts);
-      if (insertQErr) return NextResponse.json({ error: insertQErr.message }, { status: 500 });
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const { data: existing } = await supabase.from("quiztbl").select("id").eq("quizcode", quizcode).limit(1).maybeSingle();
+      if (!existing) break;
+      quizcode = "";
+      for (let i = 0; i < 8; i++) {
+        quizcode += chars[Math.floor(Math.random() * chars.length)];
+      }
     }
-  }
 
-  return NextResponse.json(newQuiz);
+    const sourceQuizId = (quizRow as { source_quiz_id?: string | null }).source_quiz_id ?? quizRow.id;
+    const insertRow: Record<string, unknown> = {
+      teacherid: (quizRow as { teacherid: string }).teacherid,
+      subjectid: (quizRow as { subjectid: string }).subjectid,
+      sectionid: sectionId,
+      period,
+      quizname,
+      quizcode,
+      time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
+      allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
+      max_attempts: (quizRow as { max_attempts?: number | null }).max_attempts ?? 1,
+      save_best_only: (quizRow as { save_best_only?: boolean | null }).save_best_only !== false,
+      source_quiz_id: action === "assign" ? sourceQuizId : null,
+    };
+
+    const { data: newQuiz, error: insertErr } = await supabase
+      .from("quiztbl")
+      .insert(insertRow)
+      .select()
+      .single();
+    if (insertErr || !newQuiz) return NextResponse.json({ error: insertErr?.message ?? "Failed to create quiz" }, { status: 500 });
+
+    if (action === "duplicate") {
+      const { data: questions, error: qErr } = await supabase
+        .from("questiontbl")
+        .select("*")
+        .eq("quizid", sourceQuizId);
+      if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 });
+      if (questions && questions.length > 0) {
+        const inserts = questions.map((q) => ({
+          quizid: newQuiz.id,
+          question: q.question,
+          quiztype: q.quiztype,
+          answerkey: q.answerkey,
+          options: q.options,
+          score: q.score ?? 1,
+          image_url: (q as { image_url?: string | null }).image_url ?? null,
+        }));
+        const { error: insertQErr } = await supabase.from("questiontbl").insert(inserts);
+        if (insertQErr) return NextResponse.json({ error: insertQErr.message }, { status: 500 });
+      }
+    }
+
+    return NextResponse.json(newQuiz);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Internal Server Error";
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
 }
 
 export async function DELETE(

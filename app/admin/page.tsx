@@ -15,7 +15,7 @@ export default function AdminPage() {
   const [sections, setSections] = useState<Section[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
-  const [tab, setTab] = useState<"sections" | "subjects" | "teachers">("sections");
+  const [tab, setTab] = useState<"sections" | "subjects" | "teachers" | "storage">("sections");
   const [sectionName, setSectionName] = useState("");
   const [subjectName, setSubjectName] = useState("");
   const [subjectSlug, setSubjectSlug] = useState("");
@@ -26,6 +26,10 @@ export default function AdminPage() {
   const [editValue, setEditValue] = useState("");
   const [editSlug, setEditSlug] = useState("");
   const [editTeacherPass, setEditTeacherPass] = useState("");
+  const [imageDeleteStatus, setImageDeleteStatus] = useState("");
+  const [storageImages, setStorageImages] = useState<string[]>([]);
+  const [storageSelected, setStorageSelected] = useState<string[]>([]);
+  const [storageLoading, setStorageLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     const base = "/api/admin";
@@ -239,6 +243,59 @@ export default function AdminPage() {
     if (res.ok) fetchData();
   };
 
+  const loadStorageImages = async () => {
+    setStorageLoading(true);
+    try {
+      const res = await fetch("/api/admin/quiz-images", { credentials: "include" });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setImageDeleteStatus(d.error ?? "Failed to load images");
+        return;
+      }
+      setStorageImages(Array.isArray(d.urls) ? d.urls : []);
+      setStorageSelected([]);
+    } finally {
+      setStorageLoading(false);
+    }
+  };
+
+  const deleteSelectedImages = async () => {
+    if (storageSelected.length === 0) return;
+    if (!confirm(`Delete ${storageSelected.length} selected image(s)? This cannot be undone.`)) return;
+    setImageDeleteStatus("");
+    const res = await fetch("/api/admin/quiz-images", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ urls: storageSelected }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setImageDeleteStatus(d.error ?? "Failed to delete images");
+      return;
+    }
+    setImageDeleteStatus(`Deleted ${d.deleted ?? storageSelected.length} image(s).`);
+    await loadStorageImages();
+  };
+
+  const deleteAllImages = async () => {
+    if (!confirm("Delete ALL images from the bucket? This cannot be undone.")) return;
+    setImageDeleteStatus("");
+    const res = await fetch("/api/admin/quiz-images", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ all: true }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setImageDeleteStatus(d.error ?? "Failed to delete all images");
+      return;
+    }
+    setImageDeleteStatus(`Deleted ${d.deleted ?? 0} image(s).`);
+    await loadStorageImages();
+  };
+
   if (authenticated === null) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 flex items-center justify-center">
@@ -301,7 +358,7 @@ export default function AdminPage() {
         )}
 
         <div className="flex gap-2 mb-6">
-          {(["sections", "subjects", "teachers"] as const).map((t) => (
+          {(["sections", "subjects", "teachers", "storage"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -514,6 +571,83 @@ export default function AdminPage() {
                   </li>
                 ))}
               </ul>
+            </>
+          )}
+          {tab === "storage" && (
+            <>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-slate-200">Storage Cleanup</h2>
+                <button
+                  onClick={loadStorageImages}
+                  className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm"
+                >
+                  Refresh
+                </button>
+              </div>
+              <p className="text-sm text-slate-400 mb-4">
+                Select images to delete, or delete all images in the bucket.
+              </p>
+              {storageLoading ? (
+                <p className="text-slate-400">Loading images...</p>
+              ) : storageImages.length === 0 ? (
+                <p className="text-slate-400">No images found.</p>
+              ) : (
+                <div className="rounded-lg border border-slate-600/60 bg-slate-900/40 p-3 max-h-80 overflow-auto">
+                  <div className="flex items-center gap-2 mb-3">
+                    <button
+                      onClick={() => setStorageSelected(storageImages)}
+                      className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      onClick={() => setStorageSelected([])}
+                      className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-xs text-slate-200"
+                    >
+                      Clear
+                    </button>
+                    <span className="text-xs text-slate-400">
+                      Selected {storageSelected.length} of {storageImages.length}
+                    </span>
+                  </div>
+                  <ul className="space-y-2">
+                    {storageImages.map((url) => (
+                      <li key={url} className="flex items-start gap-2 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={storageSelected.includes(url)}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            setStorageSelected((prev) =>
+                              checked ? [...prev, url] : prev.filter((u) => u !== url)
+                            );
+                          }}
+                          className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500"
+                        />
+                        <span className="break-all">{url}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={deleteSelectedImages}
+                  disabled={storageSelected.length === 0}
+                  className="px-4 py-2 rounded-xl bg-red-600/80 hover:bg-red-600 text-white font-medium disabled:opacity-50"
+                >
+                  Delete Selected
+                </button>
+                <button
+                  onClick={deleteAllImages}
+                  className="px-4 py-2 rounded-xl bg-red-700 hover:bg-red-600 text-white font-medium"
+                >
+                  Delete All Images
+                </button>
+                {imageDeleteStatus && (
+                  <span className="text-sm text-slate-300">{imageDeleteStatus}</span>
+                )}
+              </div>
             </>
           )}
         </div>
