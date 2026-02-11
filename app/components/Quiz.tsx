@@ -162,6 +162,7 @@ export default function Quiz({
   const [results, setResults] = useState<QuizResults | null>(null);
   const [tabLeft, setTabLeft] = useState(false);
   const [currentPage, setCurrentPage] = useState(0);
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const autoSubmitRef = useRef(false);
@@ -208,6 +209,54 @@ export default function Quiz({
     onChange();
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    if (!started || submitted) return;
+
+    const originalOpen = window.open;
+    window.open = () => null;
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase();
+      const metaOrCtrl = e.ctrlKey || e.metaKey;
+      if (
+        (metaOrCtrl && (key === "t" || key === "n")) ||
+        (metaOrCtrl && e.shiftKey && key === "n")
+      ) {
+        e.preventDefault();
+      }
+    };
+
+    const handleClickCapture = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      const anchor = target?.closest("a");
+      if (!anchor) return;
+
+      const opensNewTab =
+        anchor.target === "_blank" || e.ctrlKey || e.metaKey || e.button === 1;
+      if (opensNewTab) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
+    const handleAuxClickCapture = (e: MouseEvent) => {
+      if (e.button !== 1) return;
+      handleClickCapture(e);
+    };
+
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("click", handleClickCapture, true);
+    document.addEventListener("auxclick", handleAuxClickCapture, true);
+
+    return () => {
+      window.open = originalOpen;
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("click", handleClickCapture, true);
+      document.removeEventListener("auxclick", handleAuxClickCapture, true);
+    };
+  }, [started, submitted]);
 
   const getUnansweredPages = useCallback((): number[] => {
     const pages: number[] = [];
@@ -502,6 +551,11 @@ export default function Quiz({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitError(null);
+    setShowSubmitConfirm(false);
+    if (currentPage < totalPages - 1) {
+      setCurrentPage((p) => Math.min(totalPages - 1, p + 1));
+      return;
+    }
     if (!studentFirstName.trim()) {
       setSubmitError("Please enter your first name.");
       setCurrentPage(0);
@@ -532,7 +586,7 @@ export default function Quiz({
       setSubmitError(`Please answer all questions. You have unanswered items in Part ${firstPage + 1}: ${partNames[firstPage] ?? "Unknown"}.`);
       return;
     }
-    gradeQuiz();
+    setShowSubmitConfirm(true);
   };
 
   if (submitted && results) {
@@ -552,9 +606,11 @@ export default function Quiz({
             <p className="text-center text-slate-400 mb-2">{quizTitle}</p>
             <p className="text-center text-cyan-300 font-semibold mb-2">Answered by: {results.studentName}</p>
             <p className="text-center text-slate-400 mb-2">Section: {results.section}</p>
-            <p className="text-center text-slate-500 text-sm mb-8">
-              Attempt {results.attempts} of {attemptsLimit}
-            </p>
+            {tabLeft && (
+              <p className="text-center text-slate-500 text-sm mb-8">
+                Attempt {results.attempts} of {attemptsLimit}
+              </p>
+            )}
 
             <div className="grid gap-4 mb-8">
               <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
@@ -587,7 +643,7 @@ export default function Quiz({
             </div>
 
             <div className="mt-8 space-y-4">
-              {results.attempts >= attemptsLimit && (
+              {tabLeft && results.attempts >= attemptsLimit && (
                 <div className="p-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-center">
                   <p className="font-semibold">You've used all {attemptsLimit} attempts. You cannot retake this quiz.</p>
                 </div>
@@ -599,10 +655,11 @@ export default function Quiz({
                 >
                   ← Back to Home
                 </Link>
-                {results.attempts < attemptsLimit && (
+                {tabLeft && results.attempts < attemptsLimit && (
                   <button
                     onClick={() => {
                       setSubmitted(false);
+                      setShowSubmitConfirm(false);
                       setStarted(false);
                       setAttemptId(null);
                       setAttemptNumber(null);
@@ -824,7 +881,12 @@ export default function Quiz({
           <div className="flex justify-between items-center gap-4">
             <button
               type="button"
-              onClick={() => { setSubmitError(null); setCurrentPage((p) => Math.max(0, p - 1)); }}
+              onClick={(e) => {
+                e.preventDefault();
+                setShowSubmitConfirm(false);
+                setSubmitError(null);
+                setCurrentPage((p) => Math.max(0, p - 1));
+              }}
               disabled={currentPage === 0 || (Boolean(quizId) && !started)}
               className="px-6 py-3 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold transition-colors"
             >
@@ -833,7 +895,12 @@ export default function Quiz({
             {currentPage < totalPages - 1 ? (
               <button
                 type="button"
-                onClick={() => { setSubmitError(null); setCurrentPage((p) => Math.min(totalPages - 1, p + 1)); }}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setShowSubmitConfirm(false);
+                  setSubmitError(null);
+                  setCurrentPage((p) => Math.min(totalPages - 1, p + 1));
+                }}
                 disabled={Boolean(quizId) && !started}
                 className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition-colors"
               >
@@ -850,6 +917,33 @@ export default function Quiz({
             )}
           </div>
         </form>
+        {showSubmitConfirm && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-600 bg-slate-800 p-6 shadow-2xl">
+              <h3 className="text-lg font-bold text-slate-100 mb-2">Confirm Submission</h3>
+              <p className="text-slate-300 mb-6">Are you sure you want to submit your answer?</p>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowSubmitConfirm(false)}
+                  className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSubmitConfirm(false);
+                    gradeQuiz();
+                  }}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+                >
+                  Yes, Submit
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

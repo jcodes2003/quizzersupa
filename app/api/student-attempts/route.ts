@@ -49,40 +49,49 @@ export async function POST(request: NextRequest) {
 
     if (attemptRow) {
       if (attemptRow.quizid !== quizId || attemptRow.student_id !== studentId) {
-        return NextResponse.json({ error: "Invalid attempt" }, { status: 400 });
-      }
-      if (attemptRow.is_submitted) {
-        return NextResponse.json({ error: "Attempt already submitted" }, { status: 409 });
-      }
-      const timeLimit = (quizData as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;
-      if (timeLimit) {
-        const startMs = new Date(attemptRow.started_at).getTime();
-        const expiresMs = startMs + timeLimit * 60 * 1000;
-        if (Date.now() > expiresMs) {
-          return NextResponse.json({ error: "Time expired" }, { status: 403 });
+        // Fallback: if the open attempt belongs to a different related quiz/student,
+        // ignore this attemptId and continue with normal save flow.
+        console.warn("Ignoring mismatched attemptId in student-attempts", {
+          attemptId,
+          attemptQuizId: attemptRow.quizid,
+          quizId,
+          attemptStudentId: attemptRow.student_id,
+          studentId,
+        });
+      } else {
+        if (attemptRow.is_submitted) {
+          return NextResponse.json({ error: "Attempt already submitted" }, { status: 409 });
         }
-      }
+        const timeLimit = (quizData as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;
+        if (timeLimit) {
+          const startMs = new Date(attemptRow.started_at).getTime();
+          const expiresMs = startMs + timeLimit * 60 * 1000;
+          if (Date.now() > expiresMs) {
+            return NextResponse.json({ error: "Time expired" }, { status: 403 });
+          }
+        }
 
-      const { data: updatedRow, error: logError } = await supabase
-        .from("student_attempts_log")
-        .update({
-          score,
-          max_score: maxScore,
-          answers: answers ?? null,
-          submitted_at: new Date().toISOString(),
-          is_submitted: true,
-          subjectid: quizData.subjectid,
-          sectionid: quizData.sectionid,
-          studentname: studentName,
-          attempt_number: attemptNumber,
-        })
-        .eq("id", attemptId)
-        .select("id")
-        .maybeSingle();
-      if (logError?.message && !logError.message.toLowerCase().includes("student_attempts_log")) {
-        return NextResponse.json({ error: logError.message }, { status: 500 });
+        const { data: updatedRow, error: logError } = await supabase
+          .from("student_attempts_log")
+          .update({
+            score,
+            max_score: maxScore,
+            answers: answers ?? null,
+            submitted_at: new Date().toISOString(),
+            is_submitted: true,
+            subjectid: quizData.subjectid,
+            sectionid: quizData.sectionid,
+            studentname: studentName,
+            attempt_number: attemptNumber,
+          })
+          .eq("id", attemptId)
+          .select("id")
+          .maybeSingle();
+        if (logError?.message && !logError.message.toLowerCase().includes("student_attempts_log")) {
+          return NextResponse.json({ error: logError.message }, { status: 500 });
+        }
+        logUpdated = !!updatedRow;
       }
-      logUpdated = !!updatedRow;
     }
   }
 
