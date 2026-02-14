@@ -444,6 +444,11 @@ export default function TeacherPage() {
   const [teacherName, setTeacherName] = useState("");
   const [rows, setRows] = useState<QuizResponseRow[]>([]);
   const [scoresLoading, setScoresLoading] = useState(false);
+  const [recheckLoading, setRecheckLoading] = useState(false);
+  const [recheckMessage, setRecheckMessage] = useState<string | null>(null);
+  const [recheckError, setRecheckError] = useState<string | null>(null);
+  const [recheckSubject, setRecheckSubject] = useState<string>("");
+  const [recheckSection, setRecheckSection] = useState<string>("");
   const [filterSubject, setFilterSubject] = useState<string>("");
   const [responsesViewMode, setResponsesViewMode] = useState<"all" | "best">("all");
   const [responsesSearch, setResponsesSearch] = useState("");
@@ -451,7 +456,7 @@ export default function TeacherPage() {
   const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
   const [reportFilterDate, setReportFilterDate] = useState<string>("");
   const [reportFilterPeriod, setReportFilterPeriod] = useState<string>("");
-  const [tab, setTab] = useState<"responses" | "questions" | "reports">("responses");
+  const [tab, setTab] = useState<"responses" | "questions" | "reports" | "recheck">("responses");
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
@@ -1052,6 +1057,49 @@ export default function TeacherPage() {
     }
   }, []);
 
+  const handleRecheckSubject = useCallback(async () => {
+    if (!recheckSubject || !recheckSection) {
+      setRecheckError("Select a subject and section first.");
+      setRecheckMessage(null);
+      return;
+    }
+    const subjectLabel = subjects.find((s) => s.id === recheckSubject)?.name || "this subject";
+    const sectionLabel = sections.find((s) => s.id === recheckSection)?.name || "this section";
+    const ok = confirm(
+      `Recheck all attempts for ${subjectLabel} (${sectionLabel})? This will update scores based on current answer keys.`
+    );
+    if (!ok) return;
+    setRecheckLoading(true);
+    setRecheckError(null);
+    setRecheckMessage(null);
+    try {
+      const res = await fetch("/api/teacher/recheck-subject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ subjectId: recheckSubject, sectionId: recheckSection }),
+      });
+      if (res.status === 401) {
+        setAuthenticated(false);
+        setRecheckError("Session expired. Please log in again.");
+        return;
+      }
+      const data = await readJsonSafe(res);
+      if (!res.ok) {
+        setRecheckError(data.error || "Failed to recheck.");
+        return;
+      }
+      setRecheckMessage(
+        `Recheck complete: ${data.updatedAttempts ?? 0}/${data.totalAttempts ?? 0} attempts updated.`
+      );
+      await fetchScores();
+    } catch {
+      setRecheckError("Failed to recheck.");
+    } finally {
+      setRecheckLoading(false);
+    }
+  }, [recheckSubject, recheckSection, fetchScores, subjects, sections]);
+
   const fetchQuizzes = useCallback(async () => {
     setQuizzesLoading(true);
     try {
@@ -1211,7 +1259,20 @@ export default function TeacherPage() {
   // Reset pagination when filters change
   useEffect(() => {
     setResponsesPage(1);
+    setRecheckMessage(null);
+    setRecheckError(null);
   }, [filterSubject]);
+
+  useEffect(() => {
+    setRecheckMessage(null);
+    setRecheckError(null);
+  }, [recheckSubject, recheckSection]);
+
+  useEffect(() => {
+    if (!recheckSubject) {
+      setRecheckSection("");
+    }
+  }, [recheckSubject]);
 
   useEffect(() => {
     setReportsPage(1);
@@ -2003,6 +2064,23 @@ export default function TeacherPage() {
     new Set(rows.map((r) => String(r.period ?? "").trim()).filter(Boolean))
   ).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
+  // Recheck: sections available for selected subject
+  const recheckSectionsForSubject = recheckSubject
+    ? Array.from(
+        new Map(
+          rows
+            .filter((r) => r.subjectid === recheckSubject && r.sectionid)
+            .map((r) => [
+              r.sectionid,
+              {
+                id: r.sectionid,
+                name: r.sectionname || r.section || getSectionName(r.sectionid),
+              },
+            ])
+        ).values()
+      )
+    : [];
+
   // Best attempt per (student_id, quizid) for responses view
   const bestByStudentQuiz = new Map<string, QuizResponseRow>();
   for (const r of rows) {
@@ -2052,6 +2130,10 @@ export default function TeacherPage() {
   const responsesStartIndex = (currentResponsesPage - 1) * PAGE_SIZE;
   const responsesEndIndex = responsesStartIndex + PAGE_SIZE;
   const pagedResponsesRows = searchedRows.slice(responsesStartIndex, responsesEndIndex);
+
+  const recheckFilteredRows = recheckSubject && recheckSection
+    ? rows.filter((r) => r.subjectid === recheckSubject && r.sectionid === recheckSection)
+    : [];
 
   // Filter for reports tab - cascade filters using IDs and period
   let reportFilteredRows = rows;
@@ -2251,6 +2333,12 @@ export default function TeacherPage() {
                 Reports
               </button>
               <button
+                onClick={() => setTab("recheck")}
+                className={`px-4 py-2 rounded-xl font-medium ${tab === "recheck" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              >
+                Recheck
+              </button>
+              <button
                 onClick={() => setTab("questions")}
                 className={`px-4 py-2 rounded-xl font-medium ${tab === "questions" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
               >
@@ -2294,6 +2382,19 @@ export default function TeacherPage() {
               }`}
             >
               Reports
+            </button>
+            <button
+              onClick={() => {
+                setTab("recheck");
+                setNavOpen(false);
+              }}
+              className={`w-full px-4 py-2 rounded-xl text-left font-medium ${
+                tab === "recheck"
+                  ? "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
+            >
+              Recheck
             </button>
             <button
               onClick={() => {
@@ -2466,6 +2567,98 @@ export default function TeacherPage() {
             <p className="mt-4 text-slate-500 text-sm text-center">
               One row per attempt (from student_attempts_log). Export includes all visible rows.
             </p>
+          </>
+        )}
+
+        {tab === "recheck" && (
+          <>
+            <h2 className="text-xl font-semibold text-cyan-300 mb-6">Recheck Scores</h2>
+            <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
+              <div className="flex flex-wrap items-center gap-3">
+                <select
+                  value={recheckSubject}
+                  onChange={(e) => setRecheckSubject(e.target.value)}
+                  className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="">Select subject...</option>
+                  {subjectOptionsFromRows.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <select
+                  value={recheckSection}
+                  onChange={(e) => setRecheckSection(e.target.value)}
+                  disabled={!recheckSubject}
+                  className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="">Select section...</option>
+                  {(recheckSubject ? recheckSectionsForSubject : sectionOptionsFromRows).map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={handleRecheckSubject}
+                  disabled={recheckLoading || !recheckSubject || !recheckSection}
+                  className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-semibold"
+                >
+                  {recheckLoading ? "Rechecking..." : "Recheck Now"}
+                </button>
+              </div>
+              {(recheckMessage || recheckError) && (
+                <div className="mt-3 text-sm">
+                  {recheckMessage && <p className="text-emerald-400">{recheckMessage}</p>}
+                  {recheckError && <p className="text-red-400">{recheckError}</p>}
+                </div>
+              )}
+              <p className="mt-3 text-xs text-slate-500">
+                Recheck uses current answer keys and updates stored scores for the selected subject and section.
+              </p>
+              {subjectOptionsFromRows.length === 0 || sectionOptionsFromRows.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-500">
+                  No subjects or sections available yet. Load responses first so filters can populate.
+                </p>
+              ) : null}
+              {recheckSubject && recheckSection && (
+                <div className="mt-6 rounded-2xl bg-slate-900/40 border border-slate-700/60 overflow-hidden">
+                  <div className="overflow-x-auto w-full">
+                    <table className="w-full min-w-[640px] text-left">
+                      <thead>
+                        <tr className="border-b border-slate-700 bg-slate-800/60">
+                          <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
+                          <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
+                          <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
+                          <th className="px-4 py-3 text-slate-300 font-semibold">Attempt</th>
+                          <th className="px-4 py-3 text-slate-300 font-semibold">Quiz</th>
+                          <th className="px-4 py-3 text-slate-300 font-semibold">Created</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {recheckFilteredRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-4 py-6 text-slate-500 text-center">
+                              No attempts found for this subject and section.
+                            </td>
+                          </tr>
+                        ) : (
+                          recheckFilteredRows.map((r) => (
+                            <tr key={r.id} className="border-b border-slate-800/60">
+                              <td className="px-4 py-3 text-slate-200">{sanitizeStudentId(r.student_id) || "?"}</td>
+                              <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "?"}</td>
+                              <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
+                              <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
+                              <td className="px-4 py-3 text-slate-300">{r.quizname || r.quizcode}</td>
+                              <td className="px-4 py-3 text-slate-400 text-sm">
+                                {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </div>
           </>
         )}
 
