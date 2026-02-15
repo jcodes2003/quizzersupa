@@ -41,6 +41,40 @@ function normalizeAnswer(s: string): string {
     .replace(/-/g, " ");
 }
 
+function singularizeWord(word: string): string {
+  if (word.length <= 3) return word;
+  if (word.endsWith("ies") && word.length > 4) return `${word.slice(0, -3)}y`;
+  if (/(ches|shes|xes|zes|ses|oes)$/.test(word) && word.length > 4) return word.slice(0, -2);
+  if (word.endsWith("s") && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
+
+function nearWordMatch(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (singularizeWord(a) === singularizeWord(b)) return true;
+  if (a.length >= 5 && b.length >= 5) {
+    const isPrefix = a.startsWith(b) || b.startsWith(a);
+    if (isPrefix && Math.abs(a.length - b.length) <= 1) return true;
+  }
+  return false;
+}
+
+function checkIdentificationLoose(user: string, correct: string): boolean {
+  const userNorm = normalizeAnswer(user);
+  const correctNorm = normalizeAnswer(correct);
+  if (!userNorm || !correctNorm) return false;
+  if (userNorm === correctNorm) return true;
+
+  const userWords = userNorm.split(" ").filter(Boolean);
+  const correctWords = correctNorm.split(" ").filter(Boolean);
+  if (userWords.length !== correctWords.length) return false;
+
+  for (let i = 0; i < userWords.length; i++) {
+    if (!nearWordMatch(userWords[i]!, correctWords[i]!)) return false;
+  }
+  return true;
+}
+
 function normalizeForEnum(s: string): string {
   return s
     .toLowerCase()
@@ -78,7 +112,29 @@ function getCorrectVariations(correct: string): string[] {
   return [...new Set(variants)];
 }
 
+function normalizeBooleanToken(s: string): "t" | "f" | "" {
+  const n = normalizeForEnum(s);
+  if (n === "t" || n === "true") return "t";
+  if (n === "f" || n === "false") return "f";
+  return "";
+}
+
 function checkEnumerationMatch(userItems: string[], correctItems: string[]): number {
+  const correctBool = correctItems.map(normalizeBooleanToken);
+  const userBool = userItems.map(normalizeBooleanToken);
+  const isBooleanSequence =
+    correctItems.length > 0 &&
+    correctBool.every((v) => v !== "") &&
+    userBool.every((v) => v !== "");
+  if (isBooleanSequence) {
+    const len = Math.min(userBool.length, correctBool.length);
+    let matched = 0;
+    for (let i = 0; i < len; i++) {
+      if (userBool[i] === correctBool[i]) matched++;
+    }
+    return matched;
+  }
+
   let matched = 0;
   const usedUser = new Set<number>();
 
@@ -109,7 +165,7 @@ function checkEnumerationMatch(userItems: string[], correctItems: string[]): num
 }
 
 function checkIdentification(user: string, correct: string): boolean {
-  return normalizeAnswer(user) === normalizeAnswer(correct);
+  return checkIdentificationLoose(user, correct);
 }
 
 function getQuestionScore(score?: number | null, fallback = 1): number {

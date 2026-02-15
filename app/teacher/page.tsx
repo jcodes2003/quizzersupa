@@ -313,7 +313,29 @@ function getCorrectVariations(correct: string): string[] {
   return [...new Set(variants)];
 }
 
+function normalizeBooleanToken(s: string): "t" | "f" | "" {
+  const n = normalizeForEnum(s);
+  if (n === "t" || n === "true") return "t";
+  if (n === "f" || n === "false") return "f";
+  return "";
+}
+
 function checkEnumerationMatch(userItems: string[], correctItems: string[]): number {
+  const correctBool = correctItems.map(normalizeBooleanToken);
+  const userBool = userItems.map(normalizeBooleanToken);
+  const isBooleanSequence =
+    correctItems.length > 0 &&
+    correctBool.every((v) => v !== "") &&
+    userBool.every((v) => v !== "");
+  if (isBooleanSequence) {
+    const len = Math.min(userBool.length, correctBool.length);
+    let matched = 0;
+    for (let i = 0; i < len; i++) {
+      if (userBool[i] === correctBool[i]) matched++;
+    }
+    return matched;
+  }
+
   let matched = 0;
   const usedUser = new Set<number>();
 
