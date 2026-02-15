@@ -450,6 +450,7 @@ export default function TeacherPage() {
   const [recheckSubject, setRecheckSubject] = useState<string>("");
   const [recheckSection, setRecheckSection] = useState<string>("");
   const [filterSubject, setFilterSubject] = useState<string>("");
+  const [filterSection, setFilterSection] = useState<string>("");
   const [responsesViewMode, setResponsesViewMode] = useState<"all" | "best">("all");
   const [responsesSearch, setResponsesSearch] = useState("");
   const [reportFilterSection, setReportFilterSection] = useState<string>("");
@@ -1261,7 +1262,7 @@ export default function TeacherPage() {
     setResponsesPage(1);
     setRecheckMessage(null);
     setRecheckError(null);
-  }, [filterSubject]);
+  }, [filterSubject, filterSection]);
 
   useEffect(() => {
     setRecheckMessage(null);
@@ -2102,10 +2103,12 @@ export default function TeacherPage() {
   }
   const baseResponseRows = responsesViewMode === "best" ? Array.from(bestByStudentQuiz.values()) : rows;
 
-  // Filter for responses tab - filter by subjectid
-  const filteredRows = filterSubject
-    ? baseResponseRows.filter((r) => r.subjectid === filterSubject)
-    : baseResponseRows;
+  // Filter for responses tab - filter by subjectid and sectionid
+  const filteredRows = baseResponseRows.filter((r) => {
+    if (filterSubject && r.subjectid !== filterSubject) return false;
+    if (filterSection && r.sectionid !== filterSection) return false;
+    return true;
+  });
 
   const searchTerm = responsesSearch.trim().toLowerCase();
   const searchedRows = searchTerm
@@ -2435,6 +2438,16 @@ export default function TeacherPage() {
                 ))}
               </select>
               <select
+                value={filterSection}
+                onChange={(e) => setFilterSection(e.target.value)}
+                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              >
+                <option value="">All sections</option>
+                {sectionOptionsFromRows.map((s) => (
+                  <option key={s.id} value={s.id}>{s.name}</option>
+                ))}
+              </select>
+              <select
                 value={responsesViewMode}
                 onChange={(e) => {
                   setResponsesViewMode(e.target.value as "all" | "best");
@@ -2476,7 +2489,12 @@ export default function TeacherPage() {
                 <p>No responses matching the selected filter.</p>
                 <p className="text-sm mt-2">
                   Total records: {rows.length} | Filter:{" "}
-                  {filterSubject ? `Subject: ${getSubjectLabelFromRows(filterSubject)}` : "None"}
+                  {[
+                    filterSubject ? `Subject: ${getSubjectLabelFromRows(filterSubject)}` : "",
+                    filterSection ? `Section: ${getSectionLabelFromRows(filterSection)}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" | ") || "None"}
                 </p>
               </div>
             ) : (
