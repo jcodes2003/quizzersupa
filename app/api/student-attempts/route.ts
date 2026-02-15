@@ -11,9 +11,18 @@ export async function POST(request: NextRequest) {
     attemptNumber: number;
     attemptId?: string;
     answers?: Record<string, unknown>;
+    submissionSource?: string;
   };
 
   const { quizId, studentName, studentId, score, maxScore, attemptNumber, attemptId, answers } = body;
+  const sourceRaw = String(body.submissionSource ?? "").trim().toLowerCase();
+  const allowedSources = new Set([
+    "manual_submit",
+    "auto_tab_switch",
+    "auto_close_tab",
+    "auto_time_expired",
+  ]);
+  const submissionSource = allowedSources.has(sourceRaw) ? sourceRaw : "manual_submit";
 
   if (!quizId || !studentName || !studentId || score === undefined || !maxScore || !attemptNumber) {
     return NextResponse.json(
@@ -71,22 +80,44 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        const { data: updatedRow, error: logError } = await supabase
+        const logUpdatePayload = {
+          score,
+          max_score: maxScore,
+          answers: answers ?? null,
+          submitted_at: new Date().toISOString(),
+          is_submitted: true,
+          subjectid: quizData.subjectid,
+          sectionid: quizData.sectionid,
+          studentname: studentName,
+          attempt_number: attemptNumber,
+          submission_source: submissionSource,
+        };
+        let { data: updatedRow, error: logError } = await supabase
           .from("student_attempts_log")
-          .update({
-            score,
-            max_score: maxScore,
-            answers: answers ?? null,
-            submitted_at: new Date().toISOString(),
-            is_submitted: true,
-            subjectid: quizData.subjectid,
-            sectionid: quizData.sectionid,
-            studentname: studentName,
-            attempt_number: attemptNumber,
-          })
+          .update(logUpdatePayload)
           .eq("id", attemptId)
           .select("id")
           .maybeSingle();
+        if (logError?.message?.toLowerCase().includes("submission_source")) {
+          const retry = await supabase
+            .from("student_attempts_log")
+            .update({
+              score,
+              max_score: maxScore,
+              answers: answers ?? null,
+              submitted_at: new Date().toISOString(),
+              is_submitted: true,
+              subjectid: quizData.subjectid,
+              sectionid: quizData.sectionid,
+              studentname: studentName,
+              attempt_number: attemptNumber,
+            })
+            .eq("id", attemptId)
+            .select("id")
+            .maybeSingle();
+          updatedRow = retry.data;
+          logError = retry.error;
+        }
         if (logError?.message && !logError.message.toLowerCase().includes("student_attempts_log")) {
           return NextResponse.json({ error: logError.message }, { status: 500 });
         }
@@ -186,7 +217,7 @@ export async function POST(request: NextRequest) {
   // Best-effort log insert (only when we did not already update an open attempt)
   let logSaved = logUpdated;
   if (!logUpdated) {
-    const insertLog = await supabase
+    let insertLog = await supabase
       .from("student_attempts_log")
       .insert({
         quizid: quizId,
@@ -201,7 +232,26 @@ export async function POST(request: NextRequest) {
         is_submitted: true,
         subjectid: quizData.subjectid,
         sectionid: quizData.sectionid,
+        submission_source: submissionSource,
       });
+    if (insertLog.error?.message?.toLowerCase().includes("submission_source")) {
+      insertLog = await supabase
+        .from("student_attempts_log")
+        .insert({
+          quizid: quizId,
+          studentname: studentName,
+          student_id: studentId,
+          attempt_number: attemptNumber,
+          score,
+          max_score: maxScore,
+          answers: answers ?? null,
+          started_at: new Date().toISOString(),
+          submitted_at: new Date().toISOString(),
+          is_submitted: true,
+          subjectid: quizData.subjectid,
+          sectionid: quizData.sectionid,
+        });
+    }
     logSaved = !insertLog.error;
     if (!logSaved) {
       const logError = insertLog.error;

@@ -180,6 +180,12 @@ interface QuizResults {
   percentage: number;
 }
 
+type SubmissionSource =
+  | "manual_submit"
+  | "auto_tab_switch"
+  | "auto_close_tab"
+  | "auto_time_expired";
+
 interface QuizProps {
   topic: string;
   section: string;
@@ -216,6 +222,7 @@ export default function Quiz({
   const [submitted, setSubmitted] = useState(false);
   const [results, setResults] = useState<QuizResults | null>(null);
   const [tabLeft, setTabLeft] = useState(false);
+  const [submissionSource, setSubmissionSource] = useState<SubmissionSource>("manual_submit");
   const [currentPage, setCurrentPage] = useState(0);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -228,6 +235,7 @@ export default function Quiz({
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const closeIntentRef = useRef(false);
   const resolvedMaxAttempts =
     Number.isFinite(maxAttempts) && (maxAttempts ?? 0) > 0 ? (maxAttempts as number) : 1;
   const resolvedAllowRetake = allowRetake === true || resolvedMaxAttempts > 1;
@@ -392,7 +400,7 @@ export default function Quiz({
     }
   };
 
-  const gradeQuiz = useCallback(async () => {
+  const gradeQuiz = useCallback(async (source: SubmissionSource = "manual_submit") => {
     const name = getFullName();
     const id = studentId.trim();
     if (!id) {
@@ -519,6 +527,7 @@ export default function Quiz({
       maxScore,
       percentage,
     });
+    setSubmissionSource(source);
     setSubmitted(true);
 
     // Save attempt and update score if this is the best attempt for this student
@@ -542,6 +551,7 @@ export default function Quiz({
                 attemptNumber: nextAttemptNumber,
                 attemptId: attemptId ?? undefined,
                 answers: answersPayload,
+                submissionSource: source,
               }),
             });
 
@@ -569,7 +579,8 @@ export default function Quiz({
       setTimeLeft(secondsLeft);
       if (diffMs <= 0 && !autoSubmitRef.current) {
         autoSubmitRef.current = true;
-        gradeQuiz();
+        setTabLeft(true);
+        gradeQuiz("auto_time_expired");
       }
     };
     tick();
@@ -578,11 +589,12 @@ export default function Quiz({
   }, [expiresAt, submitted, gradeQuiz]);
 
   useEffect(() => {
+    closeIntentRef.current = false;
     const triggerAutoSubmit = () => {
-      if (!submitted && (!quizId || started)) {
-        setTabLeft(true);
-        gradeQuiz();
-      }
+      if (submitted || (quizId && !started) || autoSubmitRef.current) return;
+      autoSubmitRef.current = true;
+      setTabLeft(true);
+      gradeQuiz(closeIntentRef.current ? "auto_close_tab" : "auto_tab_switch");
     };
 
     const handleVisibility = () => {
@@ -595,11 +607,23 @@ export default function Quiz({
       triggerAutoSubmit();
     };
 
+    const handleBeforeUnload = () => {
+      closeIntentRef.current = true;
+    };
+
+    const handlePageHide = () => {
+      closeIntentRef.current = true;
+    };
+
     document.addEventListener("visibilitychange", handleVisibility);
     window.addEventListener("blur", handleWindowBlur);
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("pagehide", handlePageHide);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibility);
       window.removeEventListener("blur", handleWindowBlur);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("pagehide", handlePageHide);
     };
   }, [submitted, gradeQuiz]);
 
@@ -661,6 +685,16 @@ export default function Quiz({
             <p className="text-center text-slate-400 mb-2">{quizTitle}</p>
             <p className="text-center text-cyan-300 font-semibold mb-2">Answered by: {results.studentName}</p>
             <p className="text-center text-slate-400 mb-2">Section: {results.section}</p>
+            <p className="text-center text-slate-500 text-sm mb-2">
+              Submission:{" "}
+              {submissionSource === "manual_submit"
+                ? "Manual submit"
+                : submissionSource === "auto_close_tab"
+                  ? "Auto submit (tab/browser closed)"
+                  : submissionSource === "auto_time_expired"
+                    ? "Auto submit (time expired)"
+                    : "Auto submit (tab/window changed)"}
+            </p>
             {tabLeft && (
               <p className="text-center text-slate-500 text-sm mb-8">
                 Attempt {results.attempts} of {attemptsLimit}
@@ -721,6 +755,7 @@ export default function Quiz({
                       setExpiresAt(null);
                       setTimeLeft(null);
                       setResults(null);
+                      setSubmissionSource("manual_submit");
                       setMcAnswers({});
                       setIdAnswers({});
                       setEnumAnswers({});
@@ -989,7 +1024,7 @@ export default function Quiz({
                   type="button"
                   onClick={() => {
                     setShowSubmitConfirm(false);
-                    gradeQuiz();
+                    gradeQuiz("manual_submit");
                   }}
                   className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
                 >

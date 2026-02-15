@@ -18,6 +18,7 @@ type QuizResponseRow = {
   studentname: string | null;
   created_at?: string;
   answers?: Record<string, unknown> | null;
+  submission_source?: string;
   // Joined, human-readable names from API
   section?: string;
   subject?: string;
@@ -180,8 +181,16 @@ function sanitizeStudentId(value?: string | null): string {
   return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
 }
 
+function formatSubmissionSource(source?: string | null): string {
+  const v = String(source ?? "").trim().toLowerCase();
+  if (v === "auto_tab_switch") return "Auto: Tab/window changed";
+  if (v === "auto_close_tab") return "Auto: Closed tab/browser";
+  if (v === "auto_time_expired") return "Auto: Time expired";
+  return "Manual submit";
+}
+
 function downloadCsv(rows: QuizResponseRow[]) {
-  const headers = ["Quiz Code", "Student Name", "Student ID", "Score", "Max Score", "Attempt #", "Section", "Subject", "Created"];
+  const headers = ["Quiz Code", "Student Name", "Student ID", "Score", "Max Score", "Attempt #", "Submission", "Section", "Subject", "Created"];
   const lines = [
     headers.join(","),
     ...rows.map((r) =>
@@ -192,6 +201,7 @@ function downloadCsv(rows: QuizResponseRow[]) {
         escapeCsvCell(r.score ?? ""),
         escapeCsvCell(r.max_score ?? ""),
         escapeCsvCell(r.attempt_number ?? ""),
+        escapeCsvCell(formatSubmissionSource(r.submission_source)),
         escapeCsvCell(r.section ?? ""),
         escapeCsvCell(r.subject ?? ""),
         escapeCsvCell(r.created_at ? new Date(r.created_at).toLocaleString() : ""),
@@ -474,6 +484,7 @@ export default function TeacherPage() {
   const [filterSubject, setFilterSubject] = useState<string>("");
   const [filterSection, setFilterSection] = useState<string>("");
   const [responsesViewMode, setResponsesViewMode] = useState<"all" | "best">("all");
+  const [responsesNameSort, setResponsesNameSort] = useState<"latest" | "az" | "za">("latest");
   const [responsesSearch, setResponsesSearch] = useState("");
   const [reportFilterSection, setReportFilterSection] = useState<string>("");
   const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
@@ -1284,7 +1295,7 @@ export default function TeacherPage() {
     setResponsesPage(1);
     setRecheckMessage(null);
     setRecheckError(null);
-  }, [filterSubject, filterSection]);
+  }, [filterSubject, filterSection, responsesNameSort]);
 
   useEffect(() => {
     setRecheckMessage(null);
@@ -2150,11 +2161,21 @@ export default function TeacherPage() {
       })
     : filteredRows;
 
-  const responsesTotalPages = Math.max(1, Math.ceil(searchedRows.length / PAGE_SIZE));
+  const sortedResponsesRows =
+    responsesNameSort === "latest"
+      ? searchedRows
+      : [...searchedRows].sort((a, b) => {
+          const nameA = formatNameLastFirst(a.studentname).toLowerCase();
+          const nameB = formatNameLastFirst(b.studentname).toLowerCase();
+          const cmp = nameA.localeCompare(nameB, undefined, { sensitivity: "base" });
+          return responsesNameSort === "az" ? cmp : -cmp;
+        });
+
+  const responsesTotalPages = Math.max(1, Math.ceil(sortedResponsesRows.length / PAGE_SIZE));
   const currentResponsesPage = Math.min(responsesPage, responsesTotalPages);
   const responsesStartIndex = (currentResponsesPage - 1) * PAGE_SIZE;
   const responsesEndIndex = responsesStartIndex + PAGE_SIZE;
-  const pagedResponsesRows = searchedRows.slice(responsesStartIndex, responsesEndIndex);
+  const pagedResponsesRows = sortedResponsesRows.slice(responsesStartIndex, responsesEndIndex);
 
   const recheckFilteredRows = recheckSubject && recheckSection
     ? rows.filter((r) => r.subjectid === recheckSubject && r.sectionid === recheckSection)
@@ -2480,6 +2501,15 @@ export default function TeacherPage() {
                 <option value="all">All attempts</option>
                 <option value="best">Best attempt per student</option>
               </select>
+              <select
+                value={responsesNameSort}
+                onChange={(e) => setResponsesNameSort(e.target.value as "latest" | "az" | "za")}
+                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              >
+                <option value="latest">Sort: Latest</option>
+                <option value="az">Sort: Name A-Z</option>
+                <option value="za">Sort: Name Z-A</option>
+              </select>
               <input
                 type="text"
                 value={responsesSearch}
@@ -2506,7 +2536,7 @@ export default function TeacherPage() {
                 <p>No responses yet.</p>
                 <p className="text-sm mt-2">Total records loaded: {rows.length}</p>
               </div>
-            ) : searchedRows.length === 0 ? (
+            ) : sortedResponsesRows.length === 0 ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
                 <p>No responses matching the selected filter.</p>
                 <p className="text-sm mt-2">
@@ -2529,6 +2559,7 @@ export default function TeacherPage() {
                         <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Attempt</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold">Submission</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Subject</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold">Answers</th>
@@ -2542,6 +2573,7 @@ export default function TeacherPage() {
                           <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "?"}</td>
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
+                          <td className="px-4 py-3 text-slate-300">{formatSubmissionSource(r.submission_source)}</td>
                           <td className="px-4 py-3 text-slate-300">
                             {r.sectionname || r.section || getSectionName(r.sectionid)}
                           </td>
@@ -2572,14 +2604,14 @@ export default function TeacherPage() {
               </div>
             )}
 
-            {searchedRows.length > 0 && (
+            {sortedResponsesRows.length > 0 && (
               <div className="mt-3 flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-slate-400">
                 <p>
                   Showing{" "}
-                  {searchedRows.length === 0
+                  {sortedResponsesRows.length === 0
                     ? "0"
-                    : `${responsesStartIndex + 1}-${Math.min(responsesEndIndex, searchedRows.length)}`}{" "}
-                  of {searchedRows.length} responses
+                    : `${responsesStartIndex + 1}-${Math.min(responsesEndIndex, sortedResponsesRows.length)}`}{" "}
+                  of {sortedResponsesRows.length} responses
                 </p>
                 <div className="flex items-center gap-2 self-end md:self-auto">
                   <button
@@ -3841,6 +3873,7 @@ export default function TeacherPage() {
             <div className="text-sm text-slate-300 mb-3">
               <div>Student: <span className="text-slate-100">{formatNameLastFirst(answerModal.studentname) || "—"}</span></div>
               <div>Quiz: <span className="text-slate-100">{answerModal.quizcode}</span></div>
+              <div>Submission: <span className="text-slate-100">{formatSubmissionSource(answerModal.submission_source)}</span></div>
               <div>Attempt: <span className="text-slate-100">{answerModal.attempt_number ?? "—"}</span></div>
             </div>
             {(() => {

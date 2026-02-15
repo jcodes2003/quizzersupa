@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   let attemptsError: { message?: string } | null = null;
   const logResult = await supabase
     .from("student_attempts_log")
-    .select("id, quizid, studentname, student_id, score, max_score, attempt_number, submitted_at, created_at, subjectid, sectionid, answers")
+    .select("id, quizid, studentname, student_id, score, max_score, attempt_number, submitted_at, created_at, subjectid, sectionid, answers, submission_source")
     .in("quizid", quizIds)
     .eq("is_submitted", true)
     .order("submitted_at", { ascending: false });
@@ -41,7 +41,8 @@ export async function GET(request: NextRequest) {
     (attemptsError.message.toLowerCase().includes("answers") ||
       attemptsError.message.toLowerCase().includes("submitted_at") ||
       attemptsError.message.toLowerCase().includes("subjectid") ||
-      attemptsError.message.toLowerCase().includes("sectionid"))
+      attemptsError.message.toLowerCase().includes("sectionid") ||
+      attemptsError.message.toLowerCase().includes("submission_source"))
   ) {
     const minimal = await supabase
       .from("student_attempts_log")
@@ -119,6 +120,7 @@ export async function GET(request: NextRequest) {
       subject: subjectname,
       created_at: a.submitted_at ?? a.created_at,
       answers: a.answers ?? null,
+      submission_source: a.submission_source ?? "manual_submit",
       subjectid,
       sectionid,
       sectionname,
@@ -128,4 +130,3 @@ export async function GET(request: NextRequest) {
 
   return NextResponse.json({ rows });
 }
-
