@@ -173,8 +173,11 @@ interface QuizResults {
   section: string;
   attempts: number;
   mcScore: number;
+  mcMax: number;
   idScore: number;
+  idMax: number;
   enumScore: number;
+  enumMax: number;
   totalScore: number;
   maxScore: number;
   percentage: number;
@@ -498,7 +501,7 @@ export default function Quiz({
     }, 0);
     const maxScore = programmingSection ? mcMax + idMax : mcMax + idMax + enumMax;
     const totalScore = mcScore + idScore + enumPoints;
-    const percentage = Math.round((totalScore / maxScore) * 100);
+    const percentage = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
 
     const attempts = quizId ? nextAttemptNumber : incrementAttemptCount(topic, section, id);
     const answersPayload = {
@@ -521,8 +524,11 @@ export default function Quiz({
       section,
       attempts,
       mcScore,
+      mcMax,
       idScore,
+      idMax,
       enumScore: enumPoints,
+      enumMax,
       totalScore,
       maxScore,
       percentage,
@@ -704,11 +710,11 @@ export default function Quiz({
             <div className="grid gap-4 mb-8">
               <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
                 <span className="text-slate-300">Part I: Multiple Choice</span>
-                <span className="font-bold text-emerald-400">{results.mcScore} / {multipleChoiceQuestions.length}</span>
+                <span className="font-bold text-emerald-400">{results.mcScore} / {results.mcMax}</span>
               </div>
               <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
                 <span className="text-slate-300">Part II: Identification</span>
-                <span className="font-bold text-emerald-400">{results.idScore} / {identificationQuestions.length}</span>
+                <span className="font-bold text-emerald-400">{results.idScore} / {results.idMax}</span>
               </div>
               {programmingSection ? (
                 <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
@@ -718,7 +724,7 @@ export default function Quiz({
               ) : (
                 <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
                   <span className="text-slate-300">Part III: Enumeration</span>
-                  <span className="font-bold text-emerald-400">{results.enumScore} / {enumerationQuestions?.length ?? 0}</span>
+                  <span className="font-bold text-emerald-400">{results.enumScore} / {results.enumMax}</span>
                 </div>
               )}
             </div>
