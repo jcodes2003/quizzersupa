@@ -93,7 +93,7 @@ function parseEnumerationInput(input: string): string[] {
 
 function parseEnumerationAnswerKey(input: string): string[] {
   return input
-    .split("\n")
+    .split(/[,;\n]/)
     .map((s) => normalizeForEnum(s))
     .filter((s) => s.length > 0);
 }

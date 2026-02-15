@@ -111,7 +111,7 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
       const answerKeyStr = (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim();
       // Use answer text + index as unique keys in rendering, handled later
       const answers = answerKeyStr
-        .split("\n")
+        .split(/[,;\n]/)
         .map((a) => a.trim())
         .filter((a) => a.length > 0);
       const scoreRaw = Number((q as Record<string, unknown>).score);
