@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
 
 type QuizResponseRow = {
@@ -9,6 +9,7 @@ type QuizResponseRow = {
   quizcode: string;
   period?: string;
   quizname?: string;
+  assessment_type?: "quiz" | "exam" | string;
   subjectid: string;
   sectionid: string;
   score: number | null;
@@ -37,6 +38,7 @@ type QuizRow = {
   sectionid: string;
   period?: string;
   quizname?: string;
+  assessment_type?: "quiz" | "exam" | string;
   time_limit_minutes?: number | null;
   allow_retake?: boolean;
   max_attempts?: number | null;
@@ -66,20 +68,28 @@ type PendingQuizDraft = {
   sectionIds: string[];
   period: string;
   quizname: string;
+  assessmentType: "quiz" | "exam";
   timeLimitMinutes: number | null;
   allowRetake: boolean;
   maxAttempts: number;
   saveBestOnly: boolean;
 };
 
-async function readJsonSafe(res: Response): Promise<any> {
+async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
   try {
     const text = await res.text();
     if (!text) return {};
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === "object") return parsed as Record<string, unknown>;
+    return {};
   } catch {
     return {};
   }
+}
+
+function readStringField(obj: Record<string, unknown>, key: string): string | undefined {
+  const value = obj[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 type ConsolidatedRow = {
@@ -89,7 +99,13 @@ type ConsolidatedRow = {
   subject: string;
   sectionid: string;
   subjectid: string;
-  quizzes: Map<string, { score: number; max_score: number }>;
+  quizzes: Map<string, { score: number; max_score: number; assessment_type: "quiz" | "exam" }>;
+};
+
+type NameImportEntry = {
+  raw: string;
+  studentId?: string;
+  name?: string;
 };
 
 const SUBJECT_LABELS: Record<string, string> = {
@@ -97,6 +113,15 @@ const SUBJECT_LABELS: Record<string, string> = {
   cp2: "Computer Programming 2",
   itera: "Living in IT Era",
 };
+
+function normalizeAssessmentType(value?: string | null): "quiz" | "exam" {
+  const v = String(value ?? "").trim().toLowerCase();
+  return v === "exam" || v === "examination" ? "exam" : "quiz";
+}
+
+function formatAssessmentTypeLabel(value?: string | null): string {
+  return normalizeAssessmentType(value) === "exam" ? "Examination" : "Quiz";
+}
 
 function escapeCsvCell(value: string | number): string {
   const s = String(value);
@@ -177,6 +202,127 @@ function formatNameLastFirst(name?: string | null): string {
   return `${last}, ${first}`.trim();
 }
 
+function normalizeStudentNameKey(name?: string | null): string {
+  return String(name ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function normalizeNameLoose(name?: string | null): string {
+  return String(name ?? "")
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildNameMatchKeys(name?: string | null): string[] {
+  const base = normalizeNameLoose(name);
+  if (!base) return [];
+  const tokens = base.split(" ").filter(Boolean);
+  const withoutInitials = tokens.filter((t) => !/^[a-z]$/.test(t)).join(" ");
+  return Array.from(new Set([base, withoutInitials].filter(Boolean)));
+}
+
+function getNamePartsForMatch(name?: string | null): { first: string; last: string } {
+  const raw = String(name ?? "").trim();
+  if (!raw) return { first: "", last: "" };
+
+  const cleaned = raw.replace(/\./g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!cleaned) return { first: "", last: "" };
+
+  if (cleaned.includes(",")) {
+    const [lastPart, restPart = ""] = cleaned.split(",", 2);
+    const last = lastPart.trim().split(/\s+/).filter(Boolean).join(" ");
+    const first = restPart.trim().split(/\s+/).filter(Boolean)[0] ?? "";
+    return { first, last };
+  }
+
+  const tokens = cleaned.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { first: "", last: "" };
+  if (tokens.length === 1) return { first: "", last: tokens[0]! };
+  return { first: tokens[0]!, last: tokens[tokens.length - 1]! };
+}
+
+function getStudentIdentityKey(row: Pick<QuizResponseRow, "student_id" | "studentname">): string {
+  const sid = sanitizeStudentId(row.student_id);
+  if (sid) return `id:${sid}`;
+  const nameKey = normalizeStudentNameKey(row.studentname);
+  if (nameKey) return `name:${nameKey}`;
+  return "";
+}
+
+function parseNameImportText(text: string): NameImportEntry[] {
+  const trimmed = text.trim();
+  if (!trimmed) return [];
+
+  const lines = trimmed.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const rows = parseCsv(trimmed);
+  if (rows.length === 0) return [];
+  const header = rows[0]!.map((h) => normalizeNameLoose(h));
+  const hasHeader =
+    header.includes("name") ||
+    header.includes("student name") ||
+    header.includes("full name") ||
+    header.includes("student_id") ||
+    header.includes("student id") ||
+    header.includes("id");
+
+  const nameHeaderIdx = header.findIndex((h) => ["name", "student name", "full name"].includes(h));
+  const idHeaderIdx = header.findIndex((h) => ["student_id", "student id", "id"].includes(h));
+  if (!hasHeader) {
+    if (rows.every((r) => r.length <= 1)) {
+      return lines.map((line) => ({ raw: line, name: line }));
+    }
+    if (rows.every((r) => r.length === 2)) {
+      const idFirstHits = rows.filter((r) => sanitizeStudentId(r[0]).length > 0 && /[a-z]/i.test(String(r[1] ?? ""))).length;
+      if (idFirstHits >= Math.ceil(rows.length / 2)) {
+        const entries: NameImportEntry[] = [];
+        for (const r of rows) {
+          const sid = sanitizeStudentId(String(r[0] ?? ""));
+          const name = String(r[1] ?? "").trim();
+          const raw = name || sid;
+          if (!raw) continue;
+          entries.push({ raw, studentId: sid || undefined, name: name || undefined });
+        }
+        return entries;
+      }
+      const entries: NameImportEntry[] = [];
+      for (const r of rows) {
+        const joined = r.map((c) => String(c ?? "").trim()).filter(Boolean).join(", ");
+        if (!joined) continue;
+        entries.push({ raw: joined, name: joined });
+      }
+      return entries;
+    }
+    const entries: NameImportEntry[] = [];
+    for (const r of rows) {
+      const joined = r.map((c) => String(c ?? "").trim()).filter(Boolean).join(" ");
+      if (!joined) continue;
+      entries.push({ raw: joined, name: joined });
+    }
+    return entries;
+  }
+
+  const dataRows = rows.slice(1);
+  const entries: NameImportEntry[] = [];
+  for (const r of dataRows) {
+    const first = String(r[0] ?? "").trim();
+    const fromNameCol = nameHeaderIdx >= 0 ? String(r[nameHeaderIdx] ?? "").trim() : "";
+    const fromIdCol = idHeaderIdx >= 0 ? sanitizeStudentId(String(r[idHeaderIdx] ?? "")) : "";
+    const name = fromNameCol || first;
+    const raw = fromNameCol || fromIdCol || first;
+    if (!raw) continue;
+    entries.push({
+      raw,
+      studentId: fromIdCol || undefined,
+      name: name || undefined,
+    });
+  }
+  return entries;
+}
+
 function sanitizeStudentId(value?: string | null): string {
   return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
 }
@@ -245,19 +391,103 @@ function downloadReportCsv(rows: QuizResponseRow[]) {
   URL.revokeObjectURL(url);
 }
 
+function calculateWeightedGrade(
+  row: ConsolidatedRow,
+  quizColumns: { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" }[]
+): { quizAverage: number; examAverage: number; finalGrade: number } {
+  let quizSum = 0;
+  let quizCount = 0;
+  let examSum = 0;
+  let examCount = 0;
+
+  for (const col of quizColumns) {
+    const q = row.quizzes.get(col.quizid);
+    if (!q || !q.max_score || q.max_score <= 0) continue;
+    const percent = (q.score / q.max_score) * 100;
+    if (normalizeAssessmentType(q.assessment_type) === "exam") {
+      examSum += percent;
+      examCount++;
+    } else {
+      quizSum += percent;
+      quizCount++;
+    }
+  }
+
+  const quizAverage = quizCount > 0 ? quizSum / quizCount : 0;
+  const examAverage = examCount > 0 ? examSum / examCount : 0;
+  const finalGrade = quizAverage * 0.6 + examAverage * 0.4;
+  return { quizAverage, examAverage, finalGrade };
+}
+
 function downloadConsolidatedReportCsv(
   rows: ConsolidatedRow[],
-  quizColumns: { quizid: string; quizcode: string; quizname: string }[]
+  quizColumns: { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" }[],
+  filenamePrefix = "student-report-consolidated",
+  mergeSameQuizNameColumns = false,
+  splitScoreAndPercentageColumns = false
 ) {
-  const headers = ["Student ID", "Student Name", "Section", "Subject", ...quizColumns.map((q) => escapeCsvCell(q.quizname || q.quizcode))];
+  const exportColumns = mergeSameQuizNameColumns
+    ? Array.from(
+        new Map(
+          quizColumns.map((q) => [
+            (q.quizname || q.quizcode).trim().toLowerCase(),
+            {
+              title: (q.quizname || q.quizcode).trim() || q.quizcode,
+              quizIds: quizColumns
+                .filter(
+                  (x) => (x.quizname || x.quizcode).trim().toLowerCase() === (q.quizname || q.quizcode).trim().toLowerCase()
+                )
+                .map((x) => x.quizid),
+            },
+          ])
+        ).values()
+      )
+    : quizColumns.map((q) => ({
+        title: q.quizname || q.quizcode,
+        quizIds: [q.quizid],
+      }));
+
+  const quizHeaders = splitScoreAndPercentageColumns
+    ? exportColumns.flatMap((c) => [
+        escapeCsvCell(`${c.title} Score`),
+        escapeCsvCell(`${c.title} Percentage`),
+      ])
+    : exportColumns.map((c) => escapeCsvCell(c.title));
+  const headers = [
+    "Student ID",
+    "Student Name",
+    "Section",
+    "Subject",
+    ...quizHeaders,
+    "Quiz Avg %",
+    "Exam Avg %",
+    "Final Grade %",
+  ];
   const lines = [
     headers.join(","),
     ...rows.map((row) => {
-      const quizCells = quizColumns.map((q) => {
-        const qq = row.quizzes.get(q.quizid);
-        if (!qq) return escapeCsvCell("0");
-        // Export only the score (number of correct answers)
-        return escapeCsvCell(String(qq.score));
+      const weighted = calculateWeightedGrade(row, quizColumns);
+      const quizCells = exportColumns.flatMap((col) => {
+        let best: { score: number; max_score: number; assessment_type: "quiz" | "exam" } | undefined;
+        for (const qid of col.quizIds) {
+          const qq = row.quizzes.get(qid);
+          if (!qq) continue;
+          if (!best || qq.score > best.score) best = qq;
+        }
+        if (!best) {
+          return splitScoreAndPercentageColumns
+            ? [escapeCsvCell("0"), escapeCsvCell("0.00")]
+            : [escapeCsvCell("0")];
+        }
+        if (best.max_score && best.max_score > 0) {
+          const pct = ((best.score / best.max_score) * 100).toFixed(2);
+          return splitScoreAndPercentageColumns
+            ? [escapeCsvCell(String(best.score)), escapeCsvCell(pct)]
+            : [escapeCsvCell(`${best.score} (${pct})`)];
+        }
+        return splitScoreAndPercentageColumns
+          ? [escapeCsvCell(String(best.score)), escapeCsvCell("0.00")]
+          : [escapeCsvCell(String(best.score))];
       });
       return [
         escapeCsvCell(row.student_id),
@@ -265,6 +495,9 @@ function downloadConsolidatedReportCsv(
         escapeCsvCell(row.section),
         escapeCsvCell(row.subject),
         ...quizCells,
+        escapeCsvCell(weighted.quizAverage.toFixed(2)),
+        escapeCsvCell(weighted.examAverage.toFixed(2)),
+        escapeCsvCell(weighted.finalGrade.toFixed(2)),
       ].join(",");
     }),
   ];
@@ -272,7 +505,7 @@ function downloadConsolidatedReportCsv(
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `student-report-consolidated-${new Date().toISOString().slice(0, 10)}.csv`;
+  a.download = `${filenamePrefix}-${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }
@@ -490,6 +723,9 @@ export default function TeacherPage() {
   const [reportFilterSubject, setReportFilterSubject] = useState<string>("");
   const [reportFilterDate, setReportFilterDate] = useState<string>("");
   const [reportFilterPeriod, setReportFilterPeriod] = useState<string>("");
+  const [nameImportEntries, setNameImportEntries] = useState<NameImportEntry[]>([]);
+  const [nameImportFileName, setNameImportFileName] = useState("");
+  const [nameImportError, setNameImportError] = useState("");
   const [tab, setTab] = useState<"responses" | "questions" | "reports" | "recheck">("responses");
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
@@ -507,6 +743,7 @@ export default function TeacherPage() {
   const [newQuizSectionIds, setNewQuizSectionIds] = useState<string[]>([]);
   const [newQuizPeriod, setNewQuizPeriod] = useState("");
   const [newQuizQuizName, setNewQuizQuizName] = useState("");
+  const [newQuizAssessmentType, setNewQuizAssessmentType] = useState<"quiz" | "exam">("quiz");
   const [newQuizTimeLimit, setNewQuizTimeLimit] = useState("");
   const [newQuizAllowRetake, setNewQuizAllowRetake] = useState(false);
   const [newQuizMaxAttempts, setNewQuizMaxAttempts] = useState("1");
@@ -516,6 +753,7 @@ export default function TeacherPage() {
   const [editQuizSectionId, setEditQuizSectionId] = useState("");
   const [editQuizPeriod, setEditQuizPeriod] = useState("");
   const [editQuizName, setEditQuizName] = useState("");
+  const [editQuizAssessmentType, setEditQuizAssessmentType] = useState<"quiz" | "exam">("quiz");
   const [editQuizCode, setEditQuizCode] = useState("");
   const [editQuizTimeLimit, setEditQuizTimeLimit] = useState("");
   const [editQuizAllowRetake, setEditQuizAllowRetake] = useState(false);
@@ -577,6 +815,7 @@ export default function TeacherPage() {
       sectionIds: newQuizSectionIds,
       period: newQuizPeriod,
       quizname: newQuizQuizName,
+      assessmentType: newQuizAssessmentType,
       timeLimit: newQuizTimeLimit,
       allowRetake: newQuizAllowRetake,
       maxAttempts: newQuizMaxAttempts,
@@ -622,6 +861,7 @@ export default function TeacherPage() {
         sectionIds?: string[];
         period?: string;
         quizname?: string;
+        assessmentType?: string;
         timeLimit?: string;
         allowRetake?: boolean;
         maxAttempts?: string;
@@ -631,6 +871,7 @@ export default function TeacherPage() {
       setNewQuizSectionIds(Array.isArray(draft.sectionIds) ? draft.sectionIds : []);
       setNewQuizPeriod(draft.period ?? "");
       setNewQuizQuizName(draft.quizname ?? "");
+      setNewQuizAssessmentType(normalizeAssessmentType(draft.assessmentType));
       setNewQuizTimeLimit(draft.timeLimit ?? "");
       setNewQuizAllowRetake(Boolean(draft.allowRetake));
       setNewQuizMaxAttempts(draft.maxAttempts ?? "1");
@@ -1120,7 +1361,7 @@ export default function TeacherPage() {
       }
       const data = await readJsonSafe(res);
       if (!res.ok) {
-        setRecheckError(data.error || "Failed to recheck.");
+        setRecheckError(readStringField(data, "error") ?? "Failed to recheck.");
         return;
       }
       setRecheckMessage(
@@ -1205,6 +1446,7 @@ export default function TeacherPage() {
         sectionIds?: string[];
         period?: string;
         quizname?: string;
+        assessmentType?: string;
         timeLimit?: string;
       };
       const hasContent = Boolean(
@@ -1310,7 +1552,7 @@ export default function TeacherPage() {
 
   useEffect(() => {
     setReportsPage(1);
-  }, [reportFilterSection, reportFilterSubject, reportFilterDate]);
+  }, [reportFilterSection, reportFilterSubject, reportFilterDate, reportFilterPeriod]);
 
   useEffect(() => {
     setQuizzesPage(1);
@@ -1430,6 +1672,7 @@ export default function TeacherPage() {
         sectionIds: [...newQuizSectionIds],
         period: newQuizPeriod.trim(),
         quizname: newQuizQuizName.trim(),
+        assessmentType: newQuizAssessmentType,
         timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
         allowRetake: newQuizAllowRetake,
         maxAttempts,
@@ -1448,6 +1691,7 @@ export default function TeacherPage() {
       setNewQuizSectionIds([]);
       setNewQuizPeriod("");
       setNewQuizQuizName("");
+      setNewQuizAssessmentType("quiz");
       setNewQuizTimeLimit("");
       setNewQuizAllowRetake(false);
       setNewQuizMaxAttempts("1");
@@ -1463,6 +1707,7 @@ export default function TeacherPage() {
     setEditQuizSectionId(quiz.sectionid);
     setEditQuizPeriod(quiz.period ?? "");
     setEditQuizName(quiz.quizname ?? "");
+    setEditQuizAssessmentType(normalizeAssessmentType(quiz.assessment_type));
     setEditQuizCode(quiz.quizcode ?? "");
     setEditQuizTimeLimit(
       quiz.time_limit_minutes != null ? String(quiz.time_limit_minutes) : ""
@@ -1496,6 +1741,7 @@ export default function TeacherPage() {
           sectionId: editQuizSectionId,
           period: editQuizPeriod,
           quizname: editQuizName,
+          assessmentType: editQuizAssessmentType,
           quizcode: editQuizCode,
           timeLimitMinutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
           allowRetake: editQuizAllowRetake,
@@ -1854,23 +2100,24 @@ export default function TeacherPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "include",
-          body: JSON.stringify({
-            subjectId: pendingQuizDraft.subjectId,
-            sectionId: primarySectionId,
-            period: pendingQuizDraft.period,
-            quizname: pendingQuizDraft.quizname,
-            timeLimitMinutes: pendingQuizDraft.timeLimitMinutes,
-            allowRetake: pendingQuizDraft.allowRetake,
+              body: JSON.stringify({
+                subjectId: pendingQuizDraft.subjectId,
+                sectionId: primarySectionId,
+                period: pendingQuizDraft.period,
+                quizname: pendingQuizDraft.quizname,
+                assessmentType: pendingQuizDraft.assessmentType,
+                timeLimitMinutes: pendingQuizDraft.timeLimitMinutes,
+                allowRetake: pendingQuizDraft.allowRetake,
             maxAttempts: pendingQuizDraft.maxAttempts,
             saveBestOnly: pendingQuizDraft.saveBestOnly,
           }),
         });
         const created = await readJsonSafe(createRes);
         if (!createRes.ok || !created?.id) {
-          setError(created?.error ?? "Failed to create quiz");
+          setError(readStringField(created, "error") ?? "Failed to create quiz");
           return;
         }
-        quizId = created.id;
+        quizId = String(created.id);
         if (pendingQuizDraft.sectionIds.length > 1) {
           const failures: Array<{ sectionId: string; message: string }> = [];
           for (const sectionId of pendingQuizDraft.sectionIds.slice(1)) {
@@ -1886,7 +2133,10 @@ export default function TeacherPage() {
             });
             if (!aRes.ok) {
               const d = await readJsonSafe(aRes);
-              failures.push({ sectionId, message: d?.error ?? aRes.statusText ?? "Failed to assign quiz" });
+              failures.push({
+                sectionId,
+                message: readStringField(d, "error") ?? aRes.statusText ?? "Failed to assign quiz",
+              });
             }
           }
           if (failures.length > 0) {
@@ -1908,7 +2158,7 @@ export default function TeacherPage() {
       });
       if (!res.ok) {
         const d = await readJsonSafe(res);
-        setError(d.error ?? "Failed to save questions");
+        setError(readStringField(d, "error") ?? "Failed to save questions");
         return;
       }
       setBatchQuestions([]);
@@ -2199,10 +2449,12 @@ export default function TeacherPage() {
     });
   }
 
-  // Latest attempt per (student_id, quizid) for consolidated report
+  // Latest attempt per (student_identity, quizid) for consolidated report
   const latestByStudentQuiz = new Map<string, QuizResponseRow>();
   for (const r of reportFilteredRows) {
-    const key = `${r.student_id ?? ""}-${r.quizid ?? r.quizcode}`;
+    const identityKey = getStudentIdentityKey(r);
+    if (!identityKey) continue;
+    const key = `${identityKey}-${r.quizid ?? r.quizcode}`;
     const existing = latestByStudentQuiz.get(key);
     if (!existing || (r.created_at && existing.created_at && r.created_at > existing.created_at)) {
       latestByStudentQuiz.set(key, r);
@@ -2211,26 +2463,31 @@ export default function TeacherPage() {
   const latestRows = Array.from(latestByStudentQuiz.values());
 
   // Consolidated: one row per student; columns = Student ID, Name, Section, Subject, then one column per quiz (score/max or —)
-  type QuizColumn = { quizid: string; quizcode: string; quizname: string };
+  type QuizColumn = { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" };
   const quizColumns: QuizColumn[] = Array.from(
     new Map(
       latestRows
         .filter((r) => r.quizid || r.quizcode)
         .map((r) => [
           r.quizid ?? r.quizcode,
-          { quizid: r.quizid ?? r.quizcode, quizcode: r.quizcode, quizname: (r.quizname ?? r.quizcode).trim() || r.quizcode },
+          {
+            quizid: r.quizid ?? r.quizcode,
+            quizcode: r.quizcode,
+            quizname: (r.quizname ?? r.quizcode).trim() || r.quizcode,
+            assessment_type: normalizeAssessmentType(r.assessment_type),
+          },
         ])
     ).values()
   );
 
   const consolidatedByStudent = new Map<string, ConsolidatedRow>();
   for (const r of latestRows) {
-    const sid = r.student_id ?? "";
-    if (!sid) continue;
-    let row = consolidatedByStudent.get(sid);
+    const identityKey = getStudentIdentityKey(r);
+    if (!identityKey) continue;
+    let row = consolidatedByStudent.get(identityKey);
     if (!row) {
       row = {
-        student_id: sid,
+        student_id: r.student_id ?? "",
         studentname: r.studentname ?? "",
         section: r.sectionname ?? r.section ?? "",
         subject: r.subjectname ?? r.subject ?? "",
@@ -2238,11 +2495,21 @@ export default function TeacherPage() {
         subjectid: r.subjectid ?? "",
         quizzes: new Map(),
       };
-      consolidatedByStudent.set(sid, row);
+      consolidatedByStudent.set(identityKey, row);
     }
     const qid = r.quizid ?? r.quizcode;
     if (qid && r.score != null) {
-      row.quizzes.set(qid, { score: r.score, max_score: r.max_score ?? 0 });
+      const existingQuizScore = row.quizzes.get(qid);
+      if (!existingQuizScore || r.score > existingQuizScore.score) {
+        row.quizzes.set(qid, {
+          score: r.score,
+          max_score: r.max_score ?? 0,
+          assessment_type: normalizeAssessmentType(r.assessment_type),
+        });
+      }
+    }
+    if (!row.student_id && r.student_id) {
+      row.student_id = r.student_id;
     }
   }
   const consolidatedRows = Array.from(consolidatedByStudent.values());
@@ -2260,22 +2527,133 @@ export default function TeacherPage() {
   const reportsEndIndex = reportsStartIndex + PAGE_SIZE;
   const pagedReportRows = sortedConsolidatedRows.slice(reportsStartIndex, reportsEndIndex);
 
-  // Get unique subjects for current section in reports (filter by sectionid)
-  const reportSubjectsForSection = reportFilterSection
-    ? Array.from(
-        new Map(
-          rows
-            .filter((r) => r.sectionid === reportFilterSection && r.subjectid)
-            .map((r) => [
-              r.subjectid,
-              {
-                id: r.subjectid,
-                name: r.subjectname || r.subject || getSubjectName(r.subjectid),
-              },
-            ])
-        ).values()
-      )
-    : [];
+  const weightedByStudentKey = new Map(
+    sortedConsolidatedRows.map((row) => [getStudentIdentityKey(row), calculateWeightedGrade(row, quizColumns)])
+  );
+
+  const nameImportMatchResult = useMemo(() => {
+    const byStudentId = new Map<string, ConsolidatedRow>();
+    const byNameKey = new Map<string, ConsolidatedRow>();
+    const byLastName = new Map<string, Array<{ first: string; row: ConsolidatedRow }>>();
+
+    for (const row of sortedConsolidatedRows) {
+      const sid = sanitizeStudentId(row.student_id);
+      if (sid && !byStudentId.has(sid)) byStudentId.set(sid, row);
+
+      const parts = getNamePartsForMatch(row.studentname);
+      if (parts.last) {
+        const list = byLastName.get(parts.last) ?? [];
+        list.push({ first: parts.first, row });
+        byLastName.set(parts.last, list);
+      }
+
+      const aliases = new Set<string>([
+        ...buildNameMatchKeys(row.studentname),
+        ...buildNameMatchKeys(formatNameLastFirst(row.studentname)),
+      ]);
+      for (const alias of aliases) {
+        if (!byNameKey.has(alias)) byNameKey.set(alias, row);
+      }
+    }
+
+    const matchedRows: ConsolidatedRow[] = [];
+    const exportRows: ConsolidatedRow[] = [];
+    const unmatchedEntries: NameImportEntry[] = [];
+    const seen = new Set<string>();
+    let matchedEntriesCount = 0;
+
+    for (const entry of nameImportEntries) {
+      let matched: ConsolidatedRow | undefined;
+      const sid = sanitizeStudentId(entry.studentId ?? "");
+      if (sid) {
+        matched = byStudentId.get(sid);
+      }
+
+      if (!matched && entry.name) {
+        const inputParts = getNamePartsForMatch(entry.name);
+        if (inputParts.last) {
+          const candidates = byLastName.get(inputParts.last) ?? [];
+          if (candidates.length === 1) {
+            matched = candidates[0]!.row;
+          } else if (candidates.length > 1 && inputParts.first) {
+            const firstFiltered = candidates.filter((c) => c.first === inputParts.first);
+            if (firstFiltered.length === 1) {
+              matched = firstFiltered[0]!.row;
+            }
+          }
+        }
+      }
+
+      if (!matched && entry.name) {
+        for (const key of buildNameMatchKeys(entry.name)) {
+          matched = byNameKey.get(key);
+          if (matched) break;
+        }
+      }
+
+      if (!matched) {
+        unmatchedEntries.push(entry);
+        exportRows.push({
+          student_id: sid,
+          studentname: entry.name || entry.raw || "",
+          section: "",
+          subject: "",
+          sectionid: "",
+          subjectid: "",
+          quizzes: new Map(),
+        });
+        continue;
+      }
+      matchedEntriesCount++;
+      exportRows.push(matched);
+
+      const identity = getStudentIdentityKey({ student_id: matched.student_id, studentname: matched.studentname });
+      if (!identity || seen.has(identity)) continue;
+      seen.add(identity);
+      matchedRows.push(matched);
+    }
+
+    return { matchedRows, unmatchedEntries, exportRows, matchedEntriesCount };
+  }, [nameImportEntries, sortedConsolidatedRows]);
+
+  const handleNameImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setNameImportError("");
+    try {
+      const text = await file.text();
+      const parsed = parseNameImportText(text);
+      if (parsed.length === 0) {
+        setNameImportEntries([]);
+        setNameImportFileName(file.name);
+        setNameImportError("No valid names found in the uploaded file.");
+      } else {
+        setNameImportEntries(parsed);
+        setNameImportFileName(file.name);
+      }
+    } catch {
+      setNameImportEntries([]);
+      setNameImportFileName(file.name);
+      setNameImportError("Failed to read uploaded file.");
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  // Subject options for reports: all subjects by default, narrowed when a section is selected.
+  const reportSubjectOptions = Array.from(
+    new Map(
+      rows
+        .filter((r) => r.subjectid && (!reportFilterSection || r.sectionid === reportFilterSection))
+        .map((r) => [
+          r.subjectid,
+          {
+            id: r.subjectid,
+            name: r.subjectname || r.subject || getSubjectName(r.subjectid),
+          },
+        ])
+    ).values()
+  );
 
   if (authenticated === null && !scoresLoading) {
     return (
@@ -2777,11 +3155,10 @@ export default function TeacherPage() {
                 <select
                   value={reportFilterSubject}
                   onChange={(e) => setReportFilterSubject(e.target.value)}
-                  disabled={!reportFilterSection}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 disabled:opacity-50"
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                 >
                   <option value="">All subjects</option>
-                  {reportSubjectsForSection.map((s) => (
+                  {reportSubjectOptions.map((s) => (
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
@@ -2799,6 +3176,30 @@ export default function TeacherPage() {
               </div>
             </div>
 
+            <div className="rounded-xl border border-slate-600/50 bg-slate-800/40 p-4 mb-6">
+              <label className="block text-slate-300 text-sm font-medium mb-2">
+                Upload Student Name List (.txt or .csv)
+              </label>
+              <input
+                type="file"
+                accept=".txt,.csv,text/plain,text/csv"
+                onChange={handleNameImportFile}
+                className="block w-full text-sm text-slate-300 file:mr-4 file:rounded-lg file:border-0 file:bg-cyan-600 file:px-3 file:py-2 file:text-white hover:file:bg-cyan-500"
+              />
+              <p className="text-xs text-slate-400 mt-2">
+                Supported formats: one name per line, or CSV with columns like <span className="font-mono">name</span> and optional <span className="font-mono">student_id</span>.
+              </p>
+              {nameImportError && <p className="text-xs text-red-300 mt-2">{nameImportError}</p>}
+              {nameImportEntries.length > 0 && (
+                <div className="mt-2 text-xs text-slate-300">
+                  Loaded <span className="font-semibold text-cyan-300">{nameImportEntries.length}</span> entries
+                  {nameImportFileName ? <> from <span className="text-slate-200">{nameImportFileName}</span></> : null}. Matched{" "}
+                  <span className="font-semibold text-emerald-300">{nameImportMatchResult.matchedEntriesCount}</span>, not found{" "}
+                  <span className="font-semibold text-amber-300">{nameImportMatchResult.unmatchedEntries.length}</span>.
+                </div>
+              )}
+            </div>
+
             {/* Export and Refresh Buttons */}
             <div className="flex flex-wrap items-center gap-3 mb-6">
               <button
@@ -2807,6 +3208,32 @@ export default function TeacherPage() {
                 className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
               >
                 Export to CSV
+              </button>
+              <button
+                onClick={() =>
+                  downloadConsolidatedReportCsv(
+                    nameImportMatchResult.exportRows,
+                    quizColumns,
+                    "student-report-selected-names",
+                    true,
+                    true
+                  )
+                }
+                disabled={nameImportEntries.length === 0}
+                className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
+              >
+                Export Uploaded Names CSV
+              </button>
+              <button
+                onClick={() => {
+                  setNameImportEntries([]);
+                  setNameImportFileName("");
+                  setNameImportError("");
+                }}
+                disabled={nameImportEntries.length === 0}
+                className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-white font-semibold"
+              >
+                Clear Uploaded List
               </button>
               <button
                 onClick={() => fetchScores()}
@@ -2849,13 +3276,19 @@ export default function TeacherPage() {
                         {quizColumns.map((q) => (
                           <th key={q.quizid} className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">
                             {q.quizname || q.quizcode}
+                            <span className="ml-2 inline-flex rounded-full border border-slate-500/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+                              {formatAssessmentTypeLabel(q.assessment_type)}
+                            </span>
                           </th>
                         ))}
+                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Quiz Avg %</th>
+                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Exam Avg %</th>
+                        <th className="px-4 py-3 text-cyan-200 font-semibold whitespace-nowrap">Final Grade %</th>
                       </tr>
                     </thead>
                     <tbody>
                       {pagedReportRows.map((r) => (
-                        <tr key={r.student_id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+                        <tr key={getStudentIdentityKey(r)} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.student_id}</td>
                           <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>
@@ -2864,7 +3297,7 @@ export default function TeacherPage() {
                             const qq = r.quizzes.get(q.quizid);
                             const cell = qq
                               ? qq.max_score
-                                ? `${qq.score}/${qq.max_score}`
+                                ? `${qq.score}/${qq.max_score} (${Math.round((qq.score / qq.max_score) * 100)}%)`
                                 : String(qq.score)
                               : "—";
                             return (
@@ -2873,6 +3306,20 @@ export default function TeacherPage() {
                               </td>
                             );
                           })}
+                          {(() => {
+                            const weighted = weightedByStudentKey.get(getStudentIdentityKey(r)) ?? {
+                              quizAverage: 0,
+                              examAverage: 0,
+                              finalGrade: 0,
+                            };
+                            return (
+                              <>
+                                <td className="px-4 py-3 text-cyan-200 font-medium">{weighted.quizAverage.toFixed(2)}%</td>
+                                <td className="px-4 py-3 text-amber-200 font-medium">{weighted.examAverage.toFixed(2)}%</td>
+                                <td className="px-4 py-3 text-emerald-300 font-bold">{weighted.finalGrade.toFixed(2)}%</td>
+                              </>
+                            );
+                          })()}
                         </tr>
                       ))}
                     </tbody>
@@ -2883,6 +3330,7 @@ export default function TeacherPage() {
 
             <div className="mt-4 text-slate-500 text-sm">
               <p>One row per student. Total students: {sortedConsolidatedRows.length}</p>
+              <p className="mt-1">Weighted grade formula: (Quiz Average x 60%) + (Exam Average x 40%).</p>
               {reportFilterPeriod && <p className="mt-1">Period: {reportFilterPeriod}</p>}
               {reportFilterSection && (
                 <p className="mt-1">Section: {getSectionLabelFromRows(reportFilterSection)}</p>
@@ -3424,6 +3872,17 @@ export default function TeacherPage() {
                     />
                   </div>
                   <div>
+                    <label className="block text-slate-400 text-sm mb-1">Assessment Type</label>
+                    <select
+                      value={newQuizAssessmentType}
+                      onChange={(e) => setNewQuizAssessmentType(normalizeAssessmentType(e.target.value))}
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                    >
+                      <option value="quiz">Quiz</option>
+                      <option value="exam">Examination</option>
+                    </select>
+                  </div>
+                  <div>
                     <label className="block text-slate-400 text-sm mb-1">Time Limit (minutes)</label>
                     <input
                       type="number"
@@ -3507,7 +3966,7 @@ export default function TeacherPage() {
               <div className="space-y-6">
                 {pendingQuizDraft && (
                   <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4 text-amber-200 text-sm">
-                    Draft quiz in progress. If you closed the modal, click "Add Questions" to continue creating questions. Click "Save All" to create and assign this quiz to all selected sections.
+                    Draft quiz in progress. If you closed the modal, click &quot;Add Questions&quot; to continue creating questions. Click &quot;Save All&quot; to create and assign this quiz to all selected sections.
                   </div>
                 )}
                 <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
@@ -3533,6 +3992,10 @@ export default function TeacherPage() {
                             {quiz.quizname ? (
                               <>
                                 <strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} ·{" "}
+                                <span className="text-xs uppercase tracking-wide text-amber-300">
+                                  {formatAssessmentTypeLabel(quiz.assessment_type)}
+                                </span>{" "}
+                                ·{" "}
                                 {getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} ·{" "}
                                 <span
                                   onClick={(e) => {
@@ -3551,6 +4014,10 @@ export default function TeacherPage() {
                               </>
                             ) : (
                               <>
+                                <span className="text-xs uppercase tracking-wide text-amber-300">
+                                  {formatAssessmentTypeLabel(quiz.assessment_type)}
+                                </span>{" "}
+                                ·{" "}
                                 {getSubjectName(quiz.subjectid)} · {getSectionName(quiz.sectionid)} ·{" "}
                                 <span
                                   onClick={(e) => {
@@ -3646,6 +4113,17 @@ export default function TeacherPage() {
                                   onChange={(e) => setEditQuizName(e.target.value)}
                                   className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
                                 />
+                              </div>
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Assessment Type</label>
+                                <select
+                                  value={editQuizAssessmentType}
+                                  onChange={(e) => setEditQuizAssessmentType(normalizeAssessmentType(e.target.value))}
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
+                                >
+                                  <option value="quiz">Quiz</option>
+                                  <option value="exam">Examination</option>
+                                </select>
                               </div>
                               <div>
                                 <label className="block text-slate-400 text-xs mb-1">Quiz Code</label>

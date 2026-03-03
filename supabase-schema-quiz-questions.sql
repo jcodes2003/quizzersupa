@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS quiztbl (
   studentname text,
   period text DEFAULT '',
   quizname text DEFAULT '',
+  assessment_type text NOT NULL DEFAULT 'quiz',
   created_at timestamptz DEFAULT now()
 );
 -- If quiztbl already exists, add columns (run separately if needed):
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS quiztbl (
 -- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS studentname text;
 -- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS period text DEFAULT '';
 -- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS quizname text DEFAULT '';
+-- ALTER TABLE quiztbl ADD COLUMN IF NOT EXISTS assessment_type text NOT NULL DEFAULT 'quiz';
 
 -- Question: belongs to a quiz; has question text, type, and for multiple_choice: options (JSON array) and answerkey
 CREATE TABLE IF NOT EXISTS questiontbl (

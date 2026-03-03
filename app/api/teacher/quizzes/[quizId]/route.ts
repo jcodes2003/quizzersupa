@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTeacherId } from "../../../../lib/teacher-db-auth";
 import { getSupabase } from "../../../../lib/supabase-server";
 
+type AssessmentType = "quiz" | "exam";
+
+function normalizeAssessmentType(value: unknown): AssessmentType {
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "exam" || raw === "examination" ? "exam" : "quiz";
+}
+
 async function ensureQuizBelongsToTeacher(quizId: string, teacherId: string): Promise<boolean> {
   const supabase = getSupabase();
   const { data } = await supabase
@@ -29,6 +36,7 @@ export async function PUT(
     sectionId?: string;
     period?: string;
     quizname?: string;
+    assessmentType?: string;
     quizcode?: string;
     timeLimitMinutes?: number | null;
     allowRetake?: boolean;
@@ -42,6 +50,9 @@ export async function PUT(
   if (typeof body.sectionId === "string" && body.sectionId.trim()) update.sectionid = body.sectionId.trim();
   if (typeof body.period === "string") update.period = body.period.trim();
   if (typeof body.quizname === "string") update.quizname = body.quizname.trim();
+  if (typeof body.assessmentType === "string") {
+    update.assessment_type = normalizeAssessmentType(body.assessmentType);
+  }
 
   if (typeof body.quizcode === "string" && body.quizcode.trim()) {
     const code = body.quizcode.trim().toUpperCase();
@@ -74,12 +85,24 @@ export async function PUT(
   }
 
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  let updateRes = await supabase
     .from("quiztbl")
     .update(update)
     .eq("id", quizId)
     .select()
     .single();
+  if (updateRes.error?.message?.toLowerCase().includes("assessment_type")) {
+    delete update.assessment_type;
+    updateRes = await supabase
+      .from("quiztbl")
+      .update(update)
+      .eq("id", quizId)
+      .select()
+      .single();
+  }
+
+  const data = updateRes.data;
+  const error = updateRes.error;
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
@@ -146,6 +169,7 @@ export async function POST(
       sectionid: sectionId,
       period,
       quizname,
+      assessment_type: normalizeAssessmentType((quizRow as { assessment_type?: string | null }).assessment_type),
       quizcode,
       time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
       allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
@@ -154,11 +178,21 @@ export async function POST(
       source_quiz_id: action === "assign" ? sourceQuizId : null,
     };
 
-    const { data: newQuiz, error: insertErr } = await supabase
+    let insertRes = await supabase
       .from("quiztbl")
       .insert(insertRow)
       .select()
       .single();
+    if (insertRes.error?.message?.toLowerCase().includes("assessment_type")) {
+      delete insertRow.assessment_type;
+      insertRes = await supabase
+        .from("quiztbl")
+        .insert(insertRow)
+        .select()
+        .single();
+    }
+    const newQuiz = insertRes.data;
+    const insertErr = insertRes.error;
     if (insertErr || !newQuiz) return NextResponse.json({ error: insertErr?.message ?? "Failed to create quiz" }, { status: 500 });
 
     if (action === "duplicate") {

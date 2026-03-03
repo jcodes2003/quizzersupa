@@ -1,30 +1,80 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { getTeacherId } from "../../lib/teacher-db-auth";
 import { getSupabase } from "../../lib/supabase-server";
 
-export async function GET(request: NextRequest) {
+type AssessmentType = "quiz" | "exam";
+type QuizSummaryRow = { id: string; period?: string | null; quizname?: string | null; assessment_type?: string | null };
+type AttemptRow = {
+  id?: string | number | null;
+  quizid: string;
+  studentname?: string | null;
+  student_id?: string | null;
+  score?: number | null;
+  max_score?: number | null;
+  attempt_number?: number | null;
+  submitted_at?: string | null;
+  created_at?: string | null;
+  subjectid?: string | number | null;
+  sectionid?: string | number | null;
+  answers?: Record<string, unknown> | null;
+  submission_source?: string | null;
+};
+type SectionLookupRow = { id: string | number; sectionname?: string | null };
+type SubjectLookupRow = { id: string | number; subjectname?: string | null };
+
+function normalizeAssessmentType(value: unknown): AssessmentType {
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "exam" || raw === "examination" ? "exam" : "quiz";
+}
+
+export async function GET() {
   const teacherId = await getTeacherId();
   if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const supabase = getSupabase();
 
   // Get all quizzes created by this teacher
-  const { data: quizzes, error: quizError } = await supabase
+  let quizzes: QuizSummaryRow[] | null = null;
+  let quizError: { message: string } | null = null;
+
+  const fullQuizzes = await supabase
     .from("quiztbl")
-    .select("id, period, quizname")
+    .select("id, period, quizname, assessment_type")
     .eq("teacherid", teacherId);
+  quizzes = (fullQuizzes.data ?? null) as QuizSummaryRow[] | null;
+  quizError = (fullQuizzes.error ?? null) as { message: string } | null;
+
+  // Backward compatibility if assessment_type column hasn't been added yet.
+  if (quizError?.message?.toLowerCase().includes("assessment_type")) {
+    const fallbackQuizzes = await supabase
+      .from("quiztbl")
+      .select("id, period, quizname")
+      .eq("teacherid", teacherId);
+    quizzes = (fallbackQuizzes.data ?? null) as QuizSummaryRow[] | null;
+    quizError = (fallbackQuizzes.error ?? null) as { message: string } | null;
+  }
 
   if (quizError) return NextResponse.json({ error: quizError.message }, { status: 500 });
 
-  const quizIds = (quizzes ?? []).map((q) => q.id);
+  const quizRows: QuizSummaryRow[] = quizzes ?? [];
+  const quizIds = quizRows.map((q) => q.id);
   if (quizIds.length === 0) {
     return NextResponse.json({ rows: [] });
   }
 
-  const quizPeriodNameMap = new Map((quizzes ?? []).map((q: any) => [q.id, { period: q.period ?? "", quizname: q.quizname ?? "" }]));
+  const quizPeriodNameMap = new Map(
+    quizRows.map((q) => [
+      q.id,
+      {
+        period: q.period ?? "",
+        quizname: q.quizname ?? "",
+        assessmentType: normalizeAssessmentType(q.assessment_type),
+      },
+    ])
+  );
 
   // Get all student attempts (log) for these quizzes with sectionid and subjectid
-  let attempts: any[] | null = null;
+  let attempts: AttemptRow[] | null = null;
   let attemptsError: { message?: string } | null = null;
   const logResult = await supabase
     .from("student_attempts_log")
@@ -32,7 +82,7 @@ export async function GET(request: NextRequest) {
     .in("quizid", quizIds)
     .eq("is_submitted", true)
     .order("submitted_at", { ascending: false });
-  attempts = (logResult.data ?? null) as any[] | null;
+  attempts = (logResult.data ?? null) as AttemptRow[] | null;
   attemptsError = (logResult.error ?? null) as { message?: string } | null;
 
   // Retry with minimal columns if some columns don't exist yet
@@ -50,7 +100,7 @@ export async function GET(request: NextRequest) {
       .in("quizid", quizIds)
       .eq("is_submitted", true)
       .order("created_at", { ascending: false });
-    attempts = (minimal.data ?? null) as any[] | null;
+    attempts = (minimal.data ?? null) as AttemptRow[] | null;
     attemptsError = (minimal.error ?? null) as { message?: string } | null;
   }
 
@@ -61,7 +111,7 @@ export async function GET(request: NextRequest) {
       .select("id, quizid, studentname, student_id, score, max_score, attempt_number, created_at")
       .in("quizid", quizIds)
       .order("created_at", { ascending: false });
-    attempts = (fallback.data ?? null) as any[] | null;
+    attempts = (fallback.data ?? null) as AttemptRow[] | null;
     attemptsError = (fallback.error ?? null) as { message?: string } | null;
   }
 
@@ -81,18 +131,19 @@ export async function GET(request: NextRequest) {
 
   // Normalize map keys to strings so they match client-side IDs
   const sectionMap = new Map(
-    (sections ?? []).map((s: any) => [String(s.id), String(s.sectionname ?? "")])
+    ((sections ?? []) as SectionLookupRow[]).map((s) => [String(s.id), String(s.sectionname ?? "")])
   );
   const subjectMap = new Map(
-    (subjects ?? []).map((s: any) => [String(s.id), String(s.subjectname ?? "")])
+    ((subjects ?? []) as SubjectLookupRow[]).map((s) => [String(s.id), String(s.subjectname ?? "")])
   );
 
   // Transform attempts to match expected format, including joined names
   const rows = (attempts ?? []).map((a) => {
     const quiz = quizMap.get(a.quizid);
-    // Use subjectid/sectionid from student_attempts, fallback to quiztbl if null
-    const rawSubjectId = a.subjectid ?? quiz?.subjectid ?? null;
-    const rawSectionId = a.sectionid ?? quiz?.sectionid ?? null;
+    // Prefer current quiz metadata so filters reflect edited quiz section/subject.
+    // Fallback to attempt-level values only when quiz metadata is unavailable.
+    const rawSubjectId = quiz?.subjectid ?? a.subjectid ?? null;
+    const rawSectionId = quiz?.sectionid ?? a.sectionid ?? null;
 
     const subjectid = rawSubjectId != null ? String(rawSubjectId) : "";
     const sectionid = rawSectionId != null ? String(rawSectionId) : "";
@@ -110,6 +161,7 @@ export async function GET(request: NextRequest) {
       quizcode: quiz?.quizcode ?? "",
       period: periodName?.period ?? "",
       quizname: periodName?.quizname ?? "",
+      assessment_type: periodName?.assessmentType ?? "quiz",
       studentname: a.studentname,
       student_id: a.student_id,
       score: a.score,
