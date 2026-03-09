@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "../../lib/supabase-server";
 
+function getSubmissionCloseReason(quizData: Record<string, unknown>): string | null {
+  const submissionsOpen = (quizData.submissions_open as boolean | null | undefined) !== false;
+  if (!submissionsOpen) return "Quiz submissions are closed by the teacher.";
+  const deadlineRaw = quizData.submission_deadline;
+  if (typeof deadlineRaw === "string" && deadlineRaw.trim()) {
+    const deadline = new Date(deadlineRaw);
+    if (!Number.isNaN(deadline.getTime()) && Date.now() > deadline.getTime()) {
+      return "Quiz deadline has passed.";
+    }
+  }
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
     quizId: string;
@@ -12,9 +25,11 @@ export async function POST(request: NextRequest) {
     attemptId?: string;
     answers?: Record<string, unknown>;
     submissionSource?: string;
+    forceSubmitAfterDeadline?: boolean;
   };
 
   const { quizId, studentName, studentId, score, maxScore, attemptNumber, attemptId, answers } = body;
+  const forceSubmitAfterDeadline = body.forceSubmitAfterDeadline === true;
   const sourceRaw = String(body.submissionSource ?? "").trim().toLowerCase();
   const allowedSources = new Set([
     "manual_submit",
@@ -34,14 +49,42 @@ export async function POST(request: NextRequest) {
   const supabase = getSupabase();
 
   // Get quiz metadata including sectionid and subjectid
-  const { data: quizData } = await supabase
+  let quizData: Record<string, unknown> | null = null;
+  let quizError: { message: string } | null = null;
+  const fullQuiz = await supabase
     .from("quiztbl")
-    .select("subjectid, sectionid, time_limit_minutes, save_best_only")
+    .select("subjectid, sectionid, time_limit_minutes, save_best_only, submission_deadline, submissions_open")
     .eq("id", quizId)
     .single();
+  quizData = (fullQuiz.data ?? null) as Record<string, unknown> | null;
+  quizError = (fullQuiz.error ?? null) as { message: string } | null;
+  if (
+    quizError?.message &&
+    (quizError.message.toLowerCase().includes("submission_deadline") ||
+      quizError.message.toLowerCase().includes("submissions_open"))
+  ) {
+    const fallback = await supabase
+      .from("quiztbl")
+      .select("subjectid, sectionid, time_limit_minutes, save_best_only")
+      .eq("id", quizId)
+      .single();
+    quizData = (fallback.data ?? null) as Record<string, unknown> | null;
+    quizError = (fallback.error ?? null) as { message: string } | null;
+  }
+  if (quizError) {
+    return NextResponse.json({ error: quizError.message }, { status: 500 });
+  }
 
   if (!quizData) {
     return NextResponse.json({ error: "Quiz not found" }, { status: 404 });
+  }
+  const closeReason = getSubmissionCloseReason(quizData);
+  if (closeReason) {
+    if (closeReason === "Quiz deadline has passed." && forceSubmitAfterDeadline) {
+      // Allow one explicit, user-confirmed final submit after deadline.
+    } else {
+    return NextResponse.json({ error: closeReason }, { status: 403 });
+    }
   }
 
   let logUpdated = false;

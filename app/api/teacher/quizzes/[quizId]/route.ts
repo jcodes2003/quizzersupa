@@ -9,6 +9,14 @@ function normalizeAssessmentType(value: unknown): AssessmentType {
   return raw === "exam" || raw === "examination" ? "exam" : "quiz";
 }
 
+function parseDeadline(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const d = new Date(trimmed);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
 async function ensureQuizBelongsToTeacher(quizId: string, teacherId: string): Promise<boolean> {
   const supabase = getSupabase();
   const { data } = await supabase
@@ -42,6 +50,8 @@ export async function PUT(
     allowRetake?: boolean;
     maxAttempts?: number | null;
     saveBestOnly?: boolean;
+    submissionDeadline?: string | null;
+    submissionsOpen?: boolean;
   };
 
   const update: Record<string, unknown> = {};
@@ -79,6 +89,10 @@ export async function PUT(
     update.max_attempts = m === null ? null : Number.isFinite(m) ? m : null;
   }
   if (body.saveBestOnly !== undefined) update.save_best_only = Boolean(body.saveBestOnly);
+  if (body.submissionDeadline !== undefined) {
+    update.submission_deadline = parseDeadline(body.submissionDeadline);
+  }
+  if (body.submissionsOpen !== undefined) update.submissions_open = Boolean(body.submissionsOpen);
 
   if (Object.keys(update).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
@@ -91,8 +105,15 @@ export async function PUT(
     .eq("id", quizId)
     .select()
     .single();
-  if (updateRes.error?.message?.toLowerCase().includes("assessment_type")) {
+  if (
+    updateRes.error?.message &&
+    (updateRes.error.message.toLowerCase().includes("assessment_type") ||
+      updateRes.error.message.toLowerCase().includes("submission_deadline") ||
+      updateRes.error.message.toLowerCase().includes("submissions_open"))
+  ) {
     delete update.assessment_type;
+    delete update.submission_deadline;
+    delete update.submissions_open;
     updateRes = await supabase
       .from("quiztbl")
       .update(update)
@@ -175,6 +196,8 @@ export async function POST(
       allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
       max_attempts: (quizRow as { max_attempts?: number | null }).max_attempts ?? 1,
       save_best_only: (quizRow as { save_best_only?: boolean | null }).save_best_only !== false,
+      submission_deadline: (quizRow as { submission_deadline?: string | null }).submission_deadline ?? null,
+      submissions_open: (quizRow as { submissions_open?: boolean | null }).submissions_open !== false,
       source_quiz_id: action === "assign" ? sourceQuizId : null,
     };
 
@@ -183,8 +206,15 @@ export async function POST(
       .insert(insertRow)
       .select()
       .single();
-    if (insertRes.error?.message?.toLowerCase().includes("assessment_type")) {
+    if (
+      insertRes.error?.message &&
+      (insertRes.error.message.toLowerCase().includes("assessment_type") ||
+        insertRes.error.message.toLowerCase().includes("submission_deadline") ||
+        insertRes.error.message.toLowerCase().includes("submissions_open"))
+    ) {
       delete insertRow.assessment_type;
+      delete insertRow.submission_deadline;
+      delete insertRow.submissions_open;
       insertRes = await supabase
         .from("quiztbl")
         .insert(insertRow)

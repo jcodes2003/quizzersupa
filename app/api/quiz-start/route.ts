@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "../../lib/supabase-server";
 
+function getSubmissionCloseReason(quizSettings: Record<string, unknown>): string | null {
+  const submissionsOpen = (quizSettings.submissions_open as boolean | null | undefined) !== false;
+  if (!submissionsOpen) return "Quiz submissions are closed by the teacher.";
+  const deadlineRaw = quizSettings.submission_deadline;
+  if (typeof deadlineRaw === "string" && deadlineRaw.trim()) {
+    const deadline = new Date(deadlineRaw);
+    if (!Number.isNaN(deadline.getTime()) && Date.now() > deadline.getTime()) {
+      return "Quiz deadline has passed.";
+    }
+  }
+  return null;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json() as {
@@ -21,18 +34,20 @@ export async function POST(request: NextRequest) {
 
   let { data: quizSettings, error: quizError } = await supabase
     .from("quiztbl")
-    .select("time_limit_minutes, allow_retake, max_attempts")
+    .select("time_limit_minutes, allow_retake, max_attempts, source_quiz_id, submission_deadline, submissions_open")
     .eq("id", quizId)
     .maybeSingle();
   if (
     quizError?.message &&
     (quizError.message.toLowerCase().includes("time_limit") ||
       quizError.message.toLowerCase().includes("allow_retake") ||
-      quizError.message.toLowerCase().includes("max_attempts"))
+      quizError.message.toLowerCase().includes("max_attempts") ||
+      quizError.message.toLowerCase().includes("submission_deadline") ||
+      quizError.message.toLowerCase().includes("submissions_open"))
   ) {
     const fallback = await supabase
       .from("quiztbl")
-      .select("id")
+      .select("id, source_quiz_id")
       .eq("id", quizId)
       .maybeSingle();
     quizSettings = fallback.data as typeof quizSettings;
@@ -43,6 +58,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });
     }
     if (!quizSettings) return NextResponse.json({ error: "Quiz not found" }, { status: 404 });
+    const closeReason = getSubmissionCloseReason(quizSettings as Record<string, unknown>);
+    if (closeReason) return NextResponse.json({ error: closeReason }, { status: 403 });
 
   const rawMaxAttempts = (quizSettings as { max_attempts?: number | null }).max_attempts ?? 1;
   let maxAttempts = Math.max(1, rawMaxAttempts);

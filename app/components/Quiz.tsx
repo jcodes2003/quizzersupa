@@ -189,6 +189,18 @@ type SubmissionSource =
   | "auto_close_tab"
   | "auto_time_expired";
 
+type AttemptSavePayload = {
+  quizId: string;
+  studentName: string;
+  studentId: string;
+  score: number;
+  maxScore: number;
+  attemptNumber: number;
+  attemptId?: string;
+  answers: Record<string, unknown>;
+  submissionSource: SubmissionSource;
+};
+
 interface QuizProps {
   topic: string;
   section: string;
@@ -229,6 +241,9 @@ export default function Quiz({
   const [currentPage, setCurrentPage] = useState(0);
   const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [showDeadlineSubmitModal, setShowDeadlineSubmitModal] = useState(false);
+  const [deadlineSubmitLoading, setDeadlineSubmitLoading] = useState(false);
+  const [pendingForcedSubmit, setPendingForcedSubmit] = useState<AttemptSavePayload | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const autoSubmitRef = useRef(false);
   const [started, setStarted] = useState(false);
@@ -403,6 +418,25 @@ export default function Quiz({
     }
   };
 
+  const saveAttempt = useCallback(async (payload: AttemptSavePayload, forceSubmitAfterDeadline = false) => {
+    const res = await fetch("/api/student-attempts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...payload,
+        forceSubmitAfterDeadline,
+      }),
+    });
+    if (res.ok) return { ok: true as const };
+    const errorData = await res.json().catch(() => ({}));
+    const errorMessage = typeof errorData.error === "string" ? errorData.error : "Failed to save attempt.";
+    return {
+      ok: false as const,
+      errorMessage,
+      deadlinePassed: errorMessage.toLowerCase().includes("deadline has passed"),
+    };
+  }, []);
+
   const gradeQuiz = useCallback(async (source: SubmissionSource = "manual_submit") => {
     const name = getFullName();
     const id = studentId.trim();
@@ -545,25 +579,25 @@ export default function Quiz({
         // Save the attempt record and let the API handle the best score logic
         (async () => {
           try {
-            const res = await fetch("/api/student-attempts", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                quizId,
-                studentName: name,
-                studentId: id,
-                score: totalScore,
-                maxScore,
-                attemptNumber: nextAttemptNumber,
-                attemptId: attemptId ?? undefined,
-                answers: answersPayload,
-                submissionSource: source,
-              }),
-            });
-
-            if (!res.ok) {
-              const errorData = await res.json();
-              console.error("Failed to save attempt:", errorData.error);
+            const payload: AttemptSavePayload = {
+              quizId,
+              studentName: name,
+              studentId: id,
+              score: totalScore,
+              maxScore,
+              attemptNumber: nextAttemptNumber,
+              attemptId: attemptId ?? undefined,
+              answers: answersPayload,
+              submissionSource: source,
+            };
+            const result = await saveAttempt(payload);
+            if (!result.ok) {
+              if (result.deadlinePassed) {
+                setPendingForcedSubmit(payload);
+                setShowDeadlineSubmitModal(true);
+                return;
+              }
+              console.error("Failed to save attempt:", result.errorMessage);
             }
           } catch (err) {
             console.error("Error saving attempt:", err);
@@ -571,7 +605,7 @@ export default function Quiz({
         })();
       }
     }
-  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started]);
+  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started, saveAttempt]);
 
   useEffect(() => {
     if (!expiresAt || submitted) {
@@ -672,6 +706,24 @@ export default function Quiz({
       return;
     }
     setShowSubmitConfirm(true);
+  };
+
+  const handleForceSubmitAfterDeadline = async () => {
+    if (!pendingForcedSubmit) return;
+    setDeadlineSubmitLoading(true);
+    try {
+      const result = await saveAttempt(pendingForcedSubmit, true);
+      if (!result.ok) {
+        setSubmitError(result.errorMessage);
+      } else {
+        setShowDeadlineSubmitModal(false);
+        setPendingForcedSubmit(null);
+      }
+    } catch {
+      setSubmitError("Failed to submit after deadline.");
+    } finally {
+      setDeadlineSubmitLoading(false);
+    }
   };
 
   if (submitted && results) {
@@ -777,6 +829,37 @@ export default function Quiz({
             </div>
           </div>
         </div>
+        {showDeadlineSubmitModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-600 bg-slate-800 p-6 shadow-2xl">
+              <h3 className="text-lg font-bold text-slate-100 mb-2">Deadline Reached</h3>
+              <p className="text-slate-300 mb-6">
+                The quiz deadline has passed. Your current answers can still be submitted now.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (deadlineSubmitLoading) return;
+                    setShowDeadlineSubmitModal(false);
+                    setPendingForcedSubmit(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleForceSubmitAfterDeadline}
+                  disabled={deadlineSubmitLoading}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+                >
+                  {deadlineSubmitLoading ? "Submitting..." : "Submit Current Answers"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1035,6 +1118,37 @@ export default function Quiz({
                   className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
                 >
                   Yes, Submit
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {showDeadlineSubmitModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4">
+            <div className="w-full max-w-md rounded-2xl border border-slate-600 bg-slate-800 p-6 shadow-2xl">
+              <h3 className="text-lg font-bold text-slate-100 mb-2">Deadline Reached</h3>
+              <p className="text-slate-300 mb-6">
+                The quiz deadline has passed. Your current answers can still be submitted now.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (deadlineSubmitLoading) return;
+                    setShowDeadlineSubmitModal(false);
+                    setPendingForcedSubmit(null);
+                  }}
+                  className="px-4 py-2 rounded-lg bg-slate-600 hover:bg-slate-500 text-white font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleForceSubmitAfterDeadline}
+                  disabled={deadlineSubmitLoading}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+                >
+                  {deadlineSubmitLoading ? "Submitting..." : "Submit Current Answers"}
                 </button>
               </div>
             </div>

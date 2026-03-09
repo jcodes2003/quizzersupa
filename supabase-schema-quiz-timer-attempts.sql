@@ -7,9 +7,10 @@ ALTER TABLE quiztbl
   ADD COLUMN IF NOT EXISTS allow_retake boolean DEFAULT false,
   ADD COLUMN IF NOT EXISTS max_attempts integer DEFAULT 1,
   ADD COLUMN IF NOT EXISTS save_best_only boolean DEFAULT true,
+  ADD COLUMN IF NOT EXISTS submission_deadline timestamptz,
+  ADD COLUMN IF NOT EXISTS submissions_open boolean DEFAULT true,
   ADD COLUMN IF NOT EXISTS source_quiz_id uuid;
 
--- Log every attempt (one row per attempt)
 CREATE TABLE IF NOT EXISTS student_attempts_log (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   quizid uuid NOT NULL REFERENCES quiztbl(id) ON DELETE CASCADE,

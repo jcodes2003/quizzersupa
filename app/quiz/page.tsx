@@ -183,7 +183,7 @@ function QuizContent() {
       return (
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 flex items-center justify-center">
           <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 max-w-md text-center">
-            <h2 className="text-xl font-bold text-amber-400 mb-2">Quiz not found</h2>
+            <h2 className="text-xl font-bold text-amber-400 mb-2">Quiz unavailable</h2>
             <p className="text-slate-400 mb-6">
               {codeError || "Invalid or expired quiz code."}
             </p>

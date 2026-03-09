@@ -43,6 +43,8 @@ type QuizRow = {
   allow_retake?: boolean;
   max_attempts?: number | null;
   save_best_only?: boolean;
+  submission_deadline?: string | null;
+  submissions_open?: boolean;
   source_quiz_id?: string | null;
 };
 
@@ -73,6 +75,8 @@ type PendingQuizDraft = {
   allowRetake: boolean;
   maxAttempts: number;
   saveBestOnly: boolean;
+  submissionDeadline: string | null;
+  submissionsOpen: boolean;
 };
 
 async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
@@ -121,6 +125,28 @@ function normalizeAssessmentType(value?: string | null): "quiz" | "exam" {
 
 function formatAssessmentTypeLabel(value?: string | null): string {
   return normalizeAssessmentType(value) === "exam" ? "Examination" : "Quiz";
+}
+
+function toDateTimeLocalValue(value?: string | null): string {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function toIsoOrNull(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const d = new Date(trimmed);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+function formatDeadlineLabel(value?: string | null): string {
+  if (!value) return "No deadline";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "No deadline";
+  return d.toLocaleString();
 }
 
 function escapeCsvCell(value: string | number): string {
@@ -748,6 +774,8 @@ export default function TeacherPage() {
   const [newQuizAllowRetake, setNewQuizAllowRetake] = useState(false);
   const [newQuizMaxAttempts, setNewQuizMaxAttempts] = useState("1");
   const [newQuizSaveBestOnly, setNewQuizSaveBestOnly] = useState(true);
+  const [newQuizSubmissionDeadline, setNewQuizSubmissionDeadline] = useState("");
+  const [newQuizSubmissionsOpen, setNewQuizSubmissionsOpen] = useState(true);
   const [editingQuizId, setEditingQuizId] = useState<string | null>(null);
   const [editQuizSubjectId, setEditQuizSubjectId] = useState("");
   const [editQuizSectionId, setEditQuizSectionId] = useState("");
@@ -759,6 +787,8 @@ export default function TeacherPage() {
   const [editQuizAllowRetake, setEditQuizAllowRetake] = useState(false);
   const [editQuizMaxAttempts, setEditQuizMaxAttempts] = useState("1");
   const [editQuizSaveBestOnly, setEditQuizSaveBestOnly] = useState(true);
+  const [editQuizSubmissionDeadline, setEditQuizSubmissionDeadline] = useState("");
+  const [editQuizSubmissionsOpen, setEditQuizSubmissionsOpen] = useState(true);
   const [reuseSectionIds, setReuseSectionIds] = useState<string[]>([]);
   const [reusePeriod, setReusePeriod] = useState("");
   const [newQuestionText, setNewQuestionText] = useState("");
@@ -820,6 +850,8 @@ export default function TeacherPage() {
       allowRetake: newQuizAllowRetake,
       maxAttempts: newQuizMaxAttempts,
       saveBestOnly: newQuizSaveBestOnly,
+      submissionDeadline: newQuizSubmissionDeadline,
+      submissionsOpen: newQuizSubmissionsOpen,
     };
     const hasContent = Boolean(
       (draft.subjectId && draft.subjectId.trim()) ||
@@ -866,6 +898,8 @@ export default function TeacherPage() {
         allowRetake?: boolean;
         maxAttempts?: string;
         saveBestOnly?: boolean;
+        submissionDeadline?: string;
+        submissionsOpen?: boolean;
       };
       setNewQuizSubjectId(draft.subjectId ?? "");
       setNewQuizSectionIds(Array.isArray(draft.sectionIds) ? draft.sectionIds : []);
@@ -876,6 +910,8 @@ export default function TeacherPage() {
       setNewQuizAllowRetake(Boolean(draft.allowRetake));
       setNewQuizMaxAttempts(draft.maxAttempts ?? "1");
       setNewQuizSaveBestOnly(draft.saveBestOnly !== false);
+      setNewQuizSubmissionDeadline(draft.submissionDeadline ?? "");
+      setNewQuizSubmissionsOpen(draft.submissionsOpen !== false);
       setShowCreateQuiz(true);
     } catch {
       // ignore storage errors
@@ -1667,6 +1703,7 @@ export default function TeacherPage() {
       const maxAttempts = newQuizAllowRetake
         ? Math.max(2, Number(newQuizMaxAttempts) || 2)
         : 1;
+      const submissionDeadline = toIsoOrNull(newQuizSubmissionDeadline);
       const draft: PendingQuizDraft = {
         subjectId: newQuizSubjectId,
         sectionIds: [...newQuizSectionIds],
@@ -1677,6 +1714,8 @@ export default function TeacherPage() {
         allowRetake: newQuizAllowRetake,
         maxAttempts,
         saveBestOnly: newQuizSaveBestOnly,
+        submissionDeadline,
+        submissionsOpen: newQuizSubmissionsOpen,
       };
       setPendingQuizDraft(draft);
       setSelectedQuizId(null);
@@ -1696,6 +1735,8 @@ export default function TeacherPage() {
       setNewQuizAllowRetake(false);
       setNewQuizMaxAttempts("1");
       setNewQuizSaveBestOnly(true);
+      setNewQuizSubmissionDeadline("");
+      setNewQuizSubmissionsOpen(true);
     } finally {
       setSavingQuiz(false);
     }
@@ -1715,6 +1756,8 @@ export default function TeacherPage() {
     setEditQuizAllowRetake(Boolean(quiz.allow_retake));
     setEditQuizMaxAttempts(String(quiz.max_attempts ?? 1));
     setEditQuizSaveBestOnly(quiz.save_best_only !== false);
+    setEditQuizSubmissionDeadline(toDateTimeLocalValue(quiz.submission_deadline));
+    setEditQuizSubmissionsOpen(quiz.submissions_open !== false);
     setReuseSectionIds(quiz.sectionid ? [quiz.sectionid] : []);
     setReusePeriod(quiz.period ?? "");
     if (subjects.length === 0) fetchSubjects();
@@ -1732,6 +1775,7 @@ export default function TeacherPage() {
       const maxAttempts = editQuizAllowRetake
         ? Math.max(2, Number(editQuizMaxAttempts) || 2)
         : 1;
+      const submissionDeadline = toIsoOrNull(editQuizSubmissionDeadline);
       const res = await fetch(`/api/teacher/quizzes/${editingQuizId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -1747,6 +1791,8 @@ export default function TeacherPage() {
           allowRetake: editQuizAllowRetake,
           maxAttempts,
           saveBestOnly: editQuizSaveBestOnly,
+          submissionDeadline,
+          submissionsOpen: editQuizSubmissionsOpen,
         }),
       });
       const data = await res.json();
@@ -2108,9 +2154,11 @@ export default function TeacherPage() {
                 assessmentType: pendingQuizDraft.assessmentType,
                 timeLimitMinutes: pendingQuizDraft.timeLimitMinutes,
                 allowRetake: pendingQuizDraft.allowRetake,
-            maxAttempts: pendingQuizDraft.maxAttempts,
-            saveBestOnly: pendingQuizDraft.saveBestOnly,
-          }),
+                maxAttempts: pendingQuizDraft.maxAttempts,
+                saveBestOnly: pendingQuizDraft.saveBestOnly,
+                submissionDeadline: pendingQuizDraft.submissionDeadline,
+                submissionsOpen: pendingQuizDraft.submissionsOpen,
+              }),
         });
         const created = await readJsonSafe(createRes);
         if (!createRes.ok || !created?.id) {
@@ -3893,17 +3941,47 @@ export default function TeacherPage() {
                       className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                     />
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div>
+                    <label className="block text-slate-400 text-sm mb-1">Submission Deadline</label>
                     <input
-                      id="allow-retake"
-                      type="checkbox"
-                      checked={newQuizAllowRetake}
-                      onChange={(e) => setNewQuizAllowRetake(e.target.checked)}
-                      className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                      type="datetime-local"
+                      value={newQuizSubmissionDeadline}
+                      onChange={(e) => setNewQuizSubmissionDeadline(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                     />
-                    <label htmlFor="allow-retake" className="text-slate-300 text-sm">
-                      Allow retake attempts
-                    </label>
+                    <p className="text-slate-500 text-xs mt-1">Leave blank for no deadline.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="text-slate-300 text-sm">Accept submissions</span>
+                    <button
+                      type="button"
+                      aria-pressed={newQuizSubmissionsOpen}
+                      onClick={() => setNewQuizSubmissionsOpen((v) => !v)}
+                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${
+                        newQuizSubmissionsOpen
+                          ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-300"
+                          : "bg-slate-700/70 border-slate-500/60 text-slate-300"
+                      }`}
+                    >
+                      <span className={`h-2.5 w-2.5 rounded-full ${newQuizSubmissionsOpen ? "bg-emerald-300" : "bg-slate-400"}`} />
+                      {newQuizSubmissionsOpen ? "On" : "Off"}
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className="text-slate-300 text-sm">Allow retake attempts</span>
+                    <button
+                      type="button"
+                      aria-pressed={newQuizAllowRetake}
+                      onClick={() => setNewQuizAllowRetake((v) => !v)}
+                      className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${
+                        newQuizAllowRetake
+                          ? "bg-cyan-500/20 border-cyan-400/60 text-cyan-300"
+                          : "bg-slate-700/70 border-slate-500/60 text-slate-300"
+                      }`}
+                    >
+                      <span className={`h-2.5 w-2.5 rounded-full ${newQuizAllowRetake ? "bg-cyan-300" : "bg-slate-400"}`} />
+                      {newQuizAllowRetake ? "On" : "Off"}
+                    </button>
                   </div>
                   {newQuizAllowRetake && (
                     <div>
@@ -4036,6 +4114,26 @@ export default function TeacherPage() {
                               </>
                             )}
                           </button>
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-xs ${
+                              quiz.submissions_open === false
+                                ? "bg-rose-500/20 border border-rose-500/40 text-rose-300"
+                                : quiz.submission_deadline &&
+                                    !Number.isNaN(new Date(quiz.submission_deadline).getTime()) &&
+                                    Date.now() > new Date(quiz.submission_deadline).getTime()
+                                  ? "bg-amber-500/20 border border-amber-500/40 text-amber-300"
+                                  : "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
+                            }`}
+                            title={`Deadline: ${formatDeadlineLabel(quiz.submission_deadline)}`}
+                          >
+                            {quiz.submissions_open === false
+                              ? "Closed"
+                              : quiz.submission_deadline &&
+                                  !Number.isNaN(new Date(quiz.submission_deadline).getTime()) &&
+                                  Date.now() > new Date(quiz.submission_deadline).getTime()
+                                ? "Deadline passed"
+                                : "Open"}
+                          </span>
                           {quiz.source_quiz_id && (
                             <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs">
                               Shared
@@ -4145,17 +4243,46 @@ export default function TeacherPage() {
                                   className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
                                 />
                               </div>
-                              <div className="flex items-center gap-3">
+                              <div>
+                                <label className="block text-slate-400 text-xs mb-1">Submission Deadline</label>
                                 <input
-                                  id="edit-allow-retake-inline"
-                                  type="checkbox"
-                                  checked={editQuizAllowRetake}
-                                  onChange={(e) => setEditQuizAllowRetake(e.target.checked)}
-                                  className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
+                                  type="datetime-local"
+                                  value={editQuizSubmissionDeadline}
+                                  onChange={(e) => setEditQuizSubmissionDeadline(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200"
                                 />
-                                <label htmlFor="edit-allow-retake-inline" className="text-slate-300 text-xs">
-                                  Allow retake attempts
-                                </label>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <span className="text-slate-300 text-xs">Accept submissions</span>
+                                <button
+                                  type="button"
+                                  aria-pressed={editQuizSubmissionsOpen}
+                                  onClick={() => setEditQuizSubmissionsOpen((v) => !v)}
+                                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${
+                                    editQuizSubmissionsOpen
+                                      ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-300"
+                                      : "bg-slate-700/70 border-slate-500/60 text-slate-300"
+                                  }`}
+                                >
+                                  <span className={`h-2.5 w-2.5 rounded-full ${editQuizSubmissionsOpen ? "bg-emerald-300" : "bg-slate-400"}`} />
+                                  {editQuizSubmissionsOpen ? "On" : "Off"}
+                                </button>
+                              </div>
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <span className="text-slate-300 text-xs">Allow retake attempts</span>
+                                <button
+                                  type="button"
+                                  aria-pressed={editQuizAllowRetake}
+                                  onClick={() => setEditQuizAllowRetake((v) => !v)}
+                                  className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${
+                                    editQuizAllowRetake
+                                      ? "bg-cyan-500/20 border-cyan-400/60 text-cyan-300"
+                                      : "bg-slate-700/70 border-slate-500/60 text-slate-300"
+                                  }`}
+                                >
+                                  <span className={`h-2.5 w-2.5 rounded-full ${editQuizAllowRetake ? "bg-cyan-300" : "bg-slate-400"}`} />
+                                  {editQuizAllowRetake ? "On" : "Off"}
+                                </button>
                               </div>
                               {editQuizAllowRetake && (
                                 <div>
