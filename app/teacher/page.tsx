@@ -742,6 +742,7 @@ export default function TeacherPage() {
   const [recheckSection, setRecheckSection] = useState<string>("");
   const [filterSubject, setFilterSubject] = useState<string>("");
   const [filterSection, setFilterSection] = useState<string>("");
+  const [filterQuizName, setFilterQuizName] = useState<string>("");
   const [responsesViewMode, setResponsesViewMode] = useState<"all" | "best">("all");
   const [responsesNameSort, setResponsesNameSort] = useState<"latest" | "az" | "za">("latest");
   const [responsesSearch, setResponsesSearch] = useState("");
@@ -1573,7 +1574,7 @@ export default function TeacherPage() {
     setResponsesPage(1);
     setRecheckMessage(null);
     setRecheckError(null);
-  }, [filterSubject, filterSection, responsesNameSort]);
+  }, [filterSubject, filterSection, filterQuizName, responsesNameSort]);
 
   useEffect(() => {
     setRecheckMessage(null);
@@ -2391,6 +2392,28 @@ export default function TeacherPage() {
     ).values()
   );
 
+  // Get unique quiz names from rows for responses filter (respect current subject/section filters)
+  const quizNameOptionsFromRows = Array.from(
+    new Map(
+      rows
+        .filter((r) => {
+          if (filterSubject && r.subjectid !== filterSubject) return false;
+          if (filterSection && r.sectionid !== filterSection) return false;
+          return r.quizname || r.quizcode;
+        })
+        .map((r) => {
+          const label = (r.quizname || r.quizcode || "").trim() || r.quizcode || "";
+          return [
+            label.toLowerCase(),
+            {
+              id: label,
+              name: label,
+            },
+          ];
+        })
+    ).values()
+  );
+
   // Get unique periods from rows for report filter
   const periodOptionsFromRows = Array.from(
     new Set(rows.map((r) => String(r.period ?? "").trim()).filter(Boolean))
@@ -2434,10 +2457,14 @@ export default function TeacherPage() {
   }
   const baseResponseRows = responsesViewMode === "best" ? Array.from(bestByStudentQuiz.values()) : rows;
 
-  // Filter for responses tab - filter by subjectid and sectionid
+  // Filter for responses tab - filter by subjectid, sectionid, and quizname
   const filteredRows = baseResponseRows.filter((r) => {
     if (filterSubject && r.subjectid !== filterSubject) return false;
     if (filterSection && r.sectionid !== filterSection) return false;
+    if (filterQuizName) {
+      const label = (r.quizname || r.quizcode || "").trim() || r.quizcode || "";
+      if (label.toLowerCase() !== filterQuizName.toLowerCase()) return false;
+    }
     return true;
   });
 
@@ -2917,6 +2944,16 @@ export default function TeacherPage() {
                 ))}
               </select>
               <select
+                value={filterQuizName}
+                onChange={(e) => setFilterQuizName(e.target.value)}
+                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+              >
+                <option value="">All quizzes</option>
+                {quizNameOptionsFromRows.map((q) => (
+                  <option key={q.id} value={q.name}>{q.name}</option>
+                ))}
+              </select>
+              <select
                 value={responsesViewMode}
                 onChange={(e) => {
                   setResponsesViewMode(e.target.value as "all" | "best");
@@ -2970,6 +3007,7 @@ export default function TeacherPage() {
                   {[
                     filterSubject ? `Subject: ${getSubjectLabelFromRows(filterSubject)}` : "",
                     filterSection ? `Section: ${getSectionLabelFromRows(filterSection)}` : "",
+                    filterQuizName ? `Quiz: ${filterQuizName}` : "",
                   ]
                     .filter(Boolean)
                     .join(" | ") || "None"}
