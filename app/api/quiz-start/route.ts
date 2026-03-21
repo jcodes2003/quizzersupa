@@ -202,7 +202,7 @@ export async function POST(request: NextRequest) {
   if (existingOpen) {
     const countResult = await supabase
       .from("student_attempts_log")
-      .select("*", { count: "exact" })
+      .select("submission_source", { count: "exact" })
       .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
       .eq("student_id", studentId)
       .eq("is_submitted", true);
@@ -211,6 +211,12 @@ export async function POST(request: NextRequest) {
       countErr && countErr.toLowerCase().includes("student_attempts_log")
         ? null
         : (countResult.count ?? 0);
+    const hasManualSubmit =
+      countErr && countErr.toLowerCase().includes("student_attempts_log")
+        ? false
+        : ((countResult.data ?? []) as Array<{ submission_source?: string | null }>).some(
+            (row) => String(row.submission_source ?? "").trim() === "manual_submit"
+          );
     const attemptsRemaining =
       typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
 
@@ -240,14 +246,14 @@ export async function POST(request: NextRequest) {
       maxAttempts,
       allowRetake,
       attemptsUsed,
-      attemptsRemaining,
+      attemptsRemaining: attemptsRemaining === 0 && !hasManualSubmit ? 1 : attemptsRemaining,
     });
   }
 
   let count: number | null = null;
   const countResult = await supabase
     .from("student_attempts_log")
-    .select("*", { count: "exact" })
+    .select("submission_source", { count: "exact" })
     .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
     .eq("student_id", studentId)
     .eq("is_submitted", true);
@@ -263,7 +269,13 @@ export async function POST(request: NextRequest) {
   }
 
   const attemptCount = count ?? 0;
-    if (attemptCount >= maxAttempts) {
+  const hasManualSubmit =
+    countResult.error?.message && countResult.error.message.toLowerCase().includes("student_attempts_log")
+      ? false
+      : ((countResult.data ?? []) as Array<{ submission_source?: string | null }>).some(
+          (row) => String(row.submission_source ?? "").trim() === "manual_submit"
+        );
+    if (attemptCount >= maxAttempts && hasManualSubmit) {
       return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
     }
 

@@ -275,7 +275,7 @@ export async function GET(request: NextRequest) {
       const submitted = attemptsUsed > 0;
       const manuallySubmitted = hasManualSubmitByQuizId.get(q.id) === true;
       const overdueOrClosedByTeacher = !q._open;
-      const canStillAttempt = attemptsRemaining > 0;
+      const canStillAttempt = attemptsRemaining > 0 || (q._open && !manuallySubmitted);
       const status: "open" | "closed" | "missing" = manuallySubmitted
         ? "closed"
         : !overdueOrClosedByTeacher && canStillAttempt

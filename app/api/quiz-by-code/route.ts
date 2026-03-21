@@ -109,7 +109,7 @@ export async function GET(request: NextRequest) {
 
     const countRes = await supabase
       .from("student_attempts_log")
-      .select("*", { count: "exact" })
+      .select("submission_source", { count: "exact" })
       .in("quizid", quizIds.length > 0 ? quizIds : [String(quizRow.id ?? "")])
       .eq("student_id", studentId)
       .eq("is_submitted", true);
@@ -118,9 +118,12 @@ export async function GET(request: NextRequest) {
     const countErr = (countRes.error as { message?: string } | null)?.message ?? "";
     if (!countErr || !countErr.toLowerCase().includes("student_attempts_log")) {
       const used = countRes.count ?? 0;
+      const hasManualSubmit = ((countRes.data ?? []) as Array<{ submission_source?: string | null }>).some(
+        (row) => String(row.submission_source ?? "").trim() === "manual_submit"
+      );
       attemptsUsed = used;
       attemptsRemaining = Math.max(0, maxAttempts - used);
-      if (used >= maxAttempts) {
+      if (used >= maxAttempts && hasManualSubmit) {
         return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
       }
     }
