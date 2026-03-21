@@ -142,6 +142,7 @@ export async function GET(request: NextRequest) {
   }
 
   const studentId = String(session.student.studentId ?? "").trim();
+  const studentName = String(session.student.name ?? "").trim();
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
   const hasManualSubmitByQuizId = new Map<string, boolean>();
@@ -149,6 +150,42 @@ export async function GET(request: NextRequest) {
     string,
     { submittedAt: string | null; score: number | null; maxScore: number | null; percentage: number | null }
   >();
+
+  const mergeAttemptIntoBest = (qid: string, attempt: Record<string, unknown>, isManualSubmit: boolean) => {
+    attemptsUsedByQuizId.set(qid, (attemptsUsedByQuizId.get(qid) ?? 0) + 1);
+    if (isManualSubmit) {
+      hasManualSubmitByQuizId.set(qid, true);
+    }
+
+    const submittedAtRaw = safeIso(attempt.submitted_at ?? attempt.created_at);
+    const scoreNum = Number(attempt.score);
+    const maxNum = Number(attempt.max_score);
+    const score = Number.isFinite(scoreNum) ? scoreNum : null;
+    const maxScore = Number.isFinite(maxNum) ? maxNum : null;
+    const percentage =
+      score != null && maxScore != null && maxScore > 0
+        ? Math.round((score / maxScore) * 100)
+        : null;
+
+    const prev = bestByQuizId.get(qid);
+    if (!prev) {
+      bestByQuizId.set(qid, { submittedAt: submittedAtRaw, score, maxScore, percentage });
+      return;
+    }
+    const prevPct = typeof prev.percentage === "number" ? prev.percentage : -1;
+    const nextPct = typeof percentage === "number" ? percentage : -1;
+    if (nextPct > prevPct) {
+      bestByQuizId.set(qid, { submittedAt: submittedAtRaw, score, maxScore, percentage });
+      return;
+    }
+    if (nextPct === prevPct) {
+      const prevTime = prev.submittedAt ? new Date(prev.submittedAt).getTime() : 0;
+      const nextTime = submittedAtRaw ? new Date(submittedAtRaw).getTime() : 0;
+      if (nextTime >= prevTime) {
+        bestByQuizId.set(qid, { submittedAt: submittedAtRaw, score, maxScore, percentage });
+      }
+    }
+  };
 
   if (studentId && quizIds.length > 0) {
     const fullAttempts = await supabase
@@ -175,42 +212,49 @@ export async function GET(request: NextRequest) {
             .eq("is_submitted", true)
         : fullAttempts;
 
-    const attempts = (attemptsRes.data ?? []) as Array<Record<string, unknown>>;
-    for (const a of attempts) {
-      const qid = String(a.quizid ?? "").trim();
-      if (!qid) continue;
-      attemptsUsedByQuizId.set(qid, (attemptsUsedByQuizId.get(qid) ?? 0) + 1);
-      if (String(a.submission_source ?? "").trim() === "manual_submit") {
-        hasManualSubmitByQuizId.set(qid, true);
-      }
-      const submittedAtRaw = safeIso(a.submitted_at ?? a.created_at);
-      const scoreNum = Number(a.score);
-      const maxNum = Number(a.max_score);
-      const score = Number.isFinite(scoreNum) ? scoreNum : null;
-      const maxScore = Number.isFinite(maxNum) ? maxNum : null;
-      const percentage =
-        score != null && maxScore != null && maxScore > 0
-          ? Math.round((score / maxScore) * 100)
-          : null;
+	    const attempts = (attemptsRes.data ?? []) as Array<Record<string, unknown>>;
+	    for (const a of attempts) {
+	      const qid = String(a.quizid ?? "").trim();
+	      if (!qid) continue;
+	      mergeAttemptIntoBest(qid, a, String(a.submission_source ?? "").trim() === "manual_submit");
+	    }
+	  }
 
-      const prev = bestByQuizId.get(qid);
-      if (!prev) {
-        bestByQuizId.set(qid, { submittedAt: submittedAtRaw, score, maxScore, percentage });
-        continue;
+  if (quizIds.length > 0) {
+    const fallbackRows: Array<Record<string, unknown>> = [];
+
+    if (studentId) {
+      const fallbackById = await supabase
+        .from("student_attempts")
+        .select("quizid, score, max_score, created_at, student_id, studentname")
+        .in("quizid", quizIds)
+        .eq("student_id", studentId);
+      if (!fallbackById.error) {
+        fallbackRows.push(...(((fallbackById.data ?? []) as Array<Record<string, unknown>>)));
       }
-      const prevPct = typeof prev.percentage === "number" ? prev.percentage : -1;
-      const nextPct = typeof percentage === "number" ? percentage : -1;
-      if (nextPct > prevPct) {
-        bestByQuizId.set(qid, { submittedAt: submittedAtRaw, score, maxScore, percentage });
-        continue;
+    }
+
+    if (studentName) {
+      const fallbackByName = await supabase
+        .from("student_attempts")
+        .select("quizid, score, max_score, created_at, student_id, studentname")
+        .in("quizid", quizIds)
+        .eq("studentname", studentName);
+      if (!fallbackByName.error) {
+        fallbackRows.push(...(((fallbackByName.data ?? []) as Array<Record<string, unknown>>)));
       }
-      if (nextPct === prevPct) {
-        const prevTime = prev.submittedAt ? new Date(prev.submittedAt).getTime() : 0;
-        const nextTime = submittedAtRaw ? new Date(submittedAtRaw).getTime() : 0;
-        if (nextTime >= prevTime) {
-          bestByQuizId.set(qid, { submittedAt: submittedAtRaw, score, maxScore, percentage });
-        }
-      }
+    }
+
+    const seenFallbackKeys = new Set<string>();
+    for (const row of fallbackRows) {
+      const qid = String(row.quizid ?? "").trim();
+      if (!qid || attemptsUsedByQuizId.has(qid)) continue;
+      const sid = String(row.student_id ?? "").trim();
+      const sname = String(row.studentname ?? "").trim();
+      const dedupeKey = `${qid}::${sid}::${sname}::${String(row.created_at ?? "")}`;
+      if (seenFallbackKeys.has(dedupeKey)) continue;
+      seenFallbackKeys.add(dedupeKey);
+      mergeAttemptIntoBest(qid, row, true);
     }
   }
 
