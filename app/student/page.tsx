@@ -44,6 +44,7 @@ export default function StudentDashboardPage() {
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
   const [quizLoading, setQuizLoading] = useState(false);
   const [selectedSectionId, setSelectedSectionId] = useState("");
+  const [selectedSubjectId, setSelectedSubjectId] = useState("");
 
   const [pageSize, setPageSize] = useState(5);
   const [openPage, setOpenPage] = useState(1);
@@ -82,6 +83,7 @@ export default function StudentDashboardPage() {
       const data = await res.json().catch(() => ({}));
       if (res.ok && data?.ok && Array.isArray(data.quizzes)) setQuizzes(data.quizzes);
       else setQuizzes([]);
+      setSelectedSubjectId("");
       setOpenPage(1);
       setMissingPage(1);
       setClosedPage(1);
@@ -160,9 +162,31 @@ export default function StudentDashboardPage() {
     return { text: "Closed", cls: "bg-slate-600/20 text-slate-200 border-slate-600/40" };
   };
 
-  const openList = quizzes.filter((q) => q.status === "open");
-  const missingList = quizzes.filter((q) => q.status === "missing");
-  const closedList = quizzes
+  const subjectOptions = useMemo(
+    () =>
+      Array.from(
+        new Map(
+          quizzes
+            .filter((q) => String(q.subjectid ?? "").trim())
+            .map((q) => [
+              String(q.subjectid ?? "").trim(),
+              String(q.subjectName ?? "").trim() || "Subject",
+            ])
+        ).entries()
+      )
+        .map(([id, name]) => ({ id, name }))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" })),
+    [quizzes]
+  );
+
+  const filteredQuizzes = useMemo(() => {
+    if (!selectedSubjectId) return quizzes;
+    return quizzes.filter((q) => String(q.subjectid ?? "").trim() === selectedSubjectId);
+  }, [quizzes, selectedSubjectId]);
+
+  const openList = filteredQuizzes.filter((q) => q.status === "open");
+  const missingList = filteredQuizzes.filter((q) => q.status === "missing");
+  const closedList = filteredQuizzes
     .filter((q) => q.status === "closed")
     .slice()
     .sort((a, b) => {
@@ -175,7 +199,7 @@ export default function StudentDashboardPage() {
     setOpenPage(1);
     setMissingPage(1);
     setClosedPage(1);
-  }, [pageSize]);
+  }, [pageSize, selectedSubjectId]);
 
   const clampPage = (page: number, totalPages: number) => Math.min(Math.max(1, page), Math.max(1, totalPages));
 
@@ -435,15 +459,47 @@ export default function StudentDashboardPage() {
 	                No quizzes assigned yet for this section.
 	              </p>
 	            ) : (
-	              <div className="space-y-3">
-	                <div className="flex flex-wrap items-center justify-between gap-2">
-	                  <div className="flex items-center gap-2 flex-wrap text-xs">
-	                    <span className="px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
-	                      Section: {activeSection?.name ?? "Selected"}
-	                    </span>
-		                    <span className="px-2 py-1 rounded border border-emerald-600/40 bg-emerald-600/10 text-emerald-200">
-		                      Open: {openList.length}
+		              <div className="space-y-3">
+		                <div className="flex flex-wrap items-center justify-between gap-2">
+		                  <div className="flex items-center gap-2 flex-wrap text-xs">
+		                    <span className="px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
+		                      Section: {activeSection?.name ?? "Selected"}
 		                    </span>
+                        <label className="flex items-center gap-2 px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
+                          <span className="text-slate-400">Subject</span>
+                          <div className="relative">
+                            <select
+                              value={selectedSubjectId}
+                              onChange={(e) => setSelectedSubjectId(e.target.value)}
+                              className="appearance-none bg-slate-900/60 border border-slate-600/60 rounded-lg pl-2 pr-7 py-1 text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                            >
+                              <option className="bg-slate-900 text-slate-100" value="">
+                                All subjects
+                              </option>
+                              {subjectOptions.map((subject) => (
+                                <option
+                                  key={subject.id}
+                                  className="bg-slate-900 text-slate-100"
+                                  value={subject.id}
+                                >
+                                  {subject.name}
+                                </option>
+                              ))}
+                            </select>
+                            <svg
+                              className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-300"
+                              xmlns="http://www.w3.org/2000/svg"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </div>
+                        </label>
+			                    <span className="px-2 py-1 rounded border border-emerald-600/40 bg-emerald-600/10 text-emerald-200">
+			                      Open: {openList.length}
+			                    </span>
 		                    <span className="px-2 py-1 rounded border border-red-600/40 bg-red-600/10 text-red-200">
 		                      Overdue: {missingList.length}
 		                    </span>
@@ -484,11 +540,13 @@ export default function StudentDashboardPage() {
 	                  </button>
 	                </div>
 
-	                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
-	                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Open</h3>
-	                  {openList.length === 0 ? (
-	                    <p className="text-slate-500 text-sm">No open quizzes/exams right now.</p>
-		                  ) : (
+		                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
+		                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Open</h3>
+		                  {openList.length === 0 ? (
+		                    <p className="text-slate-500 text-sm">
+                          {selectedSubjectId ? "No open quizzes/exams for this subject." : "No open quizzes/exams right now."}
+                        </p>
+			                  ) : (
 		                    <ul className="space-y-2">
 			                      {openPageItems.map((q) => {
 			                    const badge = statusBadge(q);
@@ -515,7 +573,10 @@ export default function StudentDashboardPage() {
 	                            </span>
 	                            <span className="text-slate-500 text-xs">· {String(q.assessment_type || "quiz")}</span>
 	                          </div>
-	                          <div className="text-slate-500 text-xs mt-1">
+	                          {q.subjectName ? (
+                            <div className="text-cyan-300 text-xs mt-1 font-medium">Subject: {q.subjectName}</div>
+                          ) : null}
+                          <div className="text-slate-500 text-xs mt-1">
 	                            Code: <span className="font-mono">{q.quizcode}</span>
 	                            {q.period ? <span> · Period {q.period}</span> : null}
 	                          </div>
@@ -546,11 +607,13 @@ export default function StudentDashboardPage() {
 		                  <Pagination page={openPageSafe} totalPages={openTotalPages} onChange={setOpenPage} />
 		                </div>
 
-	                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
-		                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Overdue</h3>
-		                  {missingList.length === 0 ? (
-		                    <p className="text-slate-500 text-sm">No overdue work.</p>
-			                  ) : (
+		                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
+			                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Overdue</h3>
+			                  {missingList.length === 0 ? (
+			                    <p className="text-slate-500 text-sm">
+                            {selectedSubjectId ? "No overdue work for this subject." : "No overdue work."}
+                          </p>
+				                  ) : (
 		                    <ul className="space-y-2">
 		                      {missingPageItems.map((q) => {
 		                        const badge = statusBadge(q);
@@ -584,7 +647,10 @@ export default function StudentDashboardPage() {
 	                                {scorePill}
 	                                <span className="text-slate-500 text-xs">· {String(q.assessment_type || "quiz")}</span>
 	                              </div>
-	                              <div className="text-slate-500 text-xs mt-1">
+	                              {q.subjectName ? (
+                            <div className="text-cyan-300 text-xs mt-1 font-medium">Subject: {q.subjectName}</div>
+                          ) : null}
+                          <div className="text-slate-500 text-xs mt-1">
 	                                Code: <span className="font-mono">{q.quizcode}</span>
 	                                {q.period ? <span> · Period {q.period}</span> : null}
 	                              </div>
@@ -610,11 +676,13 @@ export default function StudentDashboardPage() {
 		                  <Pagination page={missingPageSafe} totalPages={missingTotalPages} onChange={setMissingPage} />
 		                </div>
 
-	                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
-	                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Completed</h3>
-	                  {closedList.length === 0 ? (
-	                    <p className="text-slate-500 text-sm">No completed quizzes/exams yet.</p>
-		                  ) : (
+		                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
+		                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Completed</h3>
+		                  {closedList.length === 0 ? (
+		                    <p className="text-slate-500 text-sm">
+                          {selectedSubjectId ? "No completed quizzes/exams for this subject yet." : "No completed quizzes/exams yet."}
+                        </p>
+			                  ) : (
 		                    <ul className="space-y-2">
 		                      {closedPageItems.map((q) => {
 		                        const badge = statusBadge(q);
@@ -649,7 +717,10 @@ export default function StudentDashboardPage() {
 	                                {scorePill}
 	                                <span className="text-slate-500 text-xs">· {String(q.assessment_type || "quiz")}</span>
 	                              </div>
-	                              <div className="text-slate-500 text-xs mt-1">
+	                              {q.subjectName ? (
+                            <div className="text-cyan-300 text-xs mt-1 font-medium">Subject: {q.subjectName}</div>
+                          ) : null}
+                          <div className="text-slate-500 text-xs mt-1">
 	                                Code: <span className="font-mono">{q.quizcode}</span>
 	                                {q.period ? <span> · Period {q.period}</span> : null}
 	                              </div>
@@ -699,3 +770,5 @@ export default function StudentDashboardPage() {
     </div>
   );
 }
+
+

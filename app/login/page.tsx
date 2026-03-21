@@ -74,13 +74,29 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-6 text-center text-slate-500 text-sm">
-          <Link href="/student/register" className="hover:text-emerald-400">Student registration</Link>
-          {" · "}
+        <div className="mt-6 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
+          <p className="text-center text-sm font-semibold text-emerald-300">New student here?</p>
+          <p className="mt-1 text-center text-sm text-slate-300">
+            Create your student account first before logging in.
+          </p>
+          <Link
+            href="/student/register"
+            className="mt-4 block w-full rounded-xl bg-emerald-600 px-4 py-3 text-center text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            Create Student Account
+          </Link>
+        </div>
+
+        <p className="mt-4 text-center text-slate-500 text-sm">
           <Link href="/admin" className="hover:text-amber-400">Admin</Link>
         </p>
+
+        <div className="mt-6 border-t border-slate-700/50 pt-4 text-center">
+          <p className="text-xs uppercase tracking-[0.2em] text-slate-500">System Created By</p>
+          <p className="mt-2 text-sm font-semibold text-slate-200">Joshua A. Calma</p>
+          <p className="text-xs text-slate-400">PHINMA COC</p>
+        </div>
       </div>
     </div>
   );
 }
-

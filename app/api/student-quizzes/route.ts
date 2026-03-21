@@ -144,6 +144,7 @@ export async function GET(request: NextRequest) {
   const studentId = String(session.student.studentId ?? "").trim();
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
+  const hasManualSubmitByQuizId = new Map<string, boolean>();
   const bestByQuizId = new Map<
     string,
     { submittedAt: string | null; score: number | null; maxScore: number | null; percentage: number | null }
@@ -152,7 +153,7 @@ export async function GET(request: NextRequest) {
   if (studentId && quizIds.length > 0) {
     const fullAttempts = await supabase
       .from("student_attempts_log")
-      .select("quizid, score, max_score, submitted_at, created_at")
+      .select("quizid, score, max_score, submitted_at, created_at, submission_source")
       .in("quizid", quizIds)
       .eq("student_id", studentId)
       .eq("is_submitted", true);
@@ -164,7 +165,8 @@ export async function GET(request: NextRequest) {
       (errMsg.toLowerCase().includes("submitted_at") ||
         errMsg.toLowerCase().includes("max_score") ||
         errMsg.toLowerCase().includes("max_score") ||
-        errMsg.toLowerCase().includes("score"))
+        errMsg.toLowerCase().includes("score") ||
+        errMsg.toLowerCase().includes("submission_source"))
         ? await supabase
             .from("student_attempts_log")
             .select("quizid, created_at")
@@ -178,6 +180,9 @@ export async function GET(request: NextRequest) {
       const qid = String(a.quizid ?? "").trim();
       if (!qid) continue;
       attemptsUsedByQuizId.set(qid, (attemptsUsedByQuizId.get(qid) ?? 0) + 1);
+      if (String(a.submission_source ?? "").trim() === "manual_submit") {
+        hasManualSubmitByQuizId.set(qid, true);
+      }
       const submittedAtRaw = safeIso(a.submitted_at ?? a.created_at);
       const scoreNum = Number(a.score);
       const maxNum = Number(a.max_score);
@@ -224,16 +229,14 @@ export async function GET(request: NextRequest) {
       const attemptsRemaining = Math.max(0, (q.max_attempts ?? 1) - attemptsUsed);
       const best = bestByQuizId.get(q.id) ?? null;
       const submitted = attemptsUsed > 0;
+      const manuallySubmitted = hasManualSubmitByQuizId.get(q.id) === true;
       const overdueOrClosedByTeacher = !q._open;
       const canStillAttempt = attemptsRemaining > 0;
-      // Rule: stay Open while not overdue and still has attempts (even if already submitted and can retake).
-      // Close only when overdue/closed by teacher OR when all attempts are used.
-      const isActionableOpen = !overdueOrClosedByTeacher && canStillAttempt;
-      const status: "open" | "closed" | "missing" = isActionableOpen
-        ? "open"
-        : submitted
-          ? "closed"
-          : "missing"; // overdue but not submitted yet
+      const status: "open" | "closed" | "missing" = manuallySubmitted
+        ? "closed"
+        : !overdueOrClosedByTeacher && canStillAttempt
+          ? "open"
+          : "missing"; // overdue/closed without a successful submission yet
       const submittedAt = best?.submittedAt ?? null;
       const score = best?.score ?? null;
       const maxScore = best?.maxScore ?? null;

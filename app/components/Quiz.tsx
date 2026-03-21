@@ -246,6 +246,43 @@ interface QuizProps {
   attemptsRemaining?: number | null;
 }
 
+type QuizFlowItem =
+  | {
+      kind: "mc";
+      id: string;
+      question: MultipleChoiceQuestion;
+      sectionLabel: string;
+      setLabel: string;
+      questionNumberInSection: number;
+      sectionQuestionCount: number;
+    }
+  | {
+      kind: "id";
+      id: string;
+      question: IdentificationQuestion;
+      sectionLabel: string;
+      setLabel: string;
+      questionNumberInSection: number;
+      sectionQuestionCount: number;
+    }
+  | {
+      kind: "enum";
+      id: string;
+      question: EnumerationQuestion;
+      sectionLabel: string;
+      setLabel: string;
+      questionNumberInSection: number;
+      sectionQuestionCount: number;
+    }
+  | {
+      kind: "programming";
+      id: string;
+      sectionLabel: string;
+      setLabel: string;
+      questionNumberInSection: number;
+      sectionQuestionCount: number;
+    };
+
 const SECTION_MC = 0;
 const SECTION_ID = 1;
 const SECTION_ENUM = 2;
@@ -363,9 +400,7 @@ export default function Quiz({
     ],
     [hasMc, hasId, hasEnumOrProg]
   );
-  const totalPages = sectionOrder.length;
-  const currentSection = totalPages > 0 && currentPage < totalPages ? sectionOrder[currentPage]! : SECTION_MC;
-	  const attemptsLimit = quizId ? maxAttemptsState : resolvedMaxAttempts;
+		  const attemptsLimit = quizId ? maxAttemptsState : resolvedMaxAttempts;
 	  const displayCurrentAttempt =
 	    quizId && started
 	      ? typeof attemptNumber === "number"
@@ -400,10 +435,105 @@ export default function Quiz({
 	    }
 	  }, [quizId, topic]);
 
-  const getSetLabelForSection = (sectionConst: number): string => {
-    const idx = sectionOrder.indexOf(sectionConst);
-    return idx >= 0 ? String.fromCharCode(65 + idx) : "?";
-  };
+  const resultParts = useMemo(() => {
+    return sectionOrder.map((sectionConst, index) => {
+      if (sectionConst === SECTION_MC) {
+        return {
+          key: "mc",
+          label: `Part ${index + 1}: Multiple Choice`,
+          score: results?.mcScore ?? 0,
+          max: results?.mcMax ?? 0,
+          isNotice: false,
+        };
+      }
+
+      if (sectionConst === SECTION_ID) {
+        return {
+          key: "id",
+          label: `Part ${index + 1}: Identification`,
+          score: results?.idScore ?? 0,
+          max: results?.idMax ?? 0,
+          isNotice: false,
+        };
+      }
+
+      if (programmingSection) {
+        return {
+          key: "programming",
+          label: `Part ${index + 1}: Programming Problem (10 pts)`,
+          score: 0,
+          max: 0,
+          isNotice: true,
+        };
+      }
+
+      return {
+        key: "enum",
+        label: `Part ${index + 1}: Enumeration`,
+        score: results?.enumScore ?? 0,
+        max: results?.enumMax ?? 0,
+        isNotice: false,
+      };
+    });
+  }, [sectionOrder, programmingSection, results]);
+
+  const questionFlow = useMemo<QuizFlowItem[]>(() => {
+    const groups = sectionOrder.map((sectionConst, sectionIndex) => {
+      const setLabel = String.fromCharCode(65 + sectionIndex);
+
+      if (sectionConst === SECTION_MC) {
+        return mcRenderQuestions.map((question, questionIndex) => ({
+          kind: "mc" as const,
+          id: question.id,
+          question,
+          sectionLabel: "Multiple Choice",
+          setLabel,
+          questionNumberInSection: questionIndex + 1,
+          sectionQuestionCount: mcRenderQuestions.length,
+        }));
+      }
+
+      if (sectionConst === SECTION_ID) {
+        return idRenderQuestions.map((question, questionIndex) => ({
+          kind: "id" as const,
+          id: question.id,
+          question,
+          sectionLabel: "Identification",
+          setLabel,
+          questionNumberInSection: questionIndex + 1,
+          sectionQuestionCount: idRenderQuestions.length,
+        }));
+      }
+
+      if (programmingSection) {
+        return [
+          {
+            kind: "programming" as const,
+            id: "programming-section",
+            sectionLabel: "Programming Problem",
+            setLabel,
+            questionNumberInSection: 1,
+            sectionQuestionCount: 1,
+          },
+        ];
+      }
+
+      return enumRenderQuestions.map((question, questionIndex) => ({
+        kind: "enum" as const,
+        id: question.id,
+        question,
+        sectionLabel: "Enumeration",
+        setLabel,
+        questionNumberInSection: questionIndex + 1,
+        sectionQuestionCount: enumRenderQuestions.length,
+      }));
+    });
+
+    return groups.flat();
+  }, [sectionOrder, mcRenderQuestions, idRenderQuestions, enumRenderQuestions, programmingSection]);
+
+  const totalQuestions = questionFlow.length;
+  const currentQuestion = totalQuestions > 0 && currentPage < totalQuestions ? questionFlow[currentPage]! : null;
 
 	  useEffect(() => {
 	    if (submitError) errorRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -539,21 +669,16 @@ export default function Quiz({
     };
   }, [started, submitted]);
 
-  const getUnansweredPages = useCallback((): number[] => {
-    const pages: number[] = [];
-    const mcUnanswered = hasMc && multipleChoiceQuestions.some((q) => !(mcAnswers[q.id] || "").trim());
-    const idUnanswered = hasId && identificationQuestions.some((q) => !(idAnswers[q.id] || "").trim());
-    const enumUnanswered = hasEnumOrProg && !programmingSection && enumerationQuestions.some((q) => !(enumAnswers[q.id] || "").trim());
-    if (mcUnanswered) pages.push(sectionOrder.indexOf(SECTION_MC));
-    if (idUnanswered) pages.push(sectionOrder.indexOf(SECTION_ID));
-    if (enumUnanswered) pages.push(sectionOrder.indexOf(SECTION_ENUM));
-    return pages.filter((p) => p >= 0);
-  }, [hasMc, hasId, hasEnumOrProg, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, sectionOrder]);
-
-  const isComplete = useCallback(() => {
-    if (!studentFirstName.trim() || !studentLastName.trim()) return false;
-    return getUnansweredPages().length === 0;
-  }, [studentFirstName, studentLastName, getUnansweredPages]);
+  const getUnansweredQuestions = useCallback((): number[] => {
+    return questionFlow
+      .map((item, index) => {
+        if (item.kind === "mc") return !(mcAnswers[item.id] || "").trim() ? index : -1;
+        if (item.kind === "id") return !(idAnswers[item.id] || "").trim() ? index : -1;
+        if (item.kind === "enum") return !(enumAnswers[item.id] || "").trim() ? index : -1;
+        return -1;
+      })
+      .filter((index) => index >= 0);
+  }, [questionFlow, mcAnswers, idAnswers, enumAnswers]);
 
   const getFullName = useCallback(() => {
     const first = studentFirstName.trim();
@@ -886,8 +1011,8 @@ export default function Quiz({
     e.preventDefault();
     setSubmitError(null);
     setShowSubmitConfirm(false);
-    if (currentPage < totalPages - 1) {
-      setCurrentPage((p) => Math.min(totalPages - 1, p + 1));
+    if (currentPage < totalQuestions - 1) {
+      setCurrentPage((p) => Math.min(totalQuestions - 1, p + 1));
       return;
     }
     if (!studentFirstName.trim()) {
@@ -910,14 +1035,11 @@ export default function Quiz({
       setCurrentPage(0);
       return;
     }
-    const unansweredPages = getUnansweredPages();
-    if (unansweredPages.length > 0) {
-      const firstPage = unansweredPages[0]!;
-      setCurrentPage(firstPage);
-      const partNames = sectionOrder.map((s) =>
-        s === SECTION_MC ? "Multiple Choice" : s === SECTION_ID ? "Identification" : programmingSection ? "Programming" : "Enumeration"
-      );
-      setSubmitError(`Please answer all questions. You have unanswered items in Part ${firstPage + 1}: ${partNames[firstPage] ?? "Unknown"}.`);
+    const unansweredQuestions = getUnansweredQuestions();
+    if (unansweredQuestions.length > 0) {
+      const firstQuestion = unansweredQuestions[0]!;
+      setCurrentPage(firstQuestion);
+      setSubmitError(`Please answer all questions. Question ${firstQuestion + 1} is still unanswered.`);
       return;
     }
     setShowSubmitConfirm(true);
@@ -981,24 +1103,18 @@ export default function Quiz({
             )}
 
             <div className="grid gap-4 mb-8">
-              <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
-                <span className="text-slate-300">Part I: Multiple Choice</span>
-                <span className="font-bold text-emerald-400">{results.mcScore} / {results.mcMax}</span>
-              </div>
-              <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
-                <span className="text-slate-300">Part II: Identification</span>
-                <span className="font-bold text-emerald-400">{results.idScore} / {results.idMax}</span>
-              </div>
-              {programmingSection ? (
-                <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
-                  <span className="text-slate-300">Part III: Programming Problem (10 pts)</span>
-                  <p className="text-amber-200 text-sm mt-2">Submit your code and this score to GCR.</p>
-                </div>
-              ) : (
-                <div className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
-                  <span className="text-slate-300">Part III: Enumeration</span>
-                  <span className="font-bold text-emerald-400">{results.enumScore} / {results.enumMax}</span>
-                </div>
+              {resultParts.map((part) =>
+                part.isNotice ? (
+                  <div key={part.key} className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                    <span className="text-slate-300">{part.label}</span>
+                    <p className="text-amber-200 text-sm mt-2">Submit your code and this score to GCR.</p>
+                  </div>
+                ) : (
+                  <div key={part.key} className="flex justify-between items-center p-4 rounded-xl bg-slate-700/50">
+                    <span className="text-slate-300">{part.label}</span>
+                    <span className="font-bold text-emerald-400">{part.score} / {part.max}</span>
+                  </div>
+                )
               )}
             </div>
 
@@ -1136,11 +1252,16 @@ export default function Quiz({
               )}
             </p>
           )}
-          <p className="text-slate-500 text-sm mt-1">Section {section} · Page {currentPage + 1} of {totalPages || 1}</p>
+          {started && totalQuestions > 0 ? (
+            <p className="text-slate-500 text-sm mt-1">Question {currentPage + 1} of {totalQuestions}</p>
+          ) : (
+            <p className="text-slate-500 text-sm mt-1">Section {section}</p>
+          )}
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
-          <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 md:p-6 shadow-2xl space-y-4">
+          {!started && (
+            <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 md:p-6 shadow-2xl space-y-4">
             <div>
               <label className="block text-slate-300 font-medium mb-2">First Name</label>
 		              <input
@@ -1221,11 +1342,56 @@ export default function Quiz({
                 )}
               </div>
             )}
-          </div>
+            </div>
+          )}
 
           {submitError && (
             <div ref={errorRef} className="p-4 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-center">
               {submitError}
+            </div>
+          )}
+
+          {started && (
+            <div className="rounded-2xl bg-slate-800/50 border border-slate-700/50 px-4 py-3 shadow-xl">
+              <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+                <div className="flex flex-wrap items-center gap-3 text-slate-400">
+                  <span>Section {section}</span>
+                  <span>Question {currentPage + 1} of {totalQuestions || 1}</span>
+                  {currentQuestion && (
+                    <span>
+                      Set {currentQuestion.setLabel}: {currentQuestion.sectionLabel} {currentQuestion.questionNumberInSection}/
+                      {currentQuestion.sectionQuestionCount}
+                    </span>
+                  )}
+                  {quizId && <span>Attempt {displayCurrentAttempt ?? 1} of {attemptsLimit}</span>}
+                  {timeLimitMinutes ? <span>Time limit: {timeLimitMinutes} min</span> : <span>No time limit</span>}
+                </div>
+                <div className="flex flex-wrap items-center gap-3">
+                  {timeLeft !== null && (
+                    <span className={`text-sm font-semibold ${timeLeft <= 30 ? "text-amber-300" : "text-cyan-300"}`}>
+                      Time left: {Math.floor(timeLeft / 60)}:{String(timeLeft % 60).padStart(2, "0")}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (typeof document === "undefined") return;
+                      try {
+                        if (!document.fullscreenElement) {
+                          await document.documentElement.requestFullscreen();
+                        } else {
+                          await document.exitFullscreen();
+                        }
+                      } catch {
+                        // Ignore fullscreen errors (browser or permissions).
+                      }
+                    }}
+                    className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+                  >
+                    {isFullscreen ? "Exit Focus Mode" : "Focus Mode"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
 
@@ -1235,91 +1401,49 @@ export default function Quiz({
             </div>
           ) : (
             <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 md:p-8 shadow-2xl">
-            {currentSection === SECTION_MC && (
-              <>
-                <h2 className="text-xl font-bold text-emerald-400 mb-1">
-                  Set {getSetLabelForSection(SECTION_MC)}: Multiple Choice
-                </h2>
-                <p className="text-slate-400 text-sm mb-6">{multipleChoiceQuestions.length} items — Choose the best answer</p>
-                <div className="space-y-6">
-                  {mcRenderQuestions.map((q, i) => (
-                    <MCQuestion
-                      key={q.id}
-                      question={q}
-                      index={i + 1}
-                      value={mcAnswers[q.id] ?? ""}
-                      onChange={(v) => setMcAnswers((prev) => ({ ...prev, [q.id]: v }))}
-                    />
-                  ))}
-                </div>
-              </>
+            {currentQuestion?.kind === "mc" && (
+              <MCQuestion
+                question={currentQuestion.question}
+                index={currentPage + 1}
+                value={mcAnswers[currentQuestion.id] ?? ""}
+                onChange={(v) => setMcAnswers((prev) => ({ ...prev, [currentQuestion.id]: v }))}
+              />
             )}
 
-            {currentSection === SECTION_ID && (
-              <>
-                <h2 className="text-xl font-bold text-cyan-400 mb-1">
-                  Set {getSetLabelForSection(SECTION_ID)}: Identification
-                </h2>
-                <p className="text-slate-400 text-sm mb-6">{identificationQuestions.length} items — Write the correct term</p>
-                <div className="space-y-6">
-                  {idRenderQuestions.map((q, i) => (
-                    <IdQuestion
-                      key={q.id}
-                      question={q}
-                      index={i + 1}
-                      value={idAnswers[q.id] ?? ""}
-                      onChange={(v) => setIdAnswers((prev) => ({ ...prev, [q.id]: v }))}
-                    />
-                  ))}
-                </div>
-              </>
+            {currentQuestion?.kind === "id" && (
+              <IdQuestion
+                question={currentQuestion.question}
+                index={currentPage + 1}
+                value={idAnswers[currentQuestion.id] ?? ""}
+                onChange={(v) => setIdAnswers((prev) => ({ ...prev, [currentQuestion.id]: v }))}
+              />
             )}
 
-            {currentSection === SECTION_ENUM && programmingSection ? (
+            {currentQuestion?.kind === "enum" && (
+              <div className="space-y-5">
+                <div className="rounded-xl bg-amber-500/10 border border-amber-500/30 px-4 py-3 text-amber-100">
+                  <p className="text-sm">
+                    Enumeration: separate your answers with commas, new lines, or semicolons. Order does not matter.
+                  </p>
+                </div>
+                <EnumQuestion
+                  question={currentQuestion.question}
+                  index={currentPage + 1}
+                  value={enumAnswers[currentQuestion.id] ?? ""}
+                  onChange={(v) => setEnumAnswers((prev) => ({ ...prev, [currentQuestion.id]: v }))}
+                />
+              </div>
+            )}
+
+            {currentQuestion?.kind === "programming" && programmingSection && (
               <>
-                <h2 className="text-xl font-bold text-amber-400 mb-1">
-                  Set {getSetLabelForSection(SECTION_ENUM)}: Real-Life Programming Problem (10 points)
-                </h2>
-                <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100">
-                  <p className="font-semibold mb-3">📋 Instructions:</p>
-                  <p className="text-sm mb-4">{programmingSection.instructions}</p>
+                <div className="mb-6 rounded-xl bg-amber-500/10 border border-amber-500/30 p-4 text-amber-100">
+                  <p className="font-semibold mb-3">Programming Problem</p>
+                  <p className="text-sm">{programmingSection.instructions}</p>
                 </div>
                 <div className="p-4 rounded-xl bg-slate-700/30 border border-slate-600/30">
                   <p className="font-semibold text-slate-200 mb-3">Problem:</p>
                   <pre className="text-slate-300 whitespace-pre-wrap font-sans text-sm">{programmingSection.problem}</pre>
-                </div>
-              </>
-            ) : currentSection === SECTION_ENUM && (
-              <>
-                <h2 className="text-xl font-bold text-amber-400 mb-1">
-                  Set {getSetLabelForSection(SECTION_ENUM)}: Enumeration
-                </h2>
-                <p className="text-slate-400 text-sm mb-4">Items are scored based on the answer key.</p>
-                <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-100">
-                  <p className="font-semibold mb-2">📋 How to answer enumeration questions:</p>
-                  <ul className="text-sm space-y-1 list-disc list-inside mb-3">
-                    <li>List each item on a new line, OR separate with commas or semicolons</li>
-                    <li>Order does not matter — list items in any sequence</li>
-                    <li>Capital or small letters are both accepted</li>
-                    <li>Each question is worth 1 point (you need most items correct to earn the point)</li>
-                  </ul>
-                  <p className="text-sm font-medium mb-1">Example:</p>
-                  <p className="text-sm text-slate-300 bg-slate-800/50 p-3 rounded-lg font-mono">
-                    Line, Shape, Color, Value<br />
-                    texture space
-                  </p>
-                  <p className="text-xs text-slate-400 mt-1">Both formats above are valid.</p>
-                </div>
-                <div className="space-y-6">
-                  {enumRenderQuestions.map((q, i) => (
-                    <EnumQuestion
-                      key={q.id}
-                      question={q}
-                      index={i + 1}
-                      value={enumAnswers[q.id] ?? ""}
-                      onChange={(v) => setEnumAnswers((prev) => ({ ...prev, [q.id]: v }))}
-                    />
-                  ))}
                 </div>
               </>
             )}
@@ -1340,14 +1464,14 @@ export default function Quiz({
             >
               ← Previous
             </button>
-            {currentPage < totalPages - 1 ? (
+            {currentPage < totalQuestions - 1 ? (
               <button
                 type="button"
                 onClick={(e) => {
                   e.preventDefault();
                   setShowSubmitConfirm(false);
                   setSubmitError(null);
-                  setCurrentPage((p) => Math.min(totalPages - 1, p + 1));
+                  setCurrentPage((p) => Math.min(totalQuestions - 1, p + 1));
                 }}
                 disabled={Boolean(quizId) && !started}
                 className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold transition-colors"
