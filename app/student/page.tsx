@@ -228,27 +228,27 @@ export default function StudentDashboardPage() {
 	    const safeTotal = Math.max(1, totalPages);
 	    const safePage = clampPage(page, safeTotal);
 	    return (
-	      <div className="flex items-center justify-between gap-2 mt-3">
+		      <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		        <button
+		          type="button"
+		          onClick={() => onChange(safePage - 1)}
+	          disabled={safePage <= 1}
+	          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/40 text-slate-200 text-xs font-semibold disabled:opacity-50"
+	        >
+	          Prev
+	        </button>
+	        <div className="text-center text-slate-500 text-xs">
+	          Page <span className="text-slate-200">{safePage}</span> / <span className="text-slate-200">{safeTotal}</span>
+	        </div>
 	        <button
 	          type="button"
-	          onClick={() => onChange(safePage - 1)}
-          disabled={safePage <= 1}
-          className="px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/40 text-slate-200 text-xs font-semibold disabled:opacity-50"
-        >
-          Prev
-        </button>
-        <div className="text-slate-500 text-xs">
-          Page <span className="text-slate-200">{safePage}</span> / <span className="text-slate-200">{safeTotal}</span>
-        </div>
-        <button
-          type="button"
-          onClick={() => onChange(safePage + 1)}
-          disabled={safePage >= safeTotal}
-          className="px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/40 text-slate-200 text-xs font-semibold disabled:opacity-50"
-        >
-          Next
-        </button>
-      </div>
+	          onClick={() => onChange(safePage + 1)}
+	          disabled={safePage >= safeTotal}
+	          className="w-full sm:w-auto px-3 py-2 rounded-lg bg-slate-800/60 border border-slate-700/40 text-slate-200 text-xs font-semibold disabled:opacity-50"
+	        >
+	          Next
+	        </button>
+	      </div>
     );
   };
 
@@ -310,8 +310,8 @@ export default function StudentDashboardPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
-      <div className="max-w-5xl mx-auto space-y-6">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
+	      <div className="max-w-5xl mx-auto space-y-6">
+	        <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <Link href="/" className="text-slate-500 hover:text-cyan-400 text-sm">← Home</Link>
             <h1 className="text-3xl font-bold mt-2 text-emerald-300">Student Dashboard</h1>
@@ -320,14 +320,14 @@ export default function StudentDashboardPage() {
               {me?.student?.studentId ? <span className="text-slate-500"> · {me.student.studentId}</span> : null}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
-          >
-            Log out
-          </button>
-        </div>
+	          <button
+	            type="button"
+	            onClick={handleLogout}
+	            className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+	          >
+	            Log out
+	          </button>
+	        </div>
 
         {error && (
           <div className="rounded-xl bg-red-900/20 border border-red-700/30 p-4 text-red-200">
@@ -387,21 +387,21 @@ export default function StudentDashboardPage() {
             <p className="text-slate-500 text-sm mb-4">
               Enter the section code your teacher gave you.
             </p>
-            <form onSubmit={handleJoin} className="flex gap-2">
-              <input
+	            <form onSubmit={handleJoin} className="grid grid-cols-1 gap-2 min-[430px]:grid-cols-[minmax(0,1fr)_auto]">
+	              <input
                 value={joinCode}
                 onChange={(e) => setJoinCode(e.target.value)}
                 placeholder="Section code"
-                className="flex-1 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 uppercase"
-              />
-              <button
-                type="submit"
-                disabled={joinLoading}
-                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
-              >
-                {joinLoading ? "Joining..." : "Join"}
-              </button>
-            </form>
+		                className="w-full min-w-0 px-4 py-3 rounded-xl bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 uppercase"
+	              />
+	              <button
+	                type="submit"
+	                disabled={joinLoading}
+		                className="w-full min-[430px]:w-auto px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+	              >
+	                {joinLoading ? "Joining..." : "Join"}
+	              </button>
+	            </form>
 
 	            <div className="mt-6">
 	              <h3 className="text-slate-300 font-semibold mb-2">Joined Sections</h3>
@@ -460,19 +460,19 @@ export default function StudentDashboardPage() {
 	              </p>
 	            ) : (
 		              <div className="space-y-3">
-		                <div className="flex flex-wrap items-center justify-between gap-2">
-		                  <div className="flex items-center gap-2 flex-wrap text-xs">
-		                    <span className="px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
-		                      Section: {activeSection?.name ?? "Selected"}
-		                    </span>
-                        <label className="flex items-center gap-2 px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
-                          <span className="text-slate-400">Subject</span>
-                          <div className="relative">
-                            <select
-                              value={selectedSubjectId}
-                              onChange={(e) => setSelectedSubjectId(e.target.value)}
-                              className="appearance-none bg-slate-900/60 border border-slate-600/60 rounded-lg pl-2 pr-7 py-1 text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                            >
+			                <div className="flex flex-col gap-3">
+			                  <div className="grid grid-cols-1 gap-2 text-xs sm:flex sm:flex-wrap sm:items-center">
+			                    <span className="px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
+			                      Section: {activeSection?.name ?? "Selected"}
+			                    </span>
+	                        <label className="flex w-full flex-col gap-2 rounded border border-slate-600/40 bg-slate-600/10 px-2 py-2 text-slate-200 sm:w-auto sm:flex-row sm:items-center sm:py-1">
+	                          <span className="text-slate-400">Subject</span>
+	                          <div className="relative w-full sm:w-auto">
+	                            <select
+	                              value={selectedSubjectId}
+	                              onChange={(e) => setSelectedSubjectId(e.target.value)}
+	                              className="w-full appearance-none rounded-lg border border-slate-600/60 bg-slate-900/60 py-2 pl-2 pr-7 text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500 sm:w-auto sm:py-1"
+	                            >
                               <option className="bg-slate-900 text-slate-100" value="">
                                 All subjects
                               </option>
@@ -506,14 +506,14 @@ export default function StudentDashboardPage() {
 		                    <span className="px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
 		                      Completed: {closedList.length}
 		                    </span>
-			                    <label className="flex items-center gap-2 px-2 py-1 rounded border border-slate-600/40 bg-slate-600/10 text-slate-200">
-			                      <span className="text-slate-400">Per list</span>
-			                      <div className="relative">
-			                        <select
-			                          value={pageSize}
-			                          onChange={(e) => setPageSize(Number(e.target.value) || 5)}
-			                          className="appearance-none bg-slate-900/60 border border-slate-600/60 rounded-lg pl-2 pr-7 py-1 text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500"
-			                        >
+	                        <label className="flex w-full flex-col gap-2 rounded border border-slate-600/40 bg-slate-600/10 px-2 py-2 text-slate-200 sm:w-auto sm:flex-row sm:items-center sm:py-1">
+	                          <span className="text-slate-400">Per list</span>
+	                          <div className="relative w-full sm:w-auto">
+	                            <select
+	                              value={pageSize}
+	                              onChange={(e) => setPageSize(Number(e.target.value) || 5)}
+	                              className="w-full appearance-none rounded-lg border border-slate-600/60 bg-slate-900/60 py-2 pl-2 pr-7 text-slate-100 text-xs focus:outline-none focus:ring-2 focus:ring-cyan-500 sm:w-auto sm:py-1"
+	                            >
 			                          <option className="bg-slate-900 text-slate-100" value={5}>5</option>
 			                          <option className="bg-slate-900 text-slate-100" value={10}>10</option>
 			                          <option className="bg-slate-900 text-slate-100" value={20}>20</option>
@@ -530,15 +530,15 @@ export default function StudentDashboardPage() {
 			                      </div>
 			                    </label>
 			                  </div>
-		                  <button
-		                    type="button"
-	                    onClick={() => void loadQuizzes(selectedSectionId)}
-	                    disabled={quizLoading || !selectedSectionId}
-	                    className="text-xs text-cyan-400 hover:underline disabled:opacity-50"
-	                  >
-	                    Refresh
-	                  </button>
-	                </div>
+			                  <button
+			                    type="button"
+		                    onClick={() => void loadQuizzes(selectedSectionId)}
+		                    disabled={quizLoading || !selectedSectionId}
+		                    className="w-full rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-300 hover:bg-cyan-500/15 disabled:opacity-50 sm:w-auto"
+		                  >
+		                    Refresh
+		                  </button>
+		                </div>
 
 		                <div className="rounded-xl bg-slate-900/20 border border-slate-700/30 p-3">
 		                  <h3 className="text-slate-200 font-semibold text-sm mb-2">Open</h3>
@@ -554,10 +554,10 @@ export default function StudentDashboardPage() {
 				                        const canOpen = q.status === "open";
 			                    return (
 		                      <li
-	                        key={q.id}
-	                        className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-3 ${
-	                          q.status === "missing"
-	                            ? "bg-red-950/20 border-red-800/30"
+		                        key={q.id}
+		                        className={`flex flex-col gap-3 rounded-lg border px-3 py-3 sm:flex-row sm:items-start sm:justify-between ${
+		                          q.status === "missing"
+		                            ? "bg-red-950/20 border-red-800/30"
 	                            : q.status === "open"
 	                              ? "bg-slate-900/30 border-slate-700/40"
 	                              : "bg-slate-900/20 border-slate-700/30"
@@ -587,13 +587,13 @@ export default function StudentDashboardPage() {
 	                          ) : null}
 	                          <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 	                        </div>
-		                        <button
-		                          type="button"
-		                          onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
-		                          disabled={!canOpen}
-		                          className={`px-3 py-2 rounded-lg text-white text-sm font-semibold ${
-		                            canOpen
-		                              ? "bg-emerald-600 hover:bg-emerald-500"
+			                        <button
+			                          type="button"
+			                          onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
+			                          disabled={!canOpen}
+			                          className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
+			                            canOpen
+			                              ? "bg-emerald-600 hover:bg-emerald-500"
 		                              : "bg-slate-700/70 opacity-60 cursor-not-allowed"
 		                          }`}
 		                        >
@@ -626,11 +626,11 @@ export default function StudentDashboardPage() {
 	                            </span>
 	                          ) : null;
 	                        return (
-	                          <li
-	                            key={q.id}
-	                            className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-3 ${
-	                              q.status === "missing"
-	                                ? "bg-red-950/20 border-red-800/30"
+		                          <li
+		                            key={q.id}
+		                            className={`flex flex-col gap-3 rounded-lg border px-3 py-3 sm:flex-row sm:items-start sm:justify-between ${
+		                              q.status === "missing"
+		                                ? "bg-red-950/20 border-red-800/30"
 	                                : q.status === "open"
 	                                  ? "bg-slate-900/30 border-slate-700/40"
 	                                  : "bg-slate-900/20 border-slate-700/30"
@@ -656,13 +656,13 @@ export default function StudentDashboardPage() {
 	                              </div>
 	                              <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 	                            </div>
-	                            <button
-	                              type="button"
-	                              onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
-	                              disabled={!canOpen}
-	                              className={`px-3 py-2 rounded-lg text-white text-sm font-semibold ${
-	                                canOpen
-	                                  ? "bg-emerald-600 hover:bg-emerald-500"
+		                            <button
+		                              type="button"
+		                              onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
+		                              disabled={!canOpen}
+		                              className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
+		                                canOpen
+		                                  ? "bg-emerald-600 hover:bg-emerald-500"
 	                                  : "bg-slate-700/70 opacity-60 cursor-not-allowed"
 	                              }`}
 	                            >
@@ -696,11 +696,11 @@ export default function StudentDashboardPage() {
 	                            </span>
 	                          ) : null;
 	                        return (
-	                          <li
-	                            key={q.id}
-	                            className={`flex items-start justify-between gap-3 rounded-lg border px-3 py-3 ${
-	                              q.status === "missing"
-	                                ? "bg-red-950/20 border-red-800/30"
+		                          <li
+		                            key={q.id}
+		                            className={`flex flex-col gap-3 rounded-lg border px-3 py-3 sm:flex-row sm:items-start sm:justify-between ${
+		                              q.status === "missing"
+		                                ? "bg-red-950/20 border-red-800/30"
 	                                : q.status === "open"
 	                                  ? "bg-slate-900/30 border-slate-700/40"
 	                                  : "bg-slate-900/20 border-slate-700/30"
@@ -743,13 +743,13 @@ export default function StudentDashboardPage() {
 	                              ) : null}
 	                              <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 	                            </div>
-	                            <button
-	                              type="button"
-	                              onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
-	                              disabled={!canOpen}
-	                              className={`px-3 py-2 rounded-lg text-white text-sm font-semibold ${
-	                                canOpen
-	                                  ? "bg-emerald-600 hover:bg-emerald-500"
+		                            <button
+		                              type="button"
+		                              onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
+		                              disabled={!canOpen}
+		                              className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
+		                                canOpen
+		                                  ? "bg-emerald-600 hover:bg-emerald-500"
 	                                  : "bg-slate-700/70 opacity-60 cursor-not-allowed"
 	                              }`}
 	                            >

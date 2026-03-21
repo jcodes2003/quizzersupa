@@ -844,6 +844,7 @@ export default function TeacherPage() {
     score: number;
     imageUrl?: string;
   }>>([]);
+  const [editingBatchIndex, setEditingBatchIndex] = useState<number | null>(null);
   const [responsesPage, setResponsesPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
   const [quizzesPage, setQuizzesPage] = useState(1);
@@ -2259,7 +2260,11 @@ export default function TeacherPage() {
       questionToAdd.answerkey = newQuestionAnswerKey.trim();
     }
     
-    setBatchQuestions([...batchQuestions, questionToAdd]);
+    if (editingBatchIndex !== null) {
+      setBatchQuestions(batchQuestions.map((item, index) => (index === editingBatchIndex ? questionToAdd : item)));
+    } else {
+      setBatchQuestions([...batchQuestions, questionToAdd]);
+    }
     setError("");
     // Clear form for next question
     setNewQuestionText("");
@@ -2270,6 +2275,29 @@ export default function TeacherPage() {
     setNewQuestionImageError("");
     setEnumScoreMode("fixed");
     setNewQuizType("multiple_choice");
+    setEditingBatchIndex(null);
+  };
+
+  const handleEditBatchQuestion = (idx: number) => {
+    const item = batchQuestions[idx];
+    if (!item) return;
+
+    setNewQuestionText(item.question);
+    setNewQuizType(item.quizType);
+    setNewQuestionOptions(item.quizType === "multiple_choice" ? item.options?.length ? [...item.options] : ["", ""] : ["", ""]);
+    setNewQuestionAnswerKey(item.answerkey ?? "");
+    setNewQuestionScore(String(item.score));
+    setNewQuestionImageUrl(item.imageUrl ?? "");
+    setNewQuestionImageError("");
+    if (item.quizType === "enumeration") {
+      const itemCount = parseEnumerationAnswerKey(item.answerkey ?? "").length;
+      setEnumScoreMode(item.score === itemCount && itemCount > 0 ? "per_item" : "fixed");
+    } else {
+      setEnumScoreMode("fixed");
+    }
+    setEditingBatchIndex(idx);
+    setShowAddQuestion(true);
+    setError("");
   };
 
   const uploadQuestionImage = async (
@@ -4262,22 +4290,44 @@ export default function TeacherPage() {
                   <div className="mb-4 p-4 rounded-lg bg-slate-700/50 border border-slate-600/50">
                     <h5 className="text-slate-300 font-medium mb-2 text-sm">Questions to be saved ({batchQuestions.length}):</h5>
                     <ul className="space-y-2 max-h-40 overflow-y-auto">
-                      {batchQuestions.map((q, idx) => (
-                        <li key={idx} className="text-sm text-slate-400 flex items-start gap-2">
-                          <span className="text-cyan-400">{idx + 1}.</span>
-                          <span className="flex-1">
-                            {q.question.substring(0, 60)}{q.question.length > 60 ? "..." : ""}
-                            <span className="text-slate-500 ml-2">({q.quizType.replace("_", " ")}, {q.score} pt{q.score !== 1 ? "s" : ""})</span>
-                            {q.imageUrl && (
-                              <span className="text-emerald-300 ml-2">[Image]</span>
-                            )}
-                          </span>
+	                      {batchQuestions.map((q, idx) => (
+	                        <li key={idx} className="text-sm text-slate-400 flex items-start gap-2">
+	                          <span className="text-cyan-400">{idx + 1}.</span>
+	                          <span className="flex-1">
+	                            {q.question.substring(0, 60)}{q.question.length > 60 ? "..." : ""}
+	                            <span className="text-slate-500 ml-2">({q.quizType.replace("_", " ")}, {q.score} pt{q.score !== 1 ? "s" : ""})</span>
+	                            {q.imageUrl && (
+	                              <span className="text-emerald-300 ml-2">[Image]</span>
+	                            )}
+	                          </span>
                           <button
                             type="button"
-                            onClick={() => setBatchQuestions(batchQuestions.filter((_, i) => i !== idx))}
-                            className="text-red-400 hover:text-red-300 text-xs"
+                            onClick={() => handleEditBatchQuestion(idx)}
+                            className="text-cyan-400 hover:text-cyan-300 text-xs"
                           >
-                            Remove
+                            Edit
+                          </button>
+	                          <button
+	                            type="button"
+	                            onClick={() => {
+                                  setBatchQuestions(batchQuestions.filter((_, i) => i !== idx));
+                                  if (editingBatchIndex === idx) {
+                                    setEditingBatchIndex(null);
+                                    setNewQuestionText("");
+                                    setNewQuestionOptions(["", ""]);
+                                    setNewQuestionAnswerKey("");
+                                    setNewQuestionScore("1");
+                                    setNewQuestionImageUrl("");
+                                    setNewQuestionImageError("");
+                                    setEnumScoreMode("fixed");
+                                    setNewQuizType("multiple_choice");
+                                  } else if (editingBatchIndex !== null && editingBatchIndex > idx) {
+                                    setEditingBatchIndex(editingBatchIndex - 1);
+                                  }
+                                }}
+	                            className="text-red-400 hover:text-red-300 text-xs"
+	                          >
+	                            Remove
                           </button>
                         </li>
                       ))}
@@ -4512,14 +4562,33 @@ export default function TeacherPage() {
                         : "Default is 1 point per question."}
                     </p>
                   </div>
-                  <div className="flex gap-2">
-                    <button
-                      type="submit"
-                      className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold"
-                    >
-                      Add to Batch
-                    </button>
-                    {batchQuestions.length > 0 && (
+	                  <div className="flex gap-2">
+	                    <button
+	                      type="submit"
+	                      className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-semibold"
+	                    >
+	                      {editingBatchIndex !== null ? "Update Batch Question" : "Add to Batch"}
+	                    </button>
+                      {editingBatchIndex !== null && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingBatchIndex(null);
+                            setNewQuestionText("");
+                            setNewQuestionOptions(["", ""]);
+                            setNewQuestionAnswerKey("");
+                            setNewQuestionScore("1");
+                            setNewQuestionImageUrl("");
+                            setNewQuestionImageError("");
+                            setEnumScoreMode("fixed");
+                            setNewQuizType("multiple_choice");
+                          }}
+                          className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold"
+                        >
+                          Cancel Edit
+                        </button>
+                      )}
+	                    {batchQuestions.length > 0 && (
                       <button
                         type="button"
                         onClick={handleSaveAllQuestions}
