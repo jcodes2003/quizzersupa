@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "../../lib/supabase-server";
 
+function sanitizeStudentId(value: string): string {
+  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
+}
+
+function normalizeStudentNameKey(value: string): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function getSubmissionCloseReason(quizData: Record<string, unknown>): string | null {
   const submissionsOpen = (quizData.submissions_open as boolean | null | undefined) !== false;
   if (!submissionsOpen) return "Quiz submissions are closed by the teacher.";
@@ -14,6 +26,23 @@ function getSubmissionCloseReason(quizData: Record<string, unknown>): string | n
   return null;
 }
 
+async function isSubjectArchived(subjectId: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const res = await supabase.from("subjecttbl").select("archived").eq("id", subjectId).maybeSingle();
+  const msg = (res.error as { message?: string } | null)?.message ?? "";
+  if (msg && msg.toLowerCase().includes("archived")) return false;
+  return Boolean((res.data as { archived?: boolean } | null)?.archived);
+}
+
+async function getSubjectSemester(subjectId: string): Promise<string | null> {
+  const supabase = getSupabase();
+  const res = await supabase.from("subjecttbl").select("semester").eq("id", subjectId).maybeSingle();
+  const msg = (res.error as { message?: string } | null)?.message ?? "";
+  if (msg && msg.toLowerCase().includes("semester")) return null;
+  const sem = (res.data as { semester?: unknown } | null)?.semester;
+  return typeof sem === "string" && sem.trim() ? sem.trim() : null;
+}
+
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
     quizId: string;
@@ -25,11 +54,12 @@ export async function POST(request: NextRequest) {
     attemptId?: string;
     answers?: Record<string, unknown>;
     submissionSource?: string;
-    forceSubmitAfterDeadline?: boolean;
   };
 
-  const { quizId, studentName, studentId, score, maxScore, attemptNumber, attemptId, answers } = body;
-  const forceSubmitAfterDeadline = body.forceSubmitAfterDeadline === true;
+  const quizId = String(body.quizId ?? "").trim();
+  const studentName = String(body.studentName ?? "").trim();
+  const studentId = sanitizeStudentId(String(body.studentId ?? "").trim());
+  const { score, maxScore, attemptNumber, attemptId, answers } = body;
   const sourceRaw = String(body.submissionSource ?? "").trim().toLowerCase();
   const allowedSources = new Set([
     "manual_submit",
@@ -48,12 +78,46 @@ export async function POST(request: NextRequest) {
 
   const supabase = getSupabase();
 
+  // Prevent submitting under a different student ID while keeping the same name.
+  const studentNameKey = normalizeStudentNameKey(studentName);
+  if (studentNameKey) {
+    let { data: nameRows, error: nameErr } = await supabase
+      .from("student_attempts_log")
+      .select("studentname, student_id")
+      .eq("quizid", quizId)
+      .limit(5000);
+    if (nameErr?.message && nameErr.message.toLowerCase().includes("student_attempts_log")) {
+      const fallback = await supabase
+        .from("student_attempts")
+        .select("studentname, student_id")
+        .eq("quizid", quizId)
+        .limit(5000);
+      nameRows = fallback.data as typeof nameRows;
+      nameErr = fallback.error as typeof nameErr;
+    }
+    if (nameErr) {
+      return NextResponse.json({ error: nameErr.message }, { status: 500 });
+    }
+    const conflict = (nameRows ?? []).some((r) => {
+      const n = normalizeStudentNameKey(String((r as { studentname?: string }).studentname ?? ""));
+      if (!n || n !== studentNameKey) return false;
+      const existingId = sanitizeStudentId(String((r as { student_id?: string }).student_id ?? ""));
+      return existingId && existingId !== studentId;
+    });
+    if (conflict) {
+      return NextResponse.json(
+        { error: "This student name is already registered for this quiz with a different Student ID. Please use your original Student ID." },
+        { status: 403 }
+      );
+    }
+  }
+
   // Get quiz metadata including sectionid and subjectid
   let quizData: Record<string, unknown> | null = null;
   let quizError: { message: string } | null = null;
   const fullQuiz = await supabase
     .from("quiztbl")
-    .select("subjectid, sectionid, time_limit_minutes, save_best_only, submission_deadline, submissions_open")
+    .select("subjectid, subject_semester, sectionid, time_limit_minutes, save_best_only, submission_deadline, submissions_open")
     .eq("id", quizId)
     .single();
   quizData = (fullQuiz.data ?? null) as Record<string, unknown> | null;
@@ -65,7 +129,7 @@ export async function POST(request: NextRequest) {
   ) {
     const fallback = await supabase
       .from("quiztbl")
-      .select("subjectid, sectionid, time_limit_minutes, save_best_only")
+      .select("subjectid, subject_semester, sectionid, time_limit_minutes, save_best_only")
       .eq("id", quizId)
       .single();
     quizData = (fallback.data ?? null) as Record<string, unknown> | null;
@@ -78,13 +142,22 @@ export async function POST(request: NextRequest) {
   if (!quizData) {
     return NextResponse.json({ error: "Quiz not found" }, { status: 404 });
   }
+  const subjectId = String((quizData as { subjectid?: unknown }).subjectid ?? "").trim();
+  if (subjectId) {
+    const archived = await isSubjectArchived(subjectId);
+    if (archived) return NextResponse.json({ error: "Subject archived" }, { status: 403 });
+
+    const currentSem = await getSubjectSemester(subjectId);
+    if (currentSem) {
+      const quizSem = String((quizData as { subject_semester?: unknown }).subject_semester ?? "").trim() || null;
+      if (quizSem && quizSem !== currentSem) {
+        return NextResponse.json({ error: "Quiz is from a previous semester" }, { status: 403 });
+      }
+    }
+  }
   const closeReason = getSubmissionCloseReason(quizData);
   if (closeReason) {
-    if (closeReason === "Quiz deadline has passed." && forceSubmitAfterDeadline) {
-      // Allow one explicit, user-confirmed final submit after deadline.
-    } else {
     return NextResponse.json({ error: closeReason }, { status: 403 });
-    }
   }
 
   let logUpdated = false;

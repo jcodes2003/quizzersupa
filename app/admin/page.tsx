@@ -3,8 +3,16 @@
 import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 
-type Section = { id: string; name: string };
-type Subject = { id: string; name: string; slug: string };
+type Section = { id: string; name: string; joinCode?: string };
+type Subject = {
+  id: string;
+  name: string;
+  slug?: string;
+  archived?: boolean;
+  yearLevel?: number | null;
+  semester?: string | null;
+  code?: string | null;
+};
 type Teacher = { id: string; name: string; email: string; approved?: boolean; created_at?: string };
 
 export default function AdminPage() {
@@ -17,14 +25,23 @@ export default function AdminPage() {
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [tab, setTab] = useState<"sections" | "subjects" | "teachers" | "storage">("sections");
   const [sectionName, setSectionName] = useState("");
+  const [sectionCode, setSectionCode] = useState("");
   const [subjectName, setSubjectName] = useState("");
   const [subjectSlug, setSubjectSlug] = useState("");
+  const [subjectYearLevel, setSubjectYearLevel] = useState<number | "">("");
+  const [subjectSemester, setSubjectSemester] = useState("");
+  const [bulkSubjectYearLevel, setBulkSubjectYearLevel] = useState<number | "">("");
+  const [bulkSubjectSemester, setBulkSubjectSemester] = useState("");
   const [teacherName, setTeacherName] = useState("");
   const [teacherEmail, setTeacherEmail] = useState("");
   const [teacherPassword, setTeacherPassword] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [editSectionCode, setEditSectionCode] = useState("");
   const [editSlug, setEditSlug] = useState("");
+  const [editSubjectYearLevel, setEditSubjectYearLevel] = useState<number | "">("");
+  const [editSubjectSemester, setEditSubjectSemester] = useState("");
+  const [editSubjectArchived, setEditSubjectArchived] = useState(false);
   const [editTeacherPass, setEditTeacherPass] = useState("");
   const [imageDeleteStatus, setImageDeleteStatus] = useState("");
   const [storageImages, setStorageImages] = useState<string[]>([]);
@@ -99,10 +116,11 @@ export default function AdminPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ name: sectionName.trim() }),
+      body: JSON.stringify({ name: sectionName.trim(), sectionCode: sectionCode.trim() || undefined }),
     });
     if (res.ok) {
       setSectionName("");
+      setSectionCode("");
       fetchData();
     } else {
       const d = await res.json();
@@ -117,11 +135,18 @@ export default function AdminPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ name: subjectName.trim(), slug }),
+      body: JSON.stringify({
+        name: subjectName.trim(),
+        slug,
+        yearLevel: subjectYearLevel === "" ? null : subjectYearLevel,
+        semester: subjectSemester.trim() || null,
+      }),
     });
     if (res.ok) {
       setSubjectName("");
       setSubjectSlug("");
+      setSubjectYearLevel("");
+      setSubjectSemester("");
       fetchData();
     } else {
       const d = await res.json();
@@ -157,12 +182,49 @@ export default function AdminPage() {
   };
 
   const updateSection = async (id: string) => {
-    if (!editValue.trim()) return;
+    const name = editValue.trim();
+    const code = editSectionCode.trim();
+    if (!name && !code) return;
     const res = await fetch(`/api/admin/sections/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ name: editValue.trim() }),
+      body: JSON.stringify({ name: name || undefined, sectionCode: code }),
+    });
+    if (res.ok) {
+      setEditingId(null);
+      setEditSectionCode("");
+      fetchData();
+    }
+  };
+
+  const regenerateSectionCodes = async () => {
+    const ok = confirm("Generate new section codes for ALL sections? Students will need the new codes to re-join.");
+    if (!ok) return;
+    const res = await fetch("/api/admin/sections/regenerate-codes", {
+      method: "POST",
+      credentials: "include",
+    });
+    if (res.ok) fetchData();
+    else {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "Failed to regenerate codes");
+    }
+  };
+
+  const updateSubject = async (id: string) => {
+    const name = (editValue ?? "").trim();
+    if (!name) return;
+    const res = await fetch(`/api/admin/subjects/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        name,
+        yearLevel: editSubjectYearLevel === "" ? null : editSubjectYearLevel,
+        semester: editSubjectSemester.trim() || null,
+        archived: editSubjectArchived,
+      }),
     });
     if (res.ok) {
       setEditingId(null);
@@ -170,19 +232,44 @@ export default function AdminPage() {
     }
   };
 
-  const updateSubject = async (id: string) => {
-    const name = (editValue ?? "").trim();
-    const slug = (editSlug ?? "").trim();
-    if (!name) return;
+  const regenerateSubjectCode = async (id: string) => {
+    const ok = confirm("Generate a new code for this subject?");
+    if (!ok) return;
     const res = await fetch(`/api/admin/subjects/${id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       credentials: "include",
-      body: JSON.stringify({ name, slug }),
+      body: JSON.stringify({ regenerateCode: true }),
     });
-    if (res.ok) {
-      setEditingId(null);
-      fetchData();
+    if (res.ok) fetchData();
+    else {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "Failed to regenerate code");
+    }
+  };
+
+  const bulkArchiveSubjects = async (archived: boolean) => {
+    if (bulkSubjectYearLevel === "" && !bulkSubjectSemester.trim()) {
+      setError("Select a year level and/or semester first.");
+      return;
+    }
+    const label = archived ? "archive" : "unarchive";
+    const ok = confirm(`This will ${label} all matching subjects. Continue?`);
+    if (!ok) return;
+    const res = await fetch("/api/admin/subjects/archive-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({
+        yearLevel: bulkSubjectYearLevel === "" ? null : bulkSubjectYearLevel,
+        semester: bulkSubjectSemester.trim() || null,
+        archived,
+      }),
+    });
+    if (res.ok) fetchData();
+    else {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "Failed");
     }
   };
 
@@ -370,104 +457,258 @@ export default function AdminPage() {
         </div>
 
         <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 shadow-2xl">
-          {tab === "sections" && (
-            <>
-              <h2 className="text-lg font-semibold text-slate-200 mb-4">Sections</h2>
-              <div className="flex gap-2 mb-4">
-                <input
-                  value={sectionName}
-                  onChange={(e) => setSectionName(e.target.value)}
-                  placeholder="Section name (e.g. 01-P)"
-                  className="flex-1 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
-                <button onClick={addSection} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium">
-                  Add
-                </button>
-              </div>
-              <ul className="space-y-2">
-                {sections.map((s) => (
-                  <li key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
-                    {editingId === s.id ? (
-                      <>
-                        <input
-                          value={editValue}
-                          onChange={(e) => setEditValue(e.target.value)}
-                          className="flex-1 px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
-                        />
-                        <button onClick={() => updateSection(s.id)} className="ml-2 px-3 py-1 rounded bg-amber-600 text-white text-sm">Save</button>
-                        <button onClick={() => setEditingId(null)} className="ml-1 px-3 py-1 rounded bg-slate-600 text-sm">Cancel</button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="font-medium text-slate-200">{s.name}</span>
-                        <div>
-                          <button onClick={() => { setEditingId(s.id); setEditValue(s.name); }} className="px-3 py-1 rounded bg-slate-600 text-sm mr-1">Edit</button>
-                          <button onClick={() => deleteSection(s.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">Delete</button>
-                        </div>
-                      </>
-                    )}
+	          {tab === "sections" && (
+	            <>
+	              <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+	                <h2 className="text-lg font-semibold text-slate-200">Sections</h2>
+	                <button
+	                  type="button"
+	                  onClick={regenerateSectionCodes}
+	                  className="px-3 py-2 rounded-xl bg-amber-700/70 hover:bg-amber-700 text-white text-sm font-semibold"
+	                >
+	                  Regenerate All Codes
+	                </button>
+	              </div>
+	              <div className="flex gap-2 mb-4">
+	                <input
+	                  value={sectionName}
+	                  onChange={(e) => setSectionName(e.target.value)}
+	                  placeholder="Section name (e.g. 01-P)"
+	                  className="flex-1 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+	                />
+	                <input
+	                  value={sectionCode}
+	                  onChange={(e) => setSectionCode(e.target.value)}
+	                  placeholder="Section code (optional)"
+	                  className="w-56 px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500 uppercase"
+	                />
+	                <button onClick={addSection} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium">
+	                  Add
+	                </button>
+	              </div>
+	              <ul className="space-y-2">
+	                {sections.map((s) => (
+	                  <li key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
+	                    {editingId === s.id ? (
+	                      <>
+	                        <input
+	                          value={editValue}
+	                          onChange={(e) => setEditValue(e.target.value)}
+	                          className="flex-1 px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
+	                        />
+	                        <input
+	                          value={editSectionCode}
+	                          onChange={(e) => setEditSectionCode(e.target.value)}
+	                          placeholder="Section code"
+	                          className="ml-2 w-40 px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200 uppercase"
+	                        />
+	                        <button onClick={() => updateSection(s.id)} className="ml-2 px-3 py-1 rounded bg-amber-600 text-white text-sm">Save</button>
+	                        <button onClick={() => { setEditingId(null); setEditSectionCode(""); }} className="ml-1 px-3 py-1 rounded bg-slate-600 text-sm">Cancel</button>
+	                      </>
+	                    ) : (
+	                      <>
+	                        <div>
+	                          <div className="font-medium text-slate-200">{s.name}</div>
+	                          {s.joinCode && (
+	                            <div className="text-slate-400 text-xs">
+	                              Join code: <span className="font-mono">{s.joinCode}</span>
+	                            </div>
+	                          )}
+	                        </div>
+	                        <div>
+	                          <button onClick={() => { setEditingId(s.id); setEditValue(s.name); setEditSectionCode(s.joinCode ?? ""); }} className="px-3 py-1 rounded bg-slate-600 text-sm mr-1">Edit</button>
+	                          <button onClick={() => deleteSection(s.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">Delete</button>
+	                        </div>
+	                      </>
+	                    )}
                   </li>
                 ))}
               </ul>
             </>
           )}
 
-          {tab === "subjects" && (
-            <>
-              <h2 className="text-lg font-semibold text-slate-200 mb-4">Subjects</h2>
-              <div className="space-y-2 mb-4">
-                <input
-                  value={subjectName}
-                  onChange={(e) => setSubjectName(e.target.value)}
-                  placeholder="Subject name (e.g. Human Computer Interaction)"
-                  className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
-                <input
-                  value={subjectSlug}
-                  onChange={(e) => setSubjectSlug(e.target.value)}
-                  placeholder="Slug (optional, e.g. hci)"
-                  className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
-                />
-                <button onClick={addSubject} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium">
-                  Add Subject
-                </button>
-              </div>
-              <ul className="space-y-2">
-                {subjects.map((s) => (
-                  <li key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
-                    {editingId === s.id ? (
-                      <>
-                        <div className="flex-1 space-y-1">
-                          <input
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            placeholder="Name"
-                            className="w-full px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
-                          />
-                          <input
-                            value={editSlug}
-                            onChange={(e) => setEditSlug(e.target.value)}
-                            placeholder="Slug"
-                            className="w-full px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
-                          />
-                        </div>
-                        <button onClick={() => updateSubject(s.id)} className="ml-2 px-3 py-1 rounded bg-amber-600 text-white text-sm">Save</button>
-                        <button onClick={() => setEditingId(null)} className="ml-1 px-3 py-1 rounded bg-slate-600 text-sm">Cancel</button>
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-slate-200">{s.name} <span className="text-slate-500 text-sm">({s.slug})</span></span>
-                        <div>
-                          <button onClick={() => { setEditingId(s.id); setEditValue(s.name); setEditSlug(s.slug ?? ""); }} className="px-3 py-1 rounded bg-slate-600 text-sm mr-1">Edit</button>
-                          <button onClick={() => deleteSubject(s.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">Delete</button>
-                        </div>
-                      </>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
+	          {tab === "subjects" && (
+	            <>
+	              <h2 className="text-lg font-semibold text-slate-200 mb-4">Subjects</h2>
+                <div className="rounded-xl bg-slate-900/30 border border-slate-700/40 p-4 mb-4">
+                  <div className="flex flex-wrap items-end gap-2 justify-between">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <select
+                        value={bulkSubjectYearLevel}
+                        onChange={(e) => setBulkSubjectYearLevel(e.target.value ? Number(e.target.value) : "")}
+                        className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        <option value="">Year level</option>
+                        <option value={1}>1st year</option>
+                        <option value={2}>2nd year</option>
+                        <option value={3}>3rd year</option>
+                        <option value={4}>4th year</option>
+                      </select>
+                      <select
+                        value={bulkSubjectSemester}
+                        onChange={(e) => setBulkSubjectSemester(e.target.value)}
+                        className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500"
+                      >
+                        <option value="">Semester</option>
+                        <option value="1">1st sem</option>
+                        <option value="2">2nd sem</option>
+                        <option value="summer">Summer</option>
+                      </select>
+                      <span className="text-xs text-slate-500">
+                        Bulk actions: archive/unarchive by year/semester (use at semester end).
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => bulkArchiveSubjects(true)}
+                        className="px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium"
+                      >
+                        Archive
+                      </button>
+                      <button
+                        onClick={() => bulkArchiveSubjects(false)}
+                        className="px-3 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 text-white text-sm font-medium"
+                      >
+                        Unarchive
+                      </button>
+                    </div>
+                  </div>
+                </div>
+	              <div className="space-y-2 mb-4">
+	                <input
+	                  value={subjectName}
+	                  onChange={(e) => setSubjectName(e.target.value)}
+	                  placeholder="Subject name (e.g. Human Computer Interaction)"
+	                  className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+	                />
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <input
+                      value={subjectSlug}
+                      onChange={(e) => setSubjectSlug(e.target.value)}
+                      placeholder="Slug (optional, e.g. hci)"
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    />
+                    <select
+                      value={subjectYearLevel}
+                      onChange={(e) => setSubjectYearLevel(e.target.value ? Number(e.target.value) : "")}
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="">Year level (optional)</option>
+                      <option value={1}>1st year</option>
+                      <option value={2}>2nd year</option>
+                      <option value={3}>3rd year</option>
+                      <option value={4}>4th year</option>
+                    </select>
+                    <select
+                      value={subjectSemester}
+                      onChange={(e) => setSubjectSemester(e.target.value)}
+                      className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                    >
+                      <option value="">Semester (optional)</option>
+                      <option value="1">1st sem</option>
+                      <option value="2">2nd sem</option>
+                      <option value="summer">Summer</option>
+                    </select>
+                  </div>
+	                <button onClick={addSubject} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-medium">
+	                  Add Subject
+	                </button>
+	              </div>
+	              <ul className="space-y-2">
+	                {subjects.map((s) => (
+	                  <li key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
+	                    {editingId === s.id ? (
+	                      <>
+	                        <div className="flex-1 space-y-1">
+	                          <input
+	                            value={editValue}
+	                            onChange={(e) => setEditValue(e.target.value)}
+	                            placeholder="Name"
+	                            className="w-full px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
+	                          />
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                              <select
+                                value={editSubjectYearLevel}
+                                onChange={(e) => setEditSubjectYearLevel(e.target.value ? Number(e.target.value) : "")}
+                                className="w-full px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
+                              >
+                                <option value="">Year level</option>
+                                <option value={1}>1</option>
+                                <option value={2}>2</option>
+                                <option value={3}>3</option>
+                                <option value={4}>4</option>
+                              </select>
+                              <select
+                                value={editSubjectSemester}
+                                onChange={(e) => setEditSubjectSemester(e.target.value)}
+                                className="w-full px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200"
+                              >
+                                <option value="">Semester</option>
+                                <option value="1">1</option>
+                                <option value="2">2</option>
+                                <option value="summer">summer</option>
+                              </select>
+                              <label className="flex items-center gap-2 px-3 py-1 rounded bg-slate-800 border border-slate-600 text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={editSubjectArchived}
+                                  onChange={(e) => setEditSubjectArchived(e.target.checked)}
+                                  className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-amber-500 focus:ring-amber-500"
+                                />
+                                <span className="text-xs">Archived</span>
+                              </label>
+                            </div>
+	                        </div>
+	                        <button onClick={() => updateSubject(s.id)} className="ml-2 px-3 py-1 rounded bg-amber-600 text-white text-sm">Save</button>
+	                        <button onClick={() => setEditingId(null)} className="ml-1 px-3 py-1 rounded bg-slate-600 text-sm">Cancel</button>
+	                      </>
+	                    ) : (
+	                      <>
+                          <div className="min-w-0">
+                            <div className="text-slate-200 font-medium truncate">
+                              {s.name}{" "}
+                              {s.archived ? (
+                                <span className="ml-2 px-2 py-0.5 rounded border text-xs bg-amber-600/15 text-amber-200 border-amber-500/40">
+                                  Archived
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="text-slate-400 text-xs mt-0.5">
+                              {s.yearLevel ? <span>Year {s.yearLevel}</span> : <span>Year —</span>}
+                              {" · "}
+                              {s.semester ? <span>Sem {s.semester}</span> : <span>Sem —</span>}
+                              {" · "}
+                              Code: <span className="font-mono">{s.code ?? "—"}</span>
+                            </div>
+                          </div>
+	                        <div>
+	                          <button
+                              onClick={() => regenerateSubjectCode(s.id)}
+                              className="px-3 py-1 rounded bg-slate-600 text-sm mr-1"
+                            >
+                              New code
+                            </button>
+	                          <button
+                              onClick={() => {
+                                setEditingId(s.id);
+                                setEditValue(s.name);
+                                setEditSubjectYearLevel(s.yearLevel ?? "");
+                                setEditSubjectSemester(s.semester ?? "");
+                                setEditSubjectArchived(Boolean(s.archived));
+                              }}
+                              className="px-3 py-1 rounded bg-slate-600 text-sm mr-1"
+                            >
+                              Edit
+                            </button>
+	                          <button onClick={() => deleteSubject(s.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">Delete</button>
+	                        </div>
+	                      </>
+	                    )}
+	                  </li>
+	                ))}
+	              </ul>
+	            </>
+	          )}
 
           {tab === "teachers" && (
             <>

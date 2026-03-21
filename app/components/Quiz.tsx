@@ -144,6 +144,37 @@ function sanitizeStudentId(value: string): string {
   return value.replace(/[^A-Za-z0-9]/g, "");
 }
 
+function hashStringToSeed(input: string): number {
+  // FNV-1a 32-bit
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let t = seed >>> 0;
+  return () => {
+    t += 0x6d2b79f5;
+    let x = t;
+    x = Math.imul(x ^ (x >>> 15), x | 1);
+    x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function seededShuffle<T>(items: readonly T[], seedKey: string): T[] {
+  const arr = items.slice();
+  const rand = mulberry32(hashStringToSeed(seedKey));
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function getQuestionScore(score?: number, fallback = 1): number {
   return Number.isFinite(score) && (score ?? 0) > 0 ? (score as number) : fallback;
 }
@@ -211,6 +242,8 @@ interface QuizProps {
   timeLimitMinutes?: number | null;
   allowRetake?: boolean;
   maxAttempts?: number;
+  attemptsUsed?: number | null;
+  attemptsRemaining?: number | null;
 }
 
 const SECTION_MC = 0;
@@ -226,23 +259,29 @@ export default function Quiz({
   timeLimitMinutes = null,
   allowRetake,
   maxAttempts,
+  attemptsUsed: initialAttemptsUsed = null,
+  attemptsRemaining: initialAttemptsRemaining = null,
 }: QuizProps) {
-  const { multipleChoice: multipleChoiceQuestions, identification: identificationQuestions, enumeration: enumerationQuestions = [], programming: programmingSection } = quizData;
-  const [studentFirstName, setStudentFirstName] = useState("");
-  const [studentLastName, setStudentLastName] = useState("");
-  const [studentId, setStudentId] = useState("");
-  const [mcAnswers, setMcAnswers] = useState<Record<string, string>>({});
-  const [idAnswers, setIdAnswers] = useState<Record<string, string>>({});
-  const [enumAnswers, setEnumAnswers] = useState<Record<string, string>>({});
+	  const { multipleChoice: multipleChoiceQuestions, identification: identificationQuestions, enumeration: enumerationQuestions = [], programming: programmingSection } = quizData;
+		  const [studentFirstName, setStudentFirstName] = useState("");
+		  const [studentLastName, setStudentLastName] = useState("");
+		  const [studentId, setStudentId] = useState("");
+		  const [studentLocked, setStudentLocked] = useState(false);
+		  const [identityLocked, setIdentityLocked] = useState(false);
+		  const [mcAnswers, setMcAnswers] = useState<Record<string, string>>({});
+		  const [idAnswers, setIdAnswers] = useState<Record<string, string>>({});
+		  const [enumAnswers, setEnumAnswers] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
   const [results, setResults] = useState<QuizResults | null>(null);
   const [tabLeft, setTabLeft] = useState(false);
   const [submissionSource, setSubmissionSource] = useState<SubmissionSource>("manual_submit");
   const [currentPage, setCurrentPage] = useState(0);
-  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
-  const [showDeadlineSubmitModal, setShowDeadlineSubmitModal] = useState(false);
-  const [deadlineSubmitLoading, setDeadlineSubmitLoading] = useState(false);
+	  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
+	  const [submitError, setSubmitError] = useState<string | null>(null);
+	  const [restrictionNotice, setRestrictionNotice] = useState<string | null>(null);
+	  const restrictionTimerRef = useRef<number | null>(null);
+	  const [showDeadlineSubmitModal, setShowDeadlineSubmitModal] = useState(false);
+	  const [deadlineSubmitLoading, setDeadlineSubmitLoading] = useState(false);
   const [pendingForcedSubmit, setPendingForcedSubmit] = useState<AttemptSavePayload | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const autoSubmitRef = useRef(false);
@@ -254,14 +293,68 @@ export default function Quiz({
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const closeIntentRef = useRef(false);
-  const resolvedMaxAttempts =
-    Number.isFinite(maxAttempts) && (maxAttempts ?? 0) > 0 ? (maxAttempts as number) : 1;
-  const resolvedAllowRetake = allowRetake === true || resolvedMaxAttempts > 1;
-  const [maxAttemptsState, setMaxAttemptsState] = useState<number>(resolvedMaxAttempts);
+		  const resolvedMaxAttempts =
+		    Number.isFinite(maxAttempts) && (maxAttempts ?? 0) > 0 ? (maxAttempts as number) : 1;
+		  const resolvedAllowRetake = allowRetake === true || resolvedMaxAttempts > 1;
+		  const [maxAttemptsState, setMaxAttemptsState] = useState<number>(resolvedMaxAttempts);
+		  const [attemptsUsedInfo, setAttemptsUsedInfo] = useState<number | null>(initialAttemptsUsed);
+		  const [attemptsRemainingInfo, setAttemptsRemainingInfo] = useState<number | null>(initialAttemptsRemaining);
+		  const backHref = studentLocked ? "/student" : "/";
+		  const inputsLocked = identityLocked || studentLocked;
 
-  const hasMc = multipleChoiceQuestions.length > 0;
-  const hasId = identificationQuestions.length > 0;
-  const hasEnumOrProg = !!programmingSection || enumerationQuestions.length > 0;
+	  const hasMc = multipleChoiceQuestions.length > 0;
+	  const hasId = identificationQuestions.length > 0;
+	  const hasEnumOrProg = !!programmingSection || enumerationQuestions.length > 0;
+
+	  const enterFocusMode = useCallback(async () => {
+	    try {
+	      if (typeof document === "undefined") return;
+	      if (document.fullscreenElement) return;
+	      const el = document.documentElement;
+	      if (el?.requestFullscreen) {
+	        await el.requestFullscreen();
+	      }
+	    } catch {
+	      // Fullscreen can fail depending on browser settings; ignore.
+	    }
+	  }, []);
+
+	  const exitFocusMode = useCallback(async () => {
+	    try {
+	      if (typeof document === "undefined") return;
+	      if (!document.fullscreenElement) return;
+	      if (document.exitFullscreen) {
+	        await document.exitFullscreen();
+	      }
+	    } catch {
+	      // Ignore
+	    }
+	  }, []);
+
+	  const orderSeedKey = useMemo(() => {
+	    if (!started || submitted) return null;
+	    if (attemptId) return `attempt:${attemptId}`;
+	    const sid = sanitizeStudentId(studentId.trim());
+	    const base = quizId ? `quiz:${quizId}` : `topic:${topic}`;
+	    const aNum = attemptNumber ?? 0;
+	    return `${base}:student:${sid || "anon"}:attempt:${aNum}`;
+	  }, [started, submitted, attemptId, quizId, topic, studentId, attemptNumber]);
+
+	  const mcRenderQuestions = useMemo(
+	    () =>
+	      orderSeedKey ? seededShuffle(multipleChoiceQuestions, `${orderSeedKey}:mc`) : multipleChoiceQuestions,
+	    [multipleChoiceQuestions, orderSeedKey]
+	  );
+	  const idRenderQuestions = useMemo(
+	    () =>
+	      orderSeedKey ? seededShuffle(identificationQuestions, `${orderSeedKey}:id`) : identificationQuestions,
+	    [identificationQuestions, orderSeedKey]
+	  );
+	  const enumRenderQuestions = useMemo(
+	    () =>
+	      orderSeedKey ? seededShuffle(enumerationQuestions, `${orderSeedKey}:enum`) : enumerationQuestions,
+	    [enumerationQuestions, orderSeedKey]
+	  );
   const sectionOrder = useMemo(
     () => [
       ...(hasMc ? [SECTION_MC] : []),
@@ -272,24 +365,131 @@ export default function Quiz({
   );
   const totalPages = sectionOrder.length;
   const currentSection = totalPages > 0 && currentPage < totalPages ? sectionOrder[currentPage]! : SECTION_MC;
-  const attemptsLimit = quizId ? maxAttemptsState : resolvedMaxAttempts;
+	  const attemptsLimit = quizId ? maxAttemptsState : resolvedMaxAttempts;
+	  const displayCurrentAttempt =
+	    quizId && started
+	      ? typeof attemptNumber === "number"
+	        ? attemptNumber
+	        : typeof attemptsUsedInfo === "number"
+	          ? attemptsUsedInfo + 1
+	          : null
+	      : null;
+	  const remainingAfterSubmit =
+	    quizId && started && typeof displayCurrentAttempt === "number"
+	      ? Math.max(0, attemptsLimit - displayCurrentAttempt)
+	      : null;
+
+	  const refreshAttemptsInfo = useCallback(async () => {
+	    if (!quizId) return;
+	    try {
+	      const res = await fetch(`/api/quiz-by-code?code=${encodeURIComponent(topic)}`, {
+	        credentials: "include",
+	      });
+	      if (!res.ok) return;
+	      const data = (await res.json().catch(() => null)) as
+	        | { quiz?: { attemptsUsed?: number | null; attemptsRemaining?: number | null; max_attempts?: number | null } }
+	        | null;
+	      const used = data?.quiz?.attemptsUsed;
+	      const remaining = data?.quiz?.attemptsRemaining;
+	      if (typeof used === "number") setAttemptsUsedInfo(used);
+	      if (typeof remaining === "number") setAttemptsRemainingInfo(remaining);
+	      const nextMax = Number(data?.quiz?.max_attempts);
+	      if (Number.isFinite(nextMax) && nextMax > 0) setMaxAttemptsState(nextMax);
+	    } catch {
+	      // ignore
+	    }
+	  }, [quizId, topic]);
 
   const getSetLabelForSection = (sectionConst: number): string => {
     const idx = sectionOrder.indexOf(sectionConst);
     return idx >= 0 ? String.fromCharCode(65 + idx) : "?";
   };
 
-  useEffect(() => {
-    if (submitError) errorRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [submitError]);
+	  useEffect(() => {
+	    if (submitError) errorRef.current?.scrollIntoView({ behavior: "smooth" });
+	  }, [submitError]);
 
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
-    document.addEventListener("fullscreenchange", onChange);
-    onChange();
-    return () => document.removeEventListener("fullscreenchange", onChange);
-  }, []);
+	  const showRestriction = useCallback((message: string) => {
+	    setRestrictionNotice(message);
+	    if (typeof window === "undefined") return;
+	    if (restrictionTimerRef.current) window.clearTimeout(restrictionTimerRef.current);
+	    restrictionTimerRef.current = window.setTimeout(() => setRestrictionNotice(null), 2500);
+	  }, []);
+
+	  useEffect(() => {
+	    return () => {
+	      if (typeof window === "undefined") return;
+	      if (restrictionTimerRef.current) window.clearTimeout(restrictionTimerRef.current);
+	    };
+	  }, []);
+
+	  const blockIfInQuiz = useCallback(
+	    (e: React.SyntheticEvent, message: string) => {
+	      if (!started || submitted) return;
+	      e.preventDefault();
+	      showRestriction(message);
+	    },
+	    [started, submitted, showRestriction]
+	  );
+
+	  useEffect(() => {
+	    if (!started || submitted) return;
+	    const onKeyDown = (e: KeyboardEvent) => {
+	      const key = String(e.key ?? "").toLowerCase();
+	      const combo = e.ctrlKey || e.metaKey;
+	      if (!combo) return;
+	      if (key === "c" || key === "v" || key === "x") {
+	        e.preventDefault();
+	        showRestriction("Copy/paste is disabled during the quiz.");
+	        return;
+	      }
+	      if (key === "p" || key === "s") {
+	        e.preventDefault();
+	        showRestriction("This shortcut is disabled during the quiz.");
+	      }
+	    };
+	    window.addEventListener("keydown", onKeyDown, true);
+	    return () => window.removeEventListener("keydown", onKeyDown, true);
+	  }, [started, submitted, showRestriction]);
+
+	  useEffect(() => {
+	    if (typeof document === "undefined") return;
+	    const onChange = () => setIsFullscreen(Boolean(document.fullscreenElement));
+	    document.addEventListener("fullscreenchange", onChange);
+	    onChange();
+	    return () => document.removeEventListener("fullscreenchange", onChange);
+	  }, []);
+
+		  useEffect(() => {
+		    let cancelled = false;
+		    (async () => {
+	      try {
+	        const res = await fetch("/api/student-me", { credentials: "include" });
+	        if (!res.ok) return;
+	        const data = (await res.json().catch(() => null)) as
+	          | { ok?: boolean; student?: { name?: string; studentId?: string } }
+	          | null;
+	        if (cancelled || !data?.ok || !data.student?.name) return;
+
+	        const full = String(data.student.name).trim();
+	        const tokens = full.split(/\s+/).filter(Boolean);
+	        const last = tokens.length > 1 ? tokens[tokens.length - 1]! : "";
+	        const first = tokens.length > 1 ? tokens.slice(0, -1).join(" ") : (tokens[0] ?? "");
+		        if (!studentFirstName.trim()) setStudentFirstName(first);
+		        if (!studentLastName.trim()) setStudentLastName(last);
+		        const sid = String(data.student.studentId ?? "").trim();
+		        if (sid && !studentId.trim()) setStudentId(sanitizeStudentId(sid));
+		        setStudentLocked(true);
+		        setIdentityLocked(true);
+		      } catch {
+		        // Ignore if not logged in.
+		      }
+		    })();
+		    return () => {
+	      cancelled = true;
+	    };
+	    // eslint-disable-next-line react-hooks/exhaustive-deps
+		  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof document === "undefined") return;
@@ -361,8 +561,8 @@ export default function Quiz({
     return `${first} ${last}`.trim();
   }, [studentFirstName, studentLastName]);
 
-  const handleStart = async () => {
-    setSubmitError(null);
+	  const handleStart = async () => {
+	    setSubmitError(null);
     if (!studentFirstName.trim()) {
       setSubmitError("Please enter your first name.");
       setCurrentPage(0);
@@ -378,22 +578,25 @@ export default function Quiz({
       setCurrentPage(0);
       return;
     }
-    if (!quizId) {
-      setStarted(true);
-      return;
-    }
-    setStartLoading(true);
-    try {
-      const res = await fetch("/api/quiz-start", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          quizId,
-          studentName: getFullName(),
-          studentId: studentId.trim(),
-        }),
-      });
-      const data = await res.json();
+	    if (!quizId) {
+	      await enterFocusMode();
+	      setStarted(true);
+	      return;
+	    }
+	    setStartLoading(true);
+	    try {
+	      const lockedId = sanitizeStudentId(studentId.trim());
+	      if (lockedId !== studentId.trim()) setStudentId(lockedId);
+	      const res = await fetch("/api/quiz-start", {
+	        method: "POST",
+	        headers: { "Content-Type": "application/json" },
+	        body: JSON.stringify({
+	          quizId,
+	          studentName: getFullName(),
+	          studentId: lockedId,
+	        }),
+	      });
+	      const data = await res.json();
       if (!res.ok) {
         setSubmitError(data.error ?? "Unable to start quiz");
         return;
@@ -402,35 +605,41 @@ export default function Quiz({
       setAttemptNumber(data.attemptNumber ?? null);
       const nextMax = Number(data.maxAttempts);
       if (Number.isFinite(nextMax)) setMaxAttemptsState(nextMax);
-      if (data.expiresAt) {
-        setExpiresAt(data.expiresAt);
-      } else if (timeLimitMinutes) {
-        const localExpires = new Date(Date.now() + timeLimitMinutes * 60 * 1000).toISOString();
-        setExpiresAt(localExpires);
-      } else {
-        setExpiresAt(null);
-      }
-      setStarted(true);
-    } catch {
-      setSubmitError("Unable to start quiz");
-    } finally {
-      setStartLoading(false);
+	      if (data.expiresAt) {
+	        setExpiresAt(data.expiresAt);
+	      } else if (timeLimitMinutes) {
+	        const localExpires = new Date(Date.now() + timeLimitMinutes * 60 * 1000).toISOString();
+	        setExpiresAt(localExpires);
+	      } else {
+	        setExpiresAt(null);
+	      }
+	      const used = Number((data as { attemptsUsed?: unknown }).attemptsUsed);
+	      const remaining = Number((data as { attemptsRemaining?: unknown }).attemptsRemaining);
+	      if (Number.isFinite(used) && used >= 0) setAttemptsUsedInfo(Math.trunc(used));
+	      if (Number.isFinite(remaining) && remaining >= 0) setAttemptsRemainingInfo(Math.trunc(remaining));
+	      setIdentityLocked(true);
+	      autoSubmitRef.current = false;
+	      await enterFocusMode();
+	      setStarted(true);
+	    } catch {
+	      setSubmitError("Unable to start quiz");
+	    } finally {
+	      setStartLoading(false);
     }
   };
 
-  const saveAttempt = useCallback(async (payload: AttemptSavePayload, forceSubmitAfterDeadline = false) => {
-    const res = await fetch("/api/student-attempts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        ...payload,
-        forceSubmitAfterDeadline,
-      }),
-    });
-    if (res.ok) return { ok: true as const };
-    const errorData = await res.json().catch(() => ({}));
-    const errorMessage = typeof errorData.error === "string" ? errorData.error : "Failed to save attempt.";
-    return {
+	  const saveAttempt = useCallback(async (payload: AttemptSavePayload) => {
+	    const res = await fetch("/api/student-attempts", {
+	      method: "POST",
+	      headers: { "Content-Type": "application/json" },
+	      body: JSON.stringify({
+	        ...payload,
+	      }),
+	    });
+	    if (res.ok) return { ok: true as const };
+	    const errorData = await res.json().catch(() => ({}));
+	    const errorMessage = typeof errorData.error === "string" ? errorData.error : "Failed to save attempt.";
+	    return {
       ok: false as const,
       errorMessage,
       deadlinePassed: errorMessage.toLowerCase().includes("deadline has passed"),
@@ -590,22 +799,23 @@ export default function Quiz({
               answers: answersPayload,
               submissionSource: source,
             };
-            const result = await saveAttempt(payload);
-            if (!result.ok) {
-              if (result.deadlinePassed) {
-                setPendingForcedSubmit(payload);
-                setShowDeadlineSubmitModal(true);
-                return;
-              }
-              console.error("Failed to save attempt:", result.errorMessage);
-            }
-          } catch (err) {
-            console.error("Error saving attempt:", err);
-          }
-        })();
-      }
-    }
-  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started, saveAttempt]);
+	            const result = await saveAttempt(payload);
+	            if (!result.ok) {
+	              if (result.deadlinePassed) {
+	                setSubmitError("Quiz deadline has passed. Submission is closed.");
+	                return;
+	              }
+	              console.error("Failed to save attempt:", result.errorMessage);
+	            } else {
+	              void refreshAttemptsInfo();
+	            }
+	          } catch (err) {
+	            console.error("Error saving attempt:", err);
+	          }
+	        })();
+	      }
+	    }
+	  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, programmingSection, quizId, attemptId, attemptNumber, started, saveAttempt, refreshAttemptsInfo]);
 
   useEffect(() => {
     if (!expiresAt || submitted) {
@@ -665,7 +875,12 @@ export default function Quiz({
       window.removeEventListener("beforeunload", handleBeforeUnload);
       window.removeEventListener("pagehide", handlePageHide);
     };
-  }, [submitted, gradeQuiz]);
+		  }, [submitted, gradeQuiz]);
+
+	  useEffect(() => {
+	    if (!submitted) return;
+	    void exitFocusMode();
+	  }, [submitted, exitFocusMode]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -708,16 +923,16 @@ export default function Quiz({
     setShowSubmitConfirm(true);
   };
 
-  const handleForceSubmitAfterDeadline = async () => {
-    if (!pendingForcedSubmit) return;
-    setDeadlineSubmitLoading(true);
-    try {
-      const result = await saveAttempt(pendingForcedSubmit, true);
-      if (!result.ok) {
-        setSubmitError(result.errorMessage);
-      } else {
-        setShowDeadlineSubmitModal(false);
-        setPendingForcedSubmit(null);
+	  const handleForceSubmitAfterDeadline = async () => {
+	    if (!pendingForcedSubmit) return;
+	    setDeadlineSubmitLoading(true);
+	    try {
+	      const result = await saveAttempt(pendingForcedSubmit);
+	      if (!result.ok) {
+	        setSubmitError(result.errorMessage);
+	      } else {
+	        setShowDeadlineSubmitModal(false);
+	        setPendingForcedSubmit(null);
       }
     } catch {
       setSubmitError("Failed to submit after deadline.");
@@ -727,8 +942,14 @@ export default function Quiz({
   };
 
   if (submitted && results) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
+	  return (
+	    <div
+	      className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10"
+	      onContextMenu={(e) => blockIfInQuiz(e, "Right-click is disabled during the quiz.")}
+	      onCopy={(e) => blockIfInQuiz(e, "Copy is disabled during the quiz.")}
+	      onCut={(e) => blockIfInQuiz(e, "Cut is disabled during the quiz.")}
+	      onPaste={(e) => blockIfInQuiz(e, "Paste is disabled during the quiz.")}
+	    >
         <div className="max-w-2xl mx-auto">
           {tabLeft && (
             <div className="mb-6 p-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-center">
@@ -792,37 +1013,42 @@ export default function Quiz({
             <div className="mt-8 space-y-4">
               {tabLeft && results.attempts >= attemptsLimit && (
                 <div className="p-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-center">
-                  <p className="font-semibold">You've used all {attemptsLimit} attempts. You cannot retake this quiz.</p>
+	                  <p className="font-semibold">You&apos;ve used all {attemptsLimit} attempts. You cannot retake this quiz.</p>
                 </div>
               )}
               <div className="flex gap-4">
-                <Link
-                  href="/"
-                  className="flex-1 py-3 px-6 rounded-xl bg-slate-600 hover:bg-slate-500 text-white font-semibold text-center transition-colors"
-                >
+	                <Link
+	                  href={backHref}
+	                  className="flex-1 py-3 px-6 rounded-xl bg-slate-600 hover:bg-slate-500 text-white font-semibold text-center transition-colors"
+	                >
                   ← Back to Home
                 </Link>
-                {tabLeft && results.attempts < attemptsLimit && (
-                  <button
-                    onClick={() => {
-                      setSubmitted(false);
-                      setShowSubmitConfirm(false);
-                      setStarted(false);
-                      setAttemptId(null);
-                      setAttemptNumber(null);
-                      setExpiresAt(null);
-                      setTimeLeft(null);
-                      setResults(null);
-                      setSubmissionSource("manual_submit");
-                      setMcAnswers({});
-                      setIdAnswers({});
-                      setEnumAnswers({});
-                      setTabLeft(false);
-                      setCurrentPage(0);
-                    }}
-                    className="flex-1 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors"
-                  >
-                    Retake Quiz
+	                {tabLeft && results.attempts < attemptsLimit && (
+	                  <button
+	                    onClick={() => {
+	                      autoSubmitRef.current = false;
+	                      closeIntentRef.current = false;
+	                      setSubmitted(false);
+	                      setShowSubmitConfirm(false);
+	                      setStarted(false);
+	                      setAttemptId(null);
+	                      setAttemptNumber(null);
+	                      setExpiresAt(null);
+	                      setTimeLeft(null);
+	                      setRestrictionNotice(null);
+	                      void refreshAttemptsInfo();
+	                      setResults(null);
+	                      setSubmissionSource("manual_submit");
+	                      setMcAnswers({});
+	                      setIdAnswers({});
+	                      setEnumAnswers({});
+	                      setTabLeft(false);
+	                      setSubmitError(null);
+	                      setCurrentPage(0);
+	                    }}
+	                    className="flex-1 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors"
+	                  >
+	                    Retake Quiz
                   </button>
                 )}
               </div>
@@ -868,11 +1094,48 @@ export default function Quiz({
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-6">
-          <Link href="/" className="text-slate-500 hover:text-cyan-400 text-sm mb-2 inline-block">← Back to Home</Link>
+	          <Link href={backHref} className="text-slate-500 hover:text-cyan-400 text-sm mb-2 inline-block">← Back</Link>
           <h1 className="text-4xl font-bold bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
             {quizTitle} Quiz
           </h1>
           <p className="text-slate-400 mt-2">Stay on this tab — switching tabs will auto-submit</p>
+          {restrictionNotice && (
+            <p className="mt-2 text-sm text-amber-300">{restrictionNotice}</p>
+          )}
+          {quizId && (
+            <p className="text-slate-400 text-sm mt-2">
+              {typeof attemptsRemainingInfo === "number" && typeof attemptsUsedInfo === "number" ? (
+                <>
+                  Attempts: <span className="text-slate-100 font-semibold">{attemptsUsedInfo}</span>/
+                  <span className="text-slate-100 font-semibold">{attemptsLimit}</span>{" "}
+                  <span className="text-slate-500">
+                    (remaining{" "}
+                    <span className="text-slate-200 font-semibold">{attemptsRemainingInfo}</span>
+                    )
+                  </span>
+                </>
+              ) : (
+                <>
+                  Attempts allowed: <span className="text-slate-100 font-semibold">{attemptsLimit}</span>
+                </>
+              )}
+              {started && typeof displayCurrentAttempt === "number" && (
+                <>
+                  {" "}
+                  · Current attempt{" "}
+                  <span className="text-slate-100 font-semibold">{displayCurrentAttempt}</span>/
+                  <span className="text-slate-100 font-semibold">{attemptsLimit}</span>
+                  {typeof remainingAfterSubmit === "number" ? (
+                    <span className="text-slate-500">
+                      {" "}
+                      (left after submit{" "}
+                      <span className="text-slate-200 font-semibold">{remainingAfterSubmit}</span>)
+                    </span>
+                  ) : null}
+                </>
+              )}
+            </p>
+          )}
           <p className="text-slate-500 text-sm mt-1">Section {section} · Page {currentPage + 1} of {totalPages || 1}</p>
         </div>
 
@@ -880,35 +1143,41 @@ export default function Quiz({
           <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 md:p-6 shadow-2xl space-y-4">
             <div>
               <label className="block text-slate-300 font-medium mb-2">First Name</label>
-              <input
-                type="text"
-                value={studentFirstName}
-                onChange={(e) => setStudentFirstName(e.target.value)}
-                placeholder="Enter your first name..."
-                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              />
+		              <input
+		                type="text"
+		                value={studentFirstName}
+		                onChange={(e) => setStudentFirstName(e.target.value)}
+		                disabled={inputsLocked}
+		                placeholder="Enter your first name..."
+		                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+		              />
             </div>
             <div>
               <label className="block text-slate-300 font-medium mb-2">Last Name</label>
-              <input
-                type="text"
-                value={studentLastName}
-                onChange={(e) => setStudentLastName(e.target.value)}
-                placeholder="Enter your last name..."
-                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              />
+		              <input
+		                type="text"
+		                value={studentLastName}
+		                onChange={(e) => setStudentLastName(e.target.value)}
+		                disabled={inputsLocked}
+		                placeholder="Enter your last name..."
+		                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+		              />
             </div>
             <div>
               <label className="block text-slate-300 font-medium mb-2">Student ID</label>
-              <input
-                type="text"
-                value={studentId}
-                onChange={(e) => setStudentId(sanitizeStudentId(e.target.value))}
-                placeholder="Enter your student ID..."
-                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              />
-            </div>
-            {quizId && (
+		              <input
+		                type="text"
+		                value={studentId}
+		                onChange={(e) => setStudentId(sanitizeStudentId(e.target.value))}
+		                disabled={inputsLocked}
+		                placeholder="Enter your student ID..."
+		                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+		              />
+	            </div>
+	            {studentLocked && (
+	              <p className="text-slate-500 text-xs">Using your student profile details.</p>
+	            )}
+	            {quizId && (
               <div className="flex flex-wrap items-center gap-3">
                 <button
                   type="button"
@@ -962,7 +1231,7 @@ export default function Quiz({
 
           {quizId && !started ? (
             <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 text-center text-slate-400 shadow-2xl">
-              Click "Start Quiz" to begin. The timer will start immediately.
+	              Click &quot;Start Quiz&quot; to begin. The timer will start immediately.
             </div>
           ) : (
             <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 md:p-8 shadow-2xl">
@@ -973,7 +1242,7 @@ export default function Quiz({
                 </h2>
                 <p className="text-slate-400 text-sm mb-6">{multipleChoiceQuestions.length} items — Choose the best answer</p>
                 <div className="space-y-6">
-                  {multipleChoiceQuestions.map((q, i) => (
+                  {mcRenderQuestions.map((q, i) => (
                     <MCQuestion
                       key={q.id}
                       question={q}
@@ -993,7 +1262,7 @@ export default function Quiz({
                 </h2>
                 <p className="text-slate-400 text-sm mb-6">{identificationQuestions.length} items — Write the correct term</p>
                 <div className="space-y-6">
-                  {identificationQuestions.map((q, i) => (
+                  {idRenderQuestions.map((q, i) => (
                     <IdQuestion
                       key={q.id}
                       question={q}
@@ -1042,7 +1311,7 @@ export default function Quiz({
                   <p className="text-xs text-slate-400 mt-1">Both formats above are valid.</p>
                 </div>
                 <div className="space-y-6">
-                  {enumerationQuestions.map((q, i) => (
+                  {enumRenderQuestions.map((q, i) => (
                     <EnumQuestion
                       key={q.id}
                       question={q}

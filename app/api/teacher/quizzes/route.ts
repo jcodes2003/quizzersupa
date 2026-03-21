@@ -9,6 +9,30 @@ function normalizeAssessmentType(value: unknown): AssessmentType {
   return raw === "exam" || raw === "examination" ? "exam" : "quiz";
 }
 
+function parseOptionalInt(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+  return null;
+}
+
+function normalizePeriod(value: unknown): string | number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const asInt = parseOptionalInt(trimmed);
+    return asInt === null ? trimmed : asInt;
+  }
+  return null;
+}
+
 function parseDeadline(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -100,6 +124,23 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "subjectId and sectionId required" }, { status: 400 });
   }
   const supabase = getSupabase();
+
+  let subjectSemester: string | null = null;
+  let subjectYearLevel: number | null = null;
+  const subjectMeta = await supabase
+    .from("subjecttbl")
+    .select("semester, year_level")
+    .eq("id", subjectIdStr)
+    .maybeSingle();
+  const subjectMetaMsg = (subjectMeta.error as { message?: string } | null)?.message ?? "";
+  if (!subjectMetaMsg || (!subjectMetaMsg.toLowerCase().includes("semester") && !subjectMetaMsg.toLowerCase().includes("year_level"))) {
+    const rawSemester = (subjectMeta.data as { semester?: unknown } | null)?.semester;
+    const rawYear = (subjectMeta.data as { year_level?: unknown } | null)?.year_level;
+    subjectSemester = typeof rawSemester === "string" && rawSemester.trim() ? rawSemester.trim() : null;
+    const y = Number(rawYear);
+    subjectYearLevel = Number.isFinite(y) ? Math.trunc(y) : null;
+  }
+
   let quizcode = generateQuizCode();
   for (let attempt = 0; attempt < 10; attempt++) {
     const { data: existing } = await supabase.from("quiztbl").select("id").eq("quizcode", quizcode).limit(1).maybeSingle();
@@ -109,14 +150,16 @@ export async function POST(request: NextRequest) {
   const insertRow: Record<string, unknown> = {
     teacherid: teacherId,
     subjectid: subjectIdStr,
+    subject_semester: subjectSemester,
+    subject_year_level: subjectYearLevel,
     quizcode,
     sectionid: sectionIdStr,
-    period: (period ?? "").toString().trim(),
+    period: normalizePeriod(period),
     quizname: (quizname ?? "").toString().trim(),
     assessment_type: normalizeAssessmentType(assessmentType),
-    time_limit_minutes: Number.isFinite(timeLimitMinutes) ? timeLimitMinutes : null,
+    time_limit_minutes: parseOptionalInt(timeLimitMinutes),
     allow_retake: Boolean(allowRetake),
-    max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 1,
+    max_attempts: parseOptionalInt(maxAttempts) ?? 1,
     save_best_only: body.saveBestOnly !== false,
     submission_deadline: parseDeadline(submissionDeadline),
     submissions_open: submissionsOpen !== false,
@@ -130,11 +173,15 @@ export async function POST(request: NextRequest) {
     insertRes.error?.message &&
     (insertRes.error.message.toLowerCase().includes("assessment_type") ||
       insertRes.error.message.toLowerCase().includes("submission_deadline") ||
-      insertRes.error.message.toLowerCase().includes("submissions_open"))
+      insertRes.error.message.toLowerCase().includes("submissions_open") ||
+      insertRes.error.message.toLowerCase().includes("subject_semester") ||
+      insertRes.error.message.toLowerCase().includes("subject_year_level"))
   ) {
     delete insertRow.assessment_type;
     delete insertRow.submission_deadline;
     delete insertRow.submissions_open;
+    delete insertRow.subject_semester;
+    delete insertRow.subject_year_level;
     insertRes = await supabase
       .from("quiztbl")
       .insert(insertRow)

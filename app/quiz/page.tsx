@@ -29,6 +29,8 @@ type ApiQuiz = {
   time_limit_minutes?: number | null;
   allow_retake?: boolean;
   max_attempts?: number | null;
+  attemptsUsed?: number | null;
+  attemptsRemaining?: number | null;
 };
 
 // Ensure options, reply, etc. inside arrays in quiz data all have totally unique keys
@@ -154,7 +156,9 @@ function QuizContent() {
         if (cancelled) return;
         if (!res.ok) {
           const d = await res.json().catch(() => ({}));
-          setCodeError(d.error || "Quiz not found");
+          setCodeError(
+            d.error || (res.status === 401 ? "Please log in as a student to access this quiz." : "Quiz not found")
+          );
           return;
         }
         const data = await res.json();
@@ -224,6 +228,8 @@ function QuizContent() {
         timeLimitMinutes={apiQuiz.time_limit_minutes ?? null}
         allowRetake={Boolean(apiQuiz.allow_retake)}
         maxAttempts={apiQuiz.max_attempts ?? 1}
+        attemptsUsed={apiQuiz.attemptsUsed ?? null}
+        attemptsRemaining={apiQuiz.attemptsRemaining ?? null}
       />
     );
   }

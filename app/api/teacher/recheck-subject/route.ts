@@ -307,12 +307,12 @@ export async function POST(request: NextRequest) {
 
   const supabase = getSupabase();
 
-  let quizQuery = supabase
-    .from("quiztbl")
-    .select("id, save_best_only, source_quiz_id")
-    .eq("teacherid", teacherId)
-    .eq("subjectid", subjectId)
-    .eq("sectionid", sectionId);
+	  const quizQuery = supabase
+	    .from("quiztbl")
+	    .select("id, save_best_only, source_quiz_id")
+	    .eq("teacherid", teacherId)
+	    .eq("subjectid", subjectId)
+	    .eq("sectionid", sectionId);
 
   const quizResult = await quizQuery;
 

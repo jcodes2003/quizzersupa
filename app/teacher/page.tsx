@@ -28,7 +28,7 @@ type QuizResponseRow = {
 };
 
 type Subject = { id: string; name: string; slug: string };
-type Section = { id: string; name: string };
+type Section = { id: string; name: string; joinCode?: string };
 
 type QuizRow = {
   id: string;
@@ -63,6 +63,16 @@ type QuestionInfo = {
   text: string;
   answerkey: string;
   quiztype: string;
+};
+
+type GeneratedDraftQuestion = {
+  clientId: string;
+  question: string;
+  quizType: "multiple_choice" | "identification" | "enumeration";
+  options: string[];
+  answerkey: string;
+  score: number;
+  imageUrl?: string;
 };
 
 type PendingQuizDraft = {
@@ -279,6 +289,32 @@ function getStudentIdentityKey(row: Pick<QuizResponseRow, "student_id" | "studen
   return "";
 }
 
+function getReportStudentKey(
+  row: Pick<QuizResponseRow, "student_id" | "studentname" | "sectionid" | "subjectid">
+): string {
+  const sec = row.sectionid ?? "";
+  const sub = row.subjectid ?? "";
+  const sid = sanitizeStudentId(row.student_id);
+  const nameForParts = formatNameLastFirst(row.studentname) || row.studentname;
+  const parts = getNamePartsForMatch(nameForParts);
+
+  // Prefer grouping by normalized first+last (merges case differences and ignores middle initials),
+  // so "CANOY, HAZEL" and "CANOY, HAZEL ANNE" collapse into one student.
+  if (parts.first && parts.last) return `fl:${parts.first}|${parts.last}|sec:${sec}|sub:${sub}`;
+
+  // If name is incomplete, fall back to student ID.
+  if (sid) return `id:${sid}|sec:${sec}|sub:${sub}`;
+
+  const nameKey = normalizeStudentNameKey(nameForParts);
+  if (nameKey) return `name:${nameKey}|sec:${sec}|sub:${sub}`;
+  return "";
+}
+
+function makeClientId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
 function parseNameImportText(text: string): NameImportEntry[] {
   const trimmed = text.trim();
   if (!trimmed) return [];
@@ -450,7 +486,9 @@ function downloadConsolidatedReportCsv(
   quizColumns: { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" }[],
   filenamePrefix = "student-report-consolidated",
   mergeSameQuizNameColumns = false,
-  splitScoreAndPercentageColumns = false
+  splitScoreAndPercentageColumns = false,
+  includeSectionColumn = true,
+  includeSubjectColumn = true
 ) {
   const exportColumns = mergeSameQuizNameColumns
     ? Array.from(
@@ -479,16 +517,10 @@ function downloadConsolidatedReportCsv(
         escapeCsvCell(`${c.title} Percentage`),
       ])
     : exportColumns.map((c) => escapeCsvCell(c.title));
-  const headers = [
-    "Student ID",
-    "Student Name",
-    "Section",
-    "Subject",
-    ...quizHeaders,
-    "Quiz Avg %",
-    "Exam Avg %",
-    "Final Grade %",
-  ];
+  const headers = ["Student ID", "Student Name"];
+  if (includeSectionColumn) headers.push("Section");
+  if (includeSubjectColumn) headers.push("Subject");
+  headers.push(...quizHeaders, "Quiz Avg %", "Exam Avg %", "Final Grade %");
   const lines = [
     headers.join(","),
     ...rows.map((row) => {
@@ -515,16 +547,16 @@ function downloadConsolidatedReportCsv(
           ? [escapeCsvCell(String(best.score)), escapeCsvCell("0.00")]
           : [escapeCsvCell(String(best.score))];
       });
-      return [
-        escapeCsvCell(row.student_id),
-        escapeCsvCell(formatNameLastFirst(row.studentname)),
-        escapeCsvCell(row.section),
-        escapeCsvCell(row.subject),
+      const rowCells = [escapeCsvCell(row.student_id), escapeCsvCell(formatNameLastFirst(row.studentname))];
+      if (includeSectionColumn) rowCells.push(escapeCsvCell(row.section));
+      if (includeSubjectColumn) rowCells.push(escapeCsvCell(row.subject));
+      rowCells.push(
         ...quizCells,
         escapeCsvCell(weighted.quizAverage.toFixed(2)),
         escapeCsvCell(weighted.examAverage.toFixed(2)),
-        escapeCsvCell(weighted.finalGrade.toFixed(2)),
-      ].join(",");
+        escapeCsvCell(weighted.finalGrade.toFixed(2))
+      );
+      return rowCells.join(",");
     }),
   ];
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
@@ -753,7 +785,7 @@ export default function TeacherPage() {
   const [nameImportEntries, setNameImportEntries] = useState<NameImportEntry[]>([]);
   const [nameImportFileName, setNameImportFileName] = useState("");
   const [nameImportError, setNameImportError] = useState("");
-  const [tab, setTab] = useState<"responses" | "questions" | "reports" | "recheck">("responses");
+  const [tab, setTab] = useState<"responses" | "questions" | "reports" | "recheck" | "generator">("responses");
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
@@ -821,6 +853,29 @@ export default function TeacherPage() {
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
   const [answersLoading, setAnswersLoading] = useState(false);
+
+  // Generator (build a new quiz by sampling questions from selected quizzes)
+  const [genSelectedQuizIds, setGenSelectedQuizIds] = useState<string[]>([]);
+  const [quizListSubjectFilter, setQuizListSubjectFilter] = useState("");
+  const [quizListPeriodFilter, setQuizListPeriodFilter] = useState("");
+  const [genQuizSubjectFilter, setGenQuizSubjectFilter] = useState("");
+  const [genQuizPeriodFilter, setGenQuizPeriodFilter] = useState("");
+  const [genSubjectId, setGenSubjectId] = useState("");
+  const [genSectionId, setGenSectionId] = useState("");
+  const [genPeriod, setGenPeriod] = useState("");
+  const [genQuizName, setGenQuizName] = useState("");
+  const [genAssessmentType, setGenAssessmentType] = useState<"quiz" | "exam">("quiz");
+  const [genTimeLimitMinutes, setGenTimeLimitMinutes] = useState("");
+  const [genMultipleChoiceCount, setGenMultipleChoiceCount] = useState("0");
+  const [genIdentificationCount, setGenIdentificationCount] = useState("0");
+  const [genEnumerationCount, setGenEnumerationCount] = useState("0");
+  const [genLoading, setGenLoading] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [genCreated, setGenCreated] = useState<{ id: string; quizcode?: string; quizname?: string } | null>(null);
+  const [genPreviewOpen, setGenPreviewOpen] = useState(false);
+  const [genDraftQuestions, setGenDraftQuestions] = useState<GeneratedDraftQuestion[]>([]);
+  const [genUploadLoading, setGenUploadLoading] = useState(false);
+  const [genUploadError, setGenUploadError] = useState<string | null>(null);
   const [questionTypeFilter, setQuestionTypeFilter] = useState<
     "all" | "multiple_choice" | "identification" | "enumeration" | "long_answer"
   >("all");
@@ -1447,6 +1502,93 @@ export default function TeacherPage() {
     if (res.ok) setSections(await res.json());
   }, []);
 
+  const normalizePeriodValue = useCallback((value: unknown): string => {
+    const s = String(value ?? "").trim();
+    return s;
+  }, []);
+
+  const teacherCreatedQuizzes = useMemo(() => {
+    // Only show "source" quizzes created by this teacher (exclude assigned quizzes).
+    // Assigned quizzes have `source_quiz_id` set.
+    return quizzes.filter((q) => !q.source_quiz_id);
+  }, [quizzes]);
+
+  const quizListPeriods = useMemo(() => {
+    const base = quizListSubjectFilter
+      ? teacherCreatedQuizzes.filter((q) => q.subjectid === quizListSubjectFilter)
+      : teacherCreatedQuizzes;
+    const set = new Set<string>();
+    for (const q of base) {
+      const p = normalizePeriodValue((q as { period?: unknown }).period);
+      if (p) set.add(p);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  }, [teacherCreatedQuizzes, quizListSubjectFilter, normalizePeriodValue]);
+
+  const genQuizPeriods = useMemo(() => {
+    const base = genQuizSubjectFilter
+      ? teacherCreatedQuizzes.filter((q) => q.subjectid === genQuizSubjectFilter)
+      : teacherCreatedQuizzes;
+    const set = new Set<string>();
+    for (const q of base) {
+      const p = normalizePeriodValue((q as { period?: unknown }).period);
+      if (p) set.add(p);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+  }, [teacherCreatedQuizzes, genQuizSubjectFilter, normalizePeriodValue]);
+
+  const quizListFilteredQuizzes = useMemo(() => {
+    return teacherCreatedQuizzes.filter((q) => {
+      if (quizListSubjectFilter && q.subjectid !== quizListSubjectFilter) return false;
+      const p = normalizePeriodValue((q as { period?: unknown }).period);
+      if (quizListPeriodFilter && p !== quizListPeriodFilter) return false;
+      return true;
+    });
+  }, [teacherCreatedQuizzes, quizListSubjectFilter, quizListPeriodFilter, normalizePeriodValue]);
+
+  const genFilteredQuizzes = useMemo(() => {
+    return teacherCreatedQuizzes.filter((q) => {
+      if (genQuizSubjectFilter && q.subjectid !== genQuizSubjectFilter) return false;
+      const p = normalizePeriodValue((q as { period?: unknown }).period);
+      if (genQuizPeriodFilter && p !== genQuizPeriodFilter) return false;
+      return true;
+    });
+  }, [teacherCreatedQuizzes, genQuizSubjectFilter, genQuizPeriodFilter, normalizePeriodValue]);
+
+  useEffect(() => {
+    if (tab !== "generator") return;
+    if (subjects.length === 0) fetchSubjects();
+    if (sections.length === 0) fetchSections();
+    if (quizzes.length === 0) fetchQuizzes();
+  }, [tab, subjects.length, sections.length, quizzes.length, fetchSubjects, fetchSections, fetchQuizzes]);
+
+  useEffect(() => {
+    if (genSelectedQuizIds.length === 0) return;
+    const first = quizzes.find((q) => q.id === genSelectedQuizIds[0]);
+    if (!first) return;
+    if (!genSubjectId) setGenSubjectId(first.subjectid);
+    if (!genSectionId) setGenSectionId(first.sectionid);
+  }, [genSelectedQuizIds, quizzes, genSubjectId, genSectionId]);
+
+  useEffect(() => {
+    setQuizzesPage(1);
+  }, [quizListSubjectFilter, quizListPeriodFilter]);
+
+  useEffect(() => {
+    // If a quiz becomes hidden (assigned), clear selection to avoid confusion.
+    if (!selectedQuizId) return;
+    const ok = teacherCreatedQuizzes.some((q) => q.id === selectedQuizId);
+    if (!ok) setSelectedQuizId(null);
+  }, [teacherCreatedQuizzes, selectedQuizId]);
+
+  useEffect(() => {
+    // Keep generator selections valid for the visible quiz set.
+    if (genSelectedQuizIds.length === 0) return;
+    const allowed = new Set(teacherCreatedQuizzes.map((q) => q.id));
+    const next = genSelectedQuizIds.filter((id) => allowed.has(id));
+    if (next.length !== genSelectedQuizIds.length) setGenSelectedQuizIds(next);
+  }, [teacherCreatedQuizzes, genSelectedQuizIds]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1870,6 +2012,198 @@ export default function TeacherPage() {
       await fetchQuizzes();
     } catch {
       setError("Failed to delete quiz");
+    }
+  };
+
+  const handleGenerateQuiz = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setGenError(null);
+    setGenCreated(null);
+    setGenUploadError(null);
+
+    const sourceQuizIds = genSelectedQuizIds;
+    if (sourceQuizIds.length === 0) {
+      setGenError("Select at least one source quiz.");
+      return;
+    }
+    if (!genSubjectId || !genSectionId) {
+      setGenError("Select a subject and section for the generated quiz.");
+      return;
+    }
+
+    const mc = Math.max(0, Math.trunc(Number(genMultipleChoiceCount) || 0));
+    const id = Math.max(0, Math.trunc(Number(genIdentificationCount) || 0));
+    const en = Math.max(0, Math.trunc(Number(genEnumerationCount) || 0));
+    if (mc + id + en <= 0) {
+      setGenError("Enter at least 1 question to generate.");
+      return;
+    }
+
+    setGenLoading(true);
+    try {
+      const res = await fetch("/api/teacher/generate-quiz", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          sourceQuizIds,
+          multipleChoiceCount: mc,
+          identificationCount: id,
+          enumerationCount: en,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setGenError(data.error ?? "Failed to generate quiz.");
+        return;
+      }
+      const rawQuestions = Array.isArray(data.questions) ? (data.questions as Array<Record<string, unknown>>) : [];
+      if (rawQuestions.length === 0) {
+        setGenError("No questions generated.");
+        return;
+      }
+      const mapped: GeneratedDraftQuestion[] = rawQuestions.map((q) => ({
+        clientId: makeClientId(),
+        question: String(q.question ?? "").trim(),
+        quizType:
+          String(q.quizType ?? "").trim() === "identification"
+            ? "identification"
+            : String(q.quizType ?? "").trim() === "enumeration"
+              ? "enumeration"
+              : "multiple_choice",
+        options: Array.isArray(q.options) ? (q.options as unknown[]).map((o) => String(o ?? "").trim()).filter(Boolean) : [],
+        answerkey: String(q.answerkey ?? "").trim(),
+        score: Math.max(1, Math.trunc(Number(q.score) || 1)),
+        imageUrl: typeof q.imageUrl === "string" && q.imageUrl.trim() ? q.imageUrl.trim() : undefined,
+      }));
+      // Ensure MC questions have at least 2 option slots so they are editable.
+      const normalized = mapped.map((qq) => {
+        if (qq.quizType !== "multiple_choice") return { ...qq, options: [] };
+        const opts = qq.options.length >= 2 ? qq.options : [...qq.options, "", ""].slice(0, 2);
+        return { ...qq, options: opts };
+      });
+      setGenDraftQuestions(normalized);
+      setGenPreviewOpen(true);
+    } catch {
+      setGenError("Failed to generate quiz.");
+    } finally {
+      setGenLoading(false);
+    }
+  };
+
+  const handleUploadGeneratedQuiz = async () => {
+    setGenUploadError(null);
+    if (!canCreateQuestions) {
+      setGenUploadError("You are in view-only mode. Log in with your teacher email + password to upload questions.");
+      return;
+    }
+    if (!genSubjectId || !genSectionId) {
+      setGenUploadError("Select a subject and section for the generated quiz.");
+      return;
+    }
+    const cleaned = genDraftQuestions.map((q) => ({
+      ...q,
+      question: q.question.trim(),
+      answerkey: q.answerkey.trim(),
+      options: (q.options ?? []).map((o) => String(o ?? "")).map((o) => o.trim()),
+      score: Math.max(1, Math.trunc(Number(q.score) || 1)),
+      imageUrl: typeof q.imageUrl === "string" ? q.imageUrl.trim() : undefined,
+    }));
+    if (cleaned.length === 0) {
+      setGenUploadError("No questions to upload.");
+      return;
+    }
+    for (const q of cleaned) {
+      if (!q.question) {
+        setGenUploadError("Each question must have text.");
+        return;
+      }
+      if (q.quizType === "multiple_choice") {
+        const opts = q.options.filter(Boolean);
+        if (opts.length < 2) {
+          setGenUploadError("Multiple choice questions must have at least 2 options.");
+          return;
+        }
+        if (!q.answerkey || !opts.includes(q.answerkey)) {
+          setGenUploadError("Each multiple choice question must have an answer key that matches one of its options.");
+          return;
+        }
+      } else {
+        if (!q.answerkey) {
+          setGenUploadError("Identification and enumeration questions must have an answer key.");
+          return;
+        }
+      }
+    }
+
+    const timeLimitMinutes = genTimeLimitMinutes.trim() ? Number(genTimeLimitMinutes.trim()) : null;
+
+    setGenUploadLoading(true);
+    try {
+      // 1) Create the new quiz
+      const quizRes = await fetch("/api/teacher/quizzes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          subjectId: genSubjectId,
+          sectionId: genSectionId,
+          period: genPeriod,
+          quizname: genQuizName,
+          assessmentType: genAssessmentType,
+          timeLimitMinutes: Number.isFinite(timeLimitMinutes as number) ? timeLimitMinutes : null,
+          allowRetake: false,
+          maxAttempts: 1,
+          saveBestOnly: true,
+          submissionDeadline: null,
+          submissionsOpen: true,
+        }),
+      });
+      const quizData = await quizRes.json().catch(() => ({}));
+      if (!quizRes.ok) {
+        setGenUploadError(quizData.error ?? "Failed to create quiz.");
+        return;
+      }
+      const newQuizId = String(quizData.id ?? "").trim();
+      if (!newQuizId) {
+        setGenUploadError("Quiz created, but response was incomplete.");
+        return;
+      }
+
+      // 2) Upload questions in batch
+      const qRes = await fetch(`/api/teacher/quizzes/${newQuizId}/questions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          questions: cleaned.map((q) => ({
+            question: q.question,
+            quizType: q.quizType,
+            options: q.quizType === "multiple_choice" ? q.options.filter(Boolean) : undefined,
+            answerkey: q.answerkey,
+            score: q.score,
+            imageUrl: q.imageUrl,
+          })),
+        }),
+      });
+      const qData = await qRes.json().catch(() => ({}));
+      if (!qRes.ok) {
+        setGenUploadError(qData.error ?? "Failed to upload questions.");
+        return;
+      }
+
+      const created = { id: newQuizId, quizcode: String(quizData.quizcode ?? "").trim() || undefined, quizname: String(quizData.quizname ?? "").trim() || undefined };
+      setGenCreated(created);
+      setGenPreviewOpen(false);
+      setGenDraftQuestions([]);
+      await fetchQuizzes();
+      // Open in question bank for optional additional manual additions.
+      setSelectedQuizId(newQuizId);
+      setTab("questions");
+    } catch {
+      setGenUploadError("Failed to upload generated quiz.");
+    } finally {
+      setGenUploadLoading(false);
     }
   };
 
@@ -2524,18 +2858,38 @@ export default function TeacherPage() {
     });
   }
 
-  // Latest attempt per (student_identity, quizid) for consolidated report
-  const latestByStudentQuiz = new Map<string, QuizResponseRow>();
-  for (const r of reportFilteredRows) {
-    const identityKey = getStudentIdentityKey(r);
-    if (!identityKey) continue;
-    const key = `${identityKey}-${r.quizid ?? r.quizcode}`;
-    const existing = latestByStudentQuiz.get(key);
-    if (!existing || (r.created_at && existing.created_at && r.created_at > existing.created_at)) {
-      latestByStudentQuiz.set(key, r);
-    }
-  }
-  const latestRows = Array.from(latestByStudentQuiz.values());
+	  // Highest-score attempt per (student_name, section, subject, quiz) for consolidated report
+	  const bestByStudentQuizForReports = new Map<string, QuizResponseRow>();
+	  const bestStudentIdByStudentKey = new Map<string, { studentId: string; bestPercent: number; bestAt?: string }>();
+	  for (const r of reportFilteredRows) {
+	    const identityKey = getReportStudentKey(r);
+	    if (!identityKey) continue;
+	    const key = `${identityKey}-${r.quizid ?? r.quizcode}`;
+	    const existing = bestByStudentQuizForReports.get(key);
+	    const rScore = typeof r.score === "number" ? r.score : -Infinity;
+	    const eScore = typeof existing?.score === "number" ? existing.score : -Infinity;
+	    const betterScore = rScore > eScore;
+	    const tieNewer =
+	      rScore === eScore &&
+	      !!r.created_at &&
+	      !!existing?.created_at &&
+	      String(r.created_at) > String(existing.created_at);
+	    if (!existing || betterScore || tieNewer) bestByStudentQuizForReports.set(key, r);
+
+	    const sid = sanitizeStudentId(r.student_id);
+	    if (sid && typeof r.score === "number" && typeof r.max_score === "number" && r.max_score > 0) {
+	      const pct = (r.score / r.max_score) * 100;
+	      const currentBest = bestStudentIdByStudentKey.get(identityKey);
+	      if (
+	        !currentBest ||
+	        pct > currentBest.bestPercent ||
+	        (pct === currentBest.bestPercent && r.created_at && (currentBest.bestAt ?? "") < r.created_at)
+	      ) {
+	        bestStudentIdByStudentKey.set(identityKey, { studentId: sid, bestPercent: pct, bestAt: r.created_at });
+	      }
+	    }
+	  }
+	  const latestRows = Array.from(bestByStudentQuizForReports.values());
 
   // Consolidated: one row per student; columns = Student ID, Name, Section, Subject, then one column per quiz (score/max or —)
   type QuizColumn = { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" };
@@ -2555,38 +2909,52 @@ export default function TeacherPage() {
     ).values()
   );
 
-  const consolidatedByStudent = new Map<string, ConsolidatedRow>();
-  for (const r of latestRows) {
-    const identityKey = getStudentIdentityKey(r);
-    if (!identityKey) continue;
-    let row = consolidatedByStudent.get(identityKey);
-    if (!row) {
-      row = {
-        student_id: r.student_id ?? "",
-        studentname: r.studentname ?? "",
-        section: r.sectionname ?? r.section ?? "",
-        subject: r.subjectname ?? r.subject ?? "",
-        sectionid: r.sectionid ?? "",
-        subjectid: r.subjectid ?? "",
-        quizzes: new Map(),
-      };
-      consolidatedByStudent.set(identityKey, row);
-    }
-    const qid = r.quizid ?? r.quizcode;
-    if (qid && r.score != null) {
-      const existingQuizScore = row.quizzes.get(qid);
-      if (!existingQuizScore || r.score > existingQuizScore.score) {
-        row.quizzes.set(qid, {
+	  const consolidatedByStudent = new Map<string, ConsolidatedRow>();
+	  for (const r of latestRows) {
+	    const identityKey = getReportStudentKey(r);
+	    if (!identityKey) continue;
+	    const nextSection = r.sectionname ?? r.section ?? "";
+	    const nextSubject = r.subjectname ?? r.subject ?? "";
+	    let row = consolidatedByStudent.get(identityKey);
+	    if (!row) {
+	      row = {
+	        student_id: bestStudentIdByStudentKey.get(identityKey)?.studentId ?? sanitizeStudentId(r.student_id),
+	        studentname: r.studentname ?? "",
+	        section: nextSection,
+	        subject: nextSubject,
+	        sectionid: r.sectionid ?? "",
+	        subjectid: r.subjectid ?? "",
+	        quizzes: new Map(),
+	      };
+	      consolidatedByStudent.set(identityKey, row);
+	    }
+	    const candidateName = r.studentname ?? "";
+	    if (candidateName && (!row.studentname || candidateName.length > row.studentname.length)) {
+	      row.studentname = candidateName;
+	    }
+	    if (nextSection) {
+	      if (!row.section) row.section = nextSection;
+	      else if (row.section !== nextSection && row.section !== "Multiple") row.section = "Multiple";
+	    }
+	    if (nextSubject) {
+	      if (!row.subject) row.subject = nextSubject;
+	      else if (row.subject !== nextSubject && row.subject !== "Multiple") row.subject = "Multiple";
+	    }
+	    const qid = r.quizid ?? r.quizcode;
+	    if (qid && r.score != null) {
+	      const existingQuizScore = row.quizzes.get(qid);
+	      if (!existingQuizScore || r.score > existingQuizScore.score) {
+	        row.quizzes.set(qid, {
           score: r.score,
           max_score: r.max_score ?? 0,
           assessment_type: normalizeAssessmentType(r.assessment_type),
         });
       }
     }
-    if (!row.student_id && r.student_id) {
-      row.student_id = r.student_id;
-    }
-  }
+	    if (!row.student_id && r.student_id) {
+	      row.student_id = sanitizeStudentId(r.student_id);
+	    }
+	  }
   const consolidatedRows = Array.from(consolidatedByStudent.values());
   const sortedConsolidatedRows = [...consolidatedRows].sort((a, b) => {
     const lastA = getLastNameForSort(a.studentname);
@@ -2602,9 +2970,9 @@ export default function TeacherPage() {
   const reportsEndIndex = reportsStartIndex + PAGE_SIZE;
   const pagedReportRows = sortedConsolidatedRows.slice(reportsStartIndex, reportsEndIndex);
 
-  const weightedByStudentKey = new Map(
-    sortedConsolidatedRows.map((row) => [getStudentIdentityKey(row), calculateWeightedGrade(row, quizColumns)])
-  );
+	  const weightedByStudentKey = new Map(
+	    sortedConsolidatedRows.map((row) => [getReportStudentKey(row), calculateWeightedGrade(row, quizColumns)])
+	  );
 
   const nameImportMatchResult = useMemo(() => {
     const byStudentId = new Map<string, ConsolidatedRow>();
@@ -2844,6 +3212,12 @@ export default function TeacherPage() {
                 Question Bank
               </button>
               <button
+                onClick={() => setTab("generator")}
+                className={`px-4 py-2 rounded-xl font-medium ${tab === "generator" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
+              >
+                Generator
+              </button>
+              <button
                 onClick={handleLogout}
                 className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium"
               >
@@ -2907,6 +3281,19 @@ export default function TeacherPage() {
               }`}
             >
               Question Bank
+            </button>
+            <button
+              onClick={() => {
+                setTab("generator");
+                setNavOpen(false);
+              }}
+              className={`w-full px-4 py-2 rounded-xl text-left font-medium ${
+                tab === "generator"
+                  ? "bg-cyan-600 text-white"
+                  : "bg-slate-800 text-slate-200 hover:bg-slate-700"
+              }`}
+            >
+              Generator
             </button>
             <button
               onClick={() => {
@@ -3198,8 +3585,8 @@ export default function TeacherPage() {
           </>
         )}
 
-        {tab === "reports" && (
-          <>
+	        {tab === "reports" && (
+	          <>
             <h2 className="text-xl font-semibold text-cyan-300 mb-6">Student Score Report</h2>
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -3287,27 +3674,39 @@ export default function TeacherPage() {
             </div>
 
             {/* Export and Refresh Buttons */}
-            <div className="flex flex-wrap items-center gap-3 mb-6">
-              <button
-                onClick={() => downloadConsolidatedReportCsv(sortedConsolidatedRows, quizColumns)}
-                disabled={sortedConsolidatedRows.length === 0}
-                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
-              >
-                Export to CSV
-              </button>
+	            <div className="flex flex-wrap items-center gap-3 mb-6">
+	              <button
+	                onClick={() =>
+	                  downloadConsolidatedReportCsv(
+	                    sortedConsolidatedRows,
+	                    quizColumns,
+	                    "student-report-consolidated",
+	                    false,
+	                    false,
+	                    !reportFilterSection,
+	                    !reportFilterSubject
+	                  )
+	                }
+	                disabled={sortedConsolidatedRows.length === 0}
+	                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+	              >
+	                Export to CSV
+	              </button>
               <button
                 onClick={() =>
-                  downloadConsolidatedReportCsv(
-                    nameImportMatchResult.exportRows,
-                    quizColumns,
-                    "student-report-selected-names",
-                    true,
-                    true
-                  )
-                }
-                disabled={nameImportEntries.length === 0}
-                className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
-              >
+	                  downloadConsolidatedReportCsv(
+	                    nameImportMatchResult.exportRows,
+	                    quizColumns,
+	                    "student-report-selected-names",
+	                    true,
+	                    true,
+	                    !reportFilterSection,
+	                    !reportFilterSubject
+	                  )
+	                }
+	                disabled={nameImportEntries.length === 0}
+	                className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
+	              >
                 Export Uploaded Names CSV
               </button>
               <button
@@ -3357,8 +3756,12 @@ export default function TeacherPage() {
                       <tr className="border-b border-slate-600 bg-slate-700/50">
                         <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Student ID</th>
                         <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Student Name</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Section</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Subject</th>
+                        {!reportFilterSection && (
+                          <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Section</th>
+                        )}
+                        {!reportFilterSubject && (
+                          <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Subject</th>
+                        )}
                         {quizColumns.map((q) => (
                           <th key={q.quizid} className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">
                             {q.quizname || q.quizcode}
@@ -3373,12 +3776,12 @@ export default function TeacherPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {pagedReportRows.map((r) => (
-                        <tr key={getStudentIdentityKey(r)} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+	                      {pagedReportRows.map((r) => (
+	                        <tr key={getReportStudentKey(r)} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.student_id}</td>
                           <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
-                          <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>
-                          <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>
+                          {!reportFilterSection && <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>}
+                          {!reportFilterSubject && <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>}
                           {quizColumns.map((q) => {
                             const qq = r.quizzes.get(q.quizid);
                             const cell = qq
@@ -3393,11 +3796,11 @@ export default function TeacherPage() {
                             );
                           })}
                           {(() => {
-                            const weighted = weightedByStudentKey.get(getStudentIdentityKey(r)) ?? {
-                              quizAverage: 0,
-                              examAverage: 0,
-                              finalGrade: 0,
-                            };
+	                            const weighted = weightedByStudentKey.get(getReportStudentKey(r)) ?? {
+	                              quizAverage: 0,
+	                              examAverage: 0,
+	                              finalGrade: 0,
+	                            };
                             return (
                               <>
                                 <td className="px-4 py-3 text-cyan-200 font-medium">{weighted.quizAverage.toFixed(2)}%</td>
@@ -3459,11 +3862,295 @@ export default function TeacherPage() {
                 </div>
               </div>
             )}
-          </>
-        )}
+	          </>
+	        )}
 
-        {tab === "questions" && (
-          <>
+	        {tab === "generator" && (
+	          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+	            <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
+	              <h2 className="text-lg font-semibold text-cyan-300">Generate From Quizzes</h2>
+	              <p className="text-slate-400 text-sm mt-1">
+	                Select quizzes to pull questions from. If you request more than available, you&apos;ll get a helpful error.
+		              </p>
+
+		              <div className="mt-4">
+		                <div className="flex flex-wrap items-center gap-2 mb-3">
+		                  {/* <select
+		                    value={genQuizSubjectFilter}
+		                    onChange={(e) => {
+		                      setGenQuizSubjectFilter(e.target.value);
+		                      setGenQuizPeriodFilter("");
+		                    }}
+		                    className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm"
+		                  >
+		                    <option value="">All subjects</option>
+		                    {subjects.map((s) => (
+		                      <option key={s.id} value={s.id}>
+		                        {s.name}
+		                      </option>
+		                    ))}
+		                  </select> */}
+		                  <select
+		                    value={genQuizPeriodFilter}
+		                    onChange={(e) => setGenQuizPeriodFilter(e.target.value)}
+		                    className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm"
+		                  >
+		                    <option value="">All periods</option>
+		                    {genQuizPeriods.map((p) => (
+		                      <option key={p} value={p}>
+		                        {p}
+		                      </option>
+		                    ))}
+		                  </select>
+		                  {(genQuizSubjectFilter || genQuizPeriodFilter) && (
+		                    <button
+		                      type="button"
+		                      onClick={() => {
+		                        setGenQuizSubjectFilter("");
+		                        setGenQuizPeriodFilter("");
+		                      }}
+		                      className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 text-sm"
+		                    >
+		                      Clear filters
+		                    </button>
+		                  )}
+		                </div>
+		                <div className="flex items-center justify-between gap-3 mb-2">
+		                  <p className="text-slate-300 text-sm font-medium">Source quizzes</p>
+		                  <button
+	                    type="button"
+	                    onClick={() => setGenSelectedQuizIds([])}
+	                    className="text-xs text-slate-300 hover:text-white underline decoration-slate-500/50"
+	                  >
+	                    Clear
+	                  </button>
+	                </div>
+
+	                {quizzesLoading ? (
+	                  <p className="text-slate-400 py-6">Loading quizzes...</p>
+		                ) : genFilteredQuizzes.length === 0 ? (
+		                  <div className="rounded-xl bg-slate-900/40 border border-slate-700/50 p-4 text-slate-400 text-sm">
+		                    {teacherCreatedQuizzes.length === 0 && !genQuizSubjectFilter && !genQuizPeriodFilter
+		                      ? "No teacher-created quizzes yet. Create a quiz first in the Question Bank tab."
+		                      : "No quizzes match the selected filters."}
+		                  </div>
+		                ) : (
+		                  <div className="max-h-[420px] overflow-auto rounded-xl bg-slate-900/40 border border-slate-700/50 divide-y divide-slate-700/50">
+		                    {genFilteredQuizzes.map((q) => {
+		                      const checked = genSelectedQuizIds.includes(q.id);
+		                      const periodLabel = normalizePeriodValue((q as { period?: unknown }).period);
+		                      const subjectLabel = subjects.find((s) => s.id === q.subjectid)?.name ?? q.subjectid;
+		                      const sectionLabel = sections.find((s) => s.id === q.sectionid)?.name ?? q.sectionid;
+		                      return (
+	                        <label key={q.id} className="flex gap-3 px-3 py-3 hover:bg-slate-800/40 cursor-pointer">
+	                          <input
+	                            type="checkbox"
+	                            checked={checked}
+	                            onChange={(e) => {
+	                              const next = e.target.checked
+	                                ? [...genSelectedQuizIds, q.id]
+	                                : genSelectedQuizIds.filter((id) => id !== q.id);
+	                              setGenSelectedQuizIds(next);
+	                              setGenError(null);
+	                            }}
+	                            className="mt-1 h-4 w-4 accent-cyan-500"
+	                          />
+	                          <div className="min-w-0">
+	                            <p className="text-slate-100 font-medium truncate">
+	                              {q.quizname?.trim() ? q.quizname : "Untitled quiz"}
+	                            </p>
+	                            <p className="text-slate-400 text-xs truncate">
+		                              {q.quizcode} • {subjectLabel} • {sectionLabel}
+		                              {periodLabel ? ` • Period ${periodLabel}` : ""}
+		                            </p>
+	                          </div>
+	                        </label>
+	                      );
+	                    })}
+	                  </div>
+	                )}
+
+		                <p className="text-slate-400 text-xs mt-2">
+		                  Selected: <span className="text-slate-200 font-medium">{genSelectedQuizIds.length}</span>
+		                </p>
+		              </div>
+		            </div>
+
+	            <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
+	              <h3 className="text-slate-200 font-semibold">Settings</h3>
+
+	              <form onSubmit={handleGenerateQuiz} className="mt-4 space-y-4">
+	                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">Subject</label>
+	                    <select
+	                      value={genSubjectId}
+	                      onChange={(e) => setGenSubjectId(e.target.value)}
+	                      className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    >
+	                      <option value="">Select subject</option>
+	                      {subjects.map((s) => (
+	                        <option key={s.id} value={s.id}>
+	                          {s.name}
+	                        </option>
+	                      ))}
+	                    </select>
+	                  </div>
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">Section</label>
+	                    <select
+	                      value={genSectionId}
+	                      onChange={(e) => setGenSectionId(e.target.value)}
+	                      className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    >
+	                      <option value="">Select section</option>
+	                      {sections.map((s) => (
+	                        <option key={s.id} value={s.id}>
+	                          {s.name}
+	                        </option>
+	                      ))}
+	                    </select>
+	                  </div>
+	                </div>
+
+	                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">Quiz name</label>
+	                    <input
+	                      value={genQuizName}
+	                      onChange={(e) => setGenQuizName(e.target.value)}
+	                      placeholder="Generated Quiz"
+	                      className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    />
+	                  </div>
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">Period (optional)</label>
+	                    <input
+	                      value={genPeriod}
+	                      onChange={(e) => setGenPeriod(e.target.value)}
+	                      placeholder="e.g., Midterm"
+	                      className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    />
+	                  </div>
+	                </div>
+
+	                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">Assessment type</label>
+	                    <select
+	                      value={genAssessmentType}
+	                      onChange={(e) => setGenAssessmentType(e.target.value as "quiz" | "exam")}
+	                      className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    >
+	                      <option value="quiz">Quiz</option>
+	                      <option value="exam">Exam</option>
+	                    </select>
+	                  </div>
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">Time limit (minutes)</label>
+	                    <input
+	                      type="number"
+	                      min={0}
+	                      value={genTimeLimitMinutes}
+	                      onChange={(e) => setGenTimeLimitMinutes(e.target.value)}
+	                      placeholder="No limit"
+	                      className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    />
+	                  </div>
+	                </div>
+
+	                <div>
+	                  <label className="block text-slate-400 text-sm mb-2">How many questions to generate?</label>
+	                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+	                    <div>
+	                      <label className="block text-slate-500 text-xs mb-1">Multiple Choice</label>
+	                      <input
+	                        type="number"
+	                        min={0}
+	                        value={genMultipleChoiceCount}
+	                        onChange={(e) => setGenMultipleChoiceCount(e.target.value)}
+	                        className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                      />
+	                    </div>
+	                    <div>
+	                      <label className="block text-slate-500 text-xs mb-1">Identification</label>
+	                      <input
+	                        type="number"
+	                        min={0}
+	                        value={genIdentificationCount}
+	                        onChange={(e) => setGenIdentificationCount(e.target.value)}
+	                        className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                      />
+	                    </div>
+	                    <div>
+	                      <label className="block text-slate-500 text-xs mb-1">Enumeration</label>
+	                      <input
+	                        type="number"
+	                        min={0}
+	                        value={genEnumerationCount}
+	                        onChange={(e) => setGenEnumerationCount(e.target.value)}
+	                        className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                      />
+	                    </div>
+	                  </div>
+	                </div>
+
+	                {genError && (
+	                  <div className="p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+	                    {genError}
+	                  </div>
+	                )}
+
+	                {genCreated && (
+	                  <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-200 text-sm">
+	                    <div className="flex flex-wrap items-center justify-between gap-2">
+	                      <p>
+	                        Created: <span className="font-semibold">{genCreated.quizname ?? "Generated Quiz"}</span>{" "}
+	                        {genCreated.quizcode ? (
+	                          <span className="ml-2 font-mono text-emerald-100">{genCreated.quizcode}</span>
+	                        ) : null}
+	                      </p>
+	                      <div className="flex items-center gap-2">
+	                        {genCreated.quizcode ? (
+	                          <button
+	                            type="button"
+	                            onClick={() => handleCopyQuizCode(genCreated.quizcode ?? "")}
+	                            className="px-3 py-1 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs"
+	                          >
+	                            Copy code
+	                          </button>
+	                        ) : null}
+	                        <button
+	                          type="button"
+	                          onClick={() => {
+	                            setSelectedQuizId(genCreated.id);
+	                            setShowAddQuestion(false);
+	                            setShowCreateQuiz(false);
+	                            setTab("questions");
+	                          }}
+	                          className="px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-white text-xs"
+	                        >
+	                          Open in Question Bank
+	                        </button>
+	                      </div>
+	                    </div>
+	                  </div>
+	                )}
+
+	                <button
+	                  type="submit"
+	                  disabled={genLoading}
+	                  className="w-full px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
+	                >
+	                  {genLoading ? "Generating..." : "Generate Quiz"}
+	                </button>
+	              </form>
+	            </div>
+	          </div>
+	        )}
+
+	        {tab === "questions" && (
+	          <>
             {!canCreateQuestions ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 text-center">
                 <h2 className="text-lg font-semibold text-cyan-300 mb-3">Question Bank</h2>
@@ -3488,18 +4175,30 @@ export default function TeacherPage() {
                     Add Questions
                   </button>
                 )}
-                {quizFormDraftAvailable && !showCreateQuiz && (
-                  <button
-                    onClick={openDraftQuizForm}
-                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold"
-                  >
-                    Resume Draft
-                  </button>
-                )}
-                <button
-                  onClick={() => setShowCreateQuiz(true)}
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-                >
+	                {quizFormDraftAvailable && !showCreateQuiz && (
+	                  <button
+	                    onClick={openDraftQuizForm}
+	                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold"
+	                  >
+	                    Resume Draft
+	                  </button>
+	                )}
+	                <Link
+	                  href="/teacher/classes"
+	                  className="px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-semibold"
+	                >
+	                  Manage Sections
+	                </Link>
+	                <Link
+	                  href="/teacher/guide"
+	                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+	                >
+	                  Teacher Guide
+	                </Link>
+	                <button
+	                  onClick={() => setShowCreateQuiz(true)}
+	                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
+	                >
                   Create Quiz
                 </button>
               </div>
@@ -3863,10 +4562,10 @@ export default function TeacherPage() {
               </div>
             )}
 
-            {showCreateQuiz && (
-              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 mb-6">
-                <h3 className="text-lg font-semibold text-cyan-300 mb-4">New Quiz</h3>
-                <form onSubmit={handleCreateQuiz} className="space-y-4">
+	            {showCreateQuiz && (
+	              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 mb-6">
+	                <h3 className="text-lg font-semibold text-cyan-300 mb-4">New Quiz</h3>
+	                <form onSubmit={handleCreateQuiz} className="space-y-4">
                   <div>
                     <label className="block text-slate-400 text-sm mb-1">Subject</label>
                     <select
@@ -3906,8 +4605,8 @@ export default function TeacherPage() {
                         <div className="text-slate-500 text-xs">No sections yet ? add in Admin</div>
                       )}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        {sections.map((s) => (
-                          <label key={s.id} className="flex items-center gap-2 rounded-lg bg-slate-800/60 px-3 py-2 text-slate-200 text-xs border border-slate-700/60 hover:border-cyan-500/60">
+	                        {sections.map((s) => (
+	                          <label key={s.id} className="flex items-center gap-2 rounded-lg bg-slate-800/60 px-3 py-2 text-slate-200 text-xs border border-slate-700/60 hover:border-cyan-500/60">
                             <input
                               type="checkbox"
                               checked={newQuizSectionIds.includes(s.id)}
@@ -3918,10 +4617,15 @@ export default function TeacherPage() {
                                 );
                               }}
                               className="h-4 w-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500"
-                            />
-                            <span className="truncate">{s.name}</span>
-                          </label>
-                        ))}
+	                            />
+	                            <span className="truncate">
+	                              {s.name}
+	                              {s.joinCode ? (
+	                                <span className="ml-2 text-slate-500 font-mono">{s.joinCode}</span>
+	                              ) : null}
+	                            </span>
+	                          </label>
+	                        ))}
                       </div>
                     </div>
                     <div className="mt-2 text-xs text-slate-500">
@@ -4072,29 +4776,77 @@ export default function TeacherPage() {
               </div>
             )}
 
-            {quizzesLoading ? (
-              <p className="text-slate-400 text-center py-8">Loading quizzes...</p>
-            ) : quizzes.length === 0 && !pendingQuizDraft ? (
-              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
-                No quizzes yet. Create a quiz, then add questions to it.
-              </div>
-            ) : (
+	            {quizzesLoading ? (
+	              <p className="text-slate-400 text-center py-8">Loading quizzes...</p>
+	            ) : teacherCreatedQuizzes.length === 0 && !pendingQuizDraft ? (
+	              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
+	                No quizzes yet. Create a quiz, then add questions to it.
+	              </div>
+	            ) : (
               <div className="space-y-6">
                 {pendingQuizDraft && (
                   <div className="rounded-2xl bg-amber-500/10 border border-amber-500/30 p-4 text-amber-200 text-sm">
                     Draft quiz in progress. If you closed the modal, click &quot;Add Questions&quot; to continue creating questions. Click &quot;Save All&quot; to create and assign this quiz to all selected sections.
                   </div>
                 )}
-                <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
-                  <h3 className="text-lg font-semibold text-cyan-300 mb-4">Your quizzes</h3>
-                  <ul className="space-y-2">
-                    {(() => {
-                      const totalPages = Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE));
-                      const currentPage = Math.min(quizzesPage, totalPages);
-                      const start = (currentPage - 1) * QUIZ_PAGE_SIZE;
-                      const end = start + QUIZ_PAGE_SIZE;
-                      const pageQuizzes = quizzes.slice(start, end);
-                      return pageQuizzes.map((quiz) => (
+	                <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6">
+	                  <h3 className="text-lg font-semibold text-cyan-300 mb-4">Your quizzes</h3>
+	                  <div className="flex flex-wrap items-center gap-2 mb-4">
+	                    {/* <select
+	                      value={quizListSubjectFilter}
+	                      onChange={(e) => {
+	                        setQuizListSubjectFilter(e.target.value);
+	                        setQuizListPeriodFilter("");
+	                      }}
+	                      className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm"
+	                    >
+	                      <option value="">All subjects</option>
+	                      {subjects.map((s) => (
+	                        <option key={s.id} value={s.id}>
+	                          {s.name}
+	                        </option>
+	                      ))}
+	                    </select> */}
+	                    <select
+	                      value={quizListPeriodFilter}
+	                      onChange={(e) => setQuizListPeriodFilter(e.target.value)}
+	                      className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 text-sm"
+	                    >
+	                      <option value="">All periods</option>
+	                      {quizListPeriods.map((p) => (
+	                        <option key={p} value={p}>
+	                          {p}
+	                        </option>
+	                      ))}
+	                    </select>
+	                    {(quizListSubjectFilter || quizListPeriodFilter) && (
+	                      <button
+	                        type="button"
+	                        onClick={() => {
+	                          setQuizListSubjectFilter("");
+	                          setQuizListPeriodFilter("");
+	                        }}
+	                        className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 text-sm"
+	                      >
+	                        Clear filters
+	                      </button>
+	                    )}
+		                    <span className="text-xs text-slate-400 ml-auto">
+		                      Showing {quizListFilteredQuizzes.length} of {teacherCreatedQuizzes.length}
+		                    </span>
+	                  </div>
+		                  <ul className="space-y-2">
+		                    {quizListFilteredQuizzes.length === 0 ? (
+		                      <li className="rounded-xl bg-slate-900/40 border border-slate-700/50 p-4 text-slate-400 text-sm">
+		                        No quizzes match the selected filters.
+		                      </li>
+		                    ) : (() => {
+		                      const totalPages = Math.max(1, Math.ceil(quizListFilteredQuizzes.length / QUIZ_PAGE_SIZE));
+		                      const currentPage = Math.min(quizzesPage, totalPages);
+		                      const start = (currentPage - 1) * QUIZ_PAGE_SIZE;
+		                      const end = start + QUIZ_PAGE_SIZE;
+		                      const pageQuizzes = quizListFilteredQuizzes.slice(start, end);
+		                      return pageQuizzes.map((quiz) => (
                       <li
                         key={quiz.id}
                         className={`flex flex-wrap items-center justify-between gap-4 p-3 rounded-lg transition-colors ${selectedQuizId === quiz.id ? "bg-cyan-600/30 border border-cyan-500/50" : "bg-slate-700/50 hover:bg-slate-700"}`}
@@ -4454,15 +5206,15 @@ export default function TeacherPage() {
                           </div>
                         )}
                       </li>
-                    ));
-                    })()}
-                  </ul>
-                  {quizzes.length > QUIZ_PAGE_SIZE && (
-                    <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
-                      <span>
-                        Page {quizzesPage} of {Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE))}
-                      </span>
-                      <div className="flex items-center gap-2">
+	                    ));
+		                    })()}
+		                  </ul>
+	                  {quizListFilteredQuizzes.length > QUIZ_PAGE_SIZE && (
+	                    <div className="mt-3 flex items-center justify-between text-xs text-slate-400">
+	                      <span>
+	                        Page {quizzesPage} of {Math.max(1, Math.ceil(quizListFilteredQuizzes.length / QUIZ_PAGE_SIZE))}
+	                      </span>
+	                      <div className="flex items-center gap-2">
                         <button
                           type="button"
                           onClick={() => setQuizzesPage((p) => Math.max(1, p - 1))}
@@ -4473,14 +5225,14 @@ export default function TeacherPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={() =>
-                            setQuizzesPage((p) =>
-                              Math.min(Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE)), p + 1)
-                            )
-                          }
-                          disabled={quizzesPage >= Math.max(1, Math.ceil(quizzes.length / QUIZ_PAGE_SIZE))}
-                          className="px-2 py-1 rounded border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700"
-                        >
+	                          onClick={() =>
+	                            setQuizzesPage((p) =>
+	                              Math.min(Math.max(1, Math.ceil(quizListFilteredQuizzes.length / QUIZ_PAGE_SIZE)), p + 1)
+	                            )
+	                          }
+	                          disabled={quizzesPage >= Math.max(1, Math.ceil(quizListFilteredQuizzes.length / QUIZ_PAGE_SIZE))}
+	                          className="px-2 py-1 rounded border border-slate-600 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed bg-slate-800 hover:bg-slate-700"
+	                        >
                           Next
                         </button>
                       </div>
@@ -4500,6 +5252,270 @@ export default function TeacherPage() {
           </>
         )}
       </div>
+      {genPreviewOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-5xl rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between gap-3 p-5 border-b border-slate-700">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-cyan-300 truncate">Generated Questions Preview</h2>
+                <p className="text-slate-400 text-sm mt-1">
+                  Edit, remove, or add more questions. Click Upload when ready.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setGenPreviewOpen(false);
+                  setGenUploadError(null);
+                }}
+                className="px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-5 max-h-[75vh] overflow-auto">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div className="text-sm text-slate-300">
+                  Total: <span className="font-semibold text-slate-100">{genDraftQuestions.length}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setGenDraftQuestions((prev) => [
+                      ...prev,
+                      {
+                        clientId: makeClientId(),
+                        question: "",
+                        quizType: "multiple_choice",
+                        options: ["", ""],
+                        answerkey: "",
+                        score: 1,
+                      },
+                    ])
+                  }
+                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm"
+                >
+                  Add Question
+                </button>
+              </div>
+
+              {genUploadError && (
+                <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+                  {genUploadError}
+                </div>
+              )}
+
+              <div className="space-y-4">
+                {genDraftQuestions.map((q, idx) => {
+                  const isMc = q.quizType === "multiple_choice";
+                  const opts = isMc ? q.options : [];
+                  return (
+                    <div key={q.clientId} className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                        <p className="text-slate-200 font-semibold">#{idx + 1}</p>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setGenDraftQuestions((prev) => prev.filter((x) => x.clientId !== q.clientId))}
+                            className="px-3 py-1.5 rounded-lg bg-rose-600/20 border border-rose-500/40 text-rose-200 hover:bg-rose-600/30 text-xs"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+                        <div className="lg:col-span-2">
+                          <label className="block text-slate-400 text-sm mb-1">Question</label>
+                          <textarea
+                            value={q.question}
+                            onChange={(e) =>
+                              setGenDraftQuestions((prev) =>
+                                prev.map((x) => (x.clientId === q.clientId ? { ...x, question: e.target.value } : x))
+                              )
+                            }
+                            rows={3}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-slate-400 text-sm mb-1">Type</label>
+                          <select
+                            value={q.quizType}
+                            onChange={(e) => {
+                              const val = e.target.value as GeneratedDraftQuestion["quizType"];
+                              setGenDraftQuestions((prev) =>
+                                prev.map((x) => {
+                                  if (x.clientId !== q.clientId) return x;
+                                  if (val === "multiple_choice") {
+                                    const current = x.options?.length ? x.options : ["", ""];
+                                    return { ...x, quizType: val, options: current.slice(0, Math.max(2, current.length)) };
+                                  }
+                                  return { ...x, quizType: val, options: [], answerkey: x.answerkey ?? "" };
+                                })
+                              );
+                            }}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                          >
+                            <option value="multiple_choice">Multiple Choice</option>
+                            <option value="identification">Identification</option>
+                            <option value="enumeration">Enumeration</option>
+                          </select>
+
+                          <label className="block text-slate-400 text-sm mb-1 mt-3">Score</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={q.score}
+                            onChange={(e) => {
+                              const n = Math.max(1, Math.trunc(Number(e.target.value) || 1));
+                              setGenDraftQuestions((prev) => prev.map((x) => (x.clientId === q.clientId ? { ...x, score: n } : x)));
+                            }}
+                            className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                          />
+                        </div>
+                      </div>
+
+                      {isMc && (
+                        <div className="mt-4">
+                          <div className="flex items-center justify-between gap-3 mb-2">
+                            <label className="text-slate-400 text-sm">Options</label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setGenDraftQuestions((prev) =>
+                                  prev.map((x) => (x.clientId === q.clientId ? { ...x, options: [...(x.options ?? []), ""] } : x))
+                                )
+                              }
+                              className="px-3 py-1.5 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 text-xs"
+                            >
+                              Add option
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {opts.map((opt, optIdx) => (
+                              <div key={`${q.clientId}:${optIdx}`} className="flex gap-2">
+                                <input
+                                  value={opt}
+                                  onChange={(e) => {
+                                    const v = e.target.value;
+                                    setGenDraftQuestions((prev) =>
+                                      prev.map((x) => {
+                                        if (x.clientId !== q.clientId) return x;
+                                        const next = [...(x.options ?? [])];
+                                        next[optIdx] = v;
+                                        return { ...x, options: next };
+                                      })
+                                    );
+                                  }}
+                                  className="flex-1 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setGenDraftQuestions((prev) =>
+                                      prev.map((x) => {
+                                        if (x.clientId !== q.clientId) return x;
+                                        const next = [...(x.options ?? [])].filter((_, i) => i !== optIdx);
+                                        const answer = x.answerkey;
+                                        const nextAnswer = next.includes(answer) ? answer : "";
+                                        return { ...x, options: next, answerkey: nextAnswer };
+                                      })
+                                    )
+                                  }
+                                  className="px-3 py-2 rounded-lg bg-rose-600/20 border border-rose-500/40 text-rose-200 hover:bg-rose-600/30 text-xs"
+                                >
+                                  X
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div className="mt-3">
+                            <label className="block text-slate-400 text-sm mb-1">Answer key</label>
+                            <select
+                              value={q.answerkey}
+                              onChange={(e) =>
+                                setGenDraftQuestions((prev) =>
+                                  prev.map((x) => (x.clientId === q.clientId ? { ...x, answerkey: e.target.value } : x))
+                                )
+                              }
+                              className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                            >
+                              <option value="">Select answer</option>
+                              {opts.map((o, i) => {
+                                const v = String(o ?? "").trim();
+                                if (!v) return null;
+                                return (
+                                  <option key={`${q.clientId}:ak:${i}`} value={v}>
+                                    {v}
+                                  </option>
+                                );
+                              })}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+
+                      {!isMc && (
+                        <div className="mt-4">
+                          <label className="block text-slate-400 text-sm mb-1">Answer key</label>
+                          <input
+                            value={q.answerkey}
+                            onChange={(e) =>
+                              setGenDraftQuestions((prev) =>
+                                prev.map((x) => (x.clientId === q.clientId ? { ...x, answerkey: e.target.value } : x))
+                              )
+                            }
+                            className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                          />
+                          {q.quizType === "enumeration" && (
+                            <p className="text-slate-500 text-xs mt-1">Tip: separate items with commas or new lines.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="p-5 border-t border-slate-700 bg-slate-900/60 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-slate-400">
+                Upload to:{" "}
+	                <span className="text-slate-200 font-medium">
+	                  {(subjects.find((s) => s.id === genSubjectId)?.name ?? genSubjectId) || "—"}
+	                </span>
+                {" • "}
+	                <span className="text-slate-200 font-medium">
+	                  {(sections.find((s) => s.id === genSectionId)?.name ?? genSectionId) || "—"}
+	                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setGenPreviewOpen(false);
+                    setGenUploadError(null);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleUploadGeneratedQuiz}
+                  disabled={genUploadLoading}
+                  className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
+                >
+                  {genUploadLoading ? "Uploading..." : "Upload & Create Quiz"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       {answerModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-2xl rounded-2xl bg-slate-900 border border-slate-700 p-6 shadow-2xl">

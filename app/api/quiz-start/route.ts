@@ -1,5 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "../../lib/supabase-server";
+import { getStudentSession } from "../../lib/student-auth";
+
+function sanitizeStudentId(value: string): string {
+  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
+}
+
+function normalizeStudentNameKey(value: string): string {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 function getSubmissionCloseReason(quizSettings: Record<string, unknown>): string | null {
   const submissionsOpen = (quizSettings.submissions_open as boolean | null | undefined) !== false;
@@ -14,8 +27,30 @@ function getSubmissionCloseReason(quizSettings: Record<string, unknown>): string
   return null;
 }
 
+async function isSubjectArchived(subjectId: string): Promise<boolean> {
+  const supabase = getSupabase();
+  const res = await supabase.from("subjecttbl").select("archived").eq("id", subjectId).maybeSingle();
+  const msg = (res.error as { message?: string } | null)?.message ?? "";
+  if (msg && msg.toLowerCase().includes("archived")) return false;
+  return Boolean((res.data as { archived?: boolean } | null)?.archived);
+}
+
+async function getSubjectSemester(subjectId: string): Promise<string | null> {
+  const supabase = getSupabase();
+  const res = await supabase.from("subjecttbl").select("semester").eq("id", subjectId).maybeSingle();
+  const msg = (res.error as { message?: string } | null)?.message ?? "";
+  if (msg && msg.toLowerCase().includes("semester")) return null;
+  const sem = (res.data as { semester?: unknown } | null)?.semester;
+  return typeof sem === "string" && sem.trim() ? sem.trim() : null;
+}
+
 export async function POST(request: NextRequest) {
   try {
+    const studentSession = await getStudentSession();
+    if (!studentSession) {
+      return NextResponse.json({ error: "Please log in as a student to start this quiz." }, { status: 401 });
+    }
+
     const body = await request.json() as {
       quizId?: string | number;
       studentName?: string;
@@ -24,7 +59,8 @@ export async function POST(request: NextRequest) {
 
     const quizId = body.quizId !== undefined && body.quizId !== null ? String(body.quizId).trim() : "";
     const studentName = body.studentName?.trim() ?? "";
-    const studentId = body.studentId?.trim() ?? "";
+    const studentId = sanitizeStudentId(body.studentId?.trim() ?? "");
+    const studentNameKey = normalizeStudentNameKey(studentName);
 
     if (!quizId || !studentName || !studentId) {
       return NextResponse.json({ error: "quizId, studentName, and studentId required" }, { status: 400 });
@@ -34,7 +70,7 @@ export async function POST(request: NextRequest) {
 
   let { data: quizSettings, error: quizError } = await supabase
     .from("quiztbl")
-    .select("time_limit_minutes, allow_retake, max_attempts, source_quiz_id, submission_deadline, submissions_open")
+    .select("subjectid, subject_semester, time_limit_minutes, allow_retake, max_attempts, source_quiz_id, submission_deadline, submissions_open")
     .eq("id", quizId)
     .maybeSingle();
   if (
@@ -58,6 +94,20 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });
     }
     if (!quizSettings) return NextResponse.json({ error: "Quiz not found" }, { status: 404 });
+
+    const subjectId = String((quizSettings as { subjectid?: unknown }).subjectid ?? "").trim();
+    if (subjectId) {
+      const archived = await isSubjectArchived(subjectId);
+      if (archived) return NextResponse.json({ error: "Subject archived" }, { status: 403 });
+
+      const currentSem = await getSubjectSemester(subjectId);
+      if (currentSem) {
+        const quizSem = String((quizSettings as { subject_semester?: unknown }).subject_semester ?? "").trim() || null;
+        if (quizSem && quizSem !== currentSem) {
+          return NextResponse.json({ error: "Quiz is from a previous semester" }, { status: 403 });
+        }
+      }
+    }
     const closeReason = getSubmissionCloseReason(quizSettings as Record<string, unknown>);
     if (closeReason) return NextResponse.json({ error: closeReason }, { status: 403 });
 
@@ -87,28 +137,83 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  const sourceQuizId = (quizSettings as { source_quiz_id?: string | null }).source_quiz_id ?? quizId;
-  const { data: relatedQuizzes } = await supabase
-    .from("quiztbl")
-    .select("id")
-    .or(`id.eq.${sourceQuizId},source_quiz_id.eq.${sourceQuizId}`);
-  const quizIds = (relatedQuizzes ?? []).map((q) => (q as { id: string }).id);
+	  const sourceQuizId = (quizSettings as { source_quiz_id?: string | null }).source_quiz_id ?? quizId;
+	  const { data: relatedQuizzes } = await supabase
+	    .from("quiztbl")
+	    .select("id")
+	    .or(`id.eq.${sourceQuizId},source_quiz_id.eq.${sourceQuizId}`);
+	  const quizIds = (relatedQuizzes ?? []).map((q) => (q as { id: string }).id);
 
-  let { data: existingOpen, error: existingOpenError } = await supabase
-    .from("student_attempts_log")
-    .select("id, attempt_number, started_at, quizid")
-    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
-    .eq("student_id", studentId)
-    .eq("is_submitted", false)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    // Prevent retake/duplicate attempts by changing student ID while keeping the same name.
+    // If this name has already been used with a different ID for this quiz (or related clones),
+    // reject the attempt start.
+    if (studentNameKey) {
+      const idsToCheck = quizIds.length > 0 ? quizIds : [quizId];
+      let { data: nameRows, error: nameErr } = await supabase
+        .from("student_attempts_log")
+        .select("studentname, student_id, quizid")
+        .in("quizid", idsToCheck)
+        .limit(5000);
+      if (nameErr?.message && nameErr.message.toLowerCase().includes("student_attempts_log")) {
+        const fallback = await supabase
+          .from("student_attempts")
+          .select("studentname, student_id, quizid")
+          .in("quizid", idsToCheck)
+          .limit(5000);
+        nameRows = fallback.data as typeof nameRows;
+        nameErr = fallback.error as typeof nameErr;
+      }
+      if (nameErr) {
+        return NextResponse.json({ error: nameErr.message }, { status: 500 });
+      }
+      const conflict = (nameRows ?? []).some((r) => {
+        const n = normalizeStudentNameKey(String((r as { studentname?: string }).studentname ?? ""));
+        if (!n || n !== studentNameKey) return false;
+        const existingId = sanitizeStudentId(String((r as { student_id?: string }).student_id ?? ""));
+        return existingId && existingId !== studentId;
+      });
+      if (conflict) {
+        return NextResponse.json(
+          { error: "This student name is already registered for this quiz with a different Student ID. Please use your original Student ID." },
+          { status: 403 }
+        );
+      }
+    }
+
+	  const existingOpenRes = await supabase
+	    .from("student_attempts_log")
+	    .select("id, attempt_number, started_at, quizid")
+	    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
+	    .eq("student_id", studentId)
+	    .eq("is_submitted", false)
+	    .order("created_at", { ascending: false })
+	    .limit(1)
+	    .maybeSingle();
+
+	  let existingOpen = (existingOpenRes.data ?? null) as
+	    | { id?: string; attempt_number?: number; started_at?: string; quizid?: string | null }
+	    | null;
+	  const existingOpenError = existingOpenRes.error as { message?: string } | null;
 
   if (existingOpenError?.message && existingOpenError.message.toLowerCase().includes("student_attempts_log")) {
     existingOpen = null;
   }
 
   if (existingOpen) {
+    const countResult = await supabase
+      .from("student_attempts_log")
+      .select("*", { count: "exact" })
+      .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
+      .eq("student_id", studentId)
+      .eq("is_submitted", true);
+    const countErr = (countResult.error as { message?: string } | null)?.message ?? "";
+    const attemptsUsed =
+      countErr && countErr.toLowerCase().includes("student_attempts_log")
+        ? null
+        : (countResult.count ?? 0);
+    const attemptsRemaining =
+      typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
+
     let timeLimitMinutes = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;
     if (!timeLimitMinutes && existingOpen.quizid && existingOpen.quizid !== quizId) {
       const { data: attemptQuiz } = await supabase
@@ -118,15 +223,24 @@ export async function POST(request: NextRequest) {
         .maybeSingle();
       timeLimitMinutes = (attemptQuiz as { time_limit_minutes?: number | null })?.time_limit_minutes ?? null;
     }
-    const expiresAt = timeLimitMinutes
-      ? new Date(new Date(existingOpen.started_at).getTime() + timeLimitMinutes * 60 * 1000).toISOString()
-      : null;
+	    const startedAt = existingOpen.started_at ? new Date(existingOpen.started_at) : null;
+	    const expiresAt =
+	      timeLimitMinutes && startedAt && !Number.isNaN(startedAt.getTime())
+	        ? new Date(startedAt.getTime() + timeLimitMinutes * 60 * 1000).toISOString()
+	        : null;
+    const expectedAttemptNumber =
+      typeof attemptsUsed === "number" ? Math.max(1, attemptsUsed + 1) : null;
+    const attemptNumberOut =
+      expectedAttemptNumber ?? (existingOpen.attempt_number ?? 1);
+
     return NextResponse.json({
       attemptId: existingOpen.id,
-      attemptNumber: existingOpen.attempt_number,
+      attemptNumber: attemptNumberOut,
       expiresAt,
       maxAttempts,
       allowRetake,
+      attemptsUsed,
+      attemptsRemaining,
     });
   }
 
@@ -191,6 +305,8 @@ export async function POST(request: NextRequest) {
     expiresAt,
     maxAttempts,
     allowRetake,
+    attemptsUsed: attemptCount,
+    attemptsRemaining: Math.max(0, maxAttempts - attemptCount),
   });
   } catch {
     return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });

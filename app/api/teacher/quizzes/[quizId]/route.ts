@@ -9,6 +9,30 @@ function normalizeAssessmentType(value: unknown): AssessmentType {
   return raw === "exam" || raw === "examination" ? "exam" : "quiz";
 }
 
+function parseOptionalInt(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+  return null;
+}
+
+function normalizePeriod(value: unknown): string | number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const asInt = parseOptionalInt(trimmed);
+    return asInt === null ? trimmed : asInt;
+  }
+  return null;
+}
+
 function parseDeadline(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -58,7 +82,7 @@ export async function PUT(
 
   if (typeof body.subjectId === "string" && body.subjectId.trim()) update.subjectid = body.subjectId.trim();
   if (typeof body.sectionId === "string" && body.sectionId.trim()) update.sectionid = body.sectionId.trim();
-  if (typeof body.period === "string") update.period = body.period.trim();
+  if (body.period !== undefined) update.period = normalizePeriod(body.period);
   if (typeof body.quizname === "string") update.quizname = body.quizname.trim();
   if (typeof body.assessmentType === "string") {
     update.assessment_type = normalizeAssessmentType(body.assessmentType);
@@ -80,13 +104,11 @@ export async function PUT(
   }
 
   if (body.timeLimitMinutes !== undefined) {
-    const t = body.timeLimitMinutes;
-    update.time_limit_minutes = t === null ? null : Number.isFinite(t) ? t : null;
+    update.time_limit_minutes = parseOptionalInt(body.timeLimitMinutes);
   }
   if (body.allowRetake !== undefined) update.allow_retake = Boolean(body.allowRetake);
   if (body.maxAttempts !== undefined) {
-    const m = body.maxAttempts;
-    update.max_attempts = m === null ? null : Number.isFinite(m) ? m : null;
+    update.max_attempts = parseOptionalInt(body.maxAttempts);
   }
   if (body.saveBestOnly !== undefined) update.save_best_only = Boolean(body.saveBestOnly);
   if (body.submissionDeadline !== undefined) {
@@ -164,7 +186,9 @@ export async function POST(
     const sectionId = body.sectionId !== undefined && body.sectionId !== null ? String(body.sectionId).trim() : "";
     if (!sectionId) return NextResponse.json({ error: "sectionId required" }, { status: 400 });
 
-    const period = (body.period ?? "").toString().trim();
+    const basePeriod = normalizePeriod((quizRow as { period?: unknown }).period);
+    const providedPeriod = normalizePeriod(body.period);
+    const period = providedPeriod === null ? basePeriod : providedPeriod;
     const baseQuizname = (quizRow as { quizname?: string | null }).quizname ?? "";
     const quizname = (body.quizname ?? baseQuizname).toString().trim();
 
@@ -187,14 +211,16 @@ export async function POST(
     const insertRow: Record<string, unknown> = {
       teacherid: (quizRow as { teacherid: string }).teacherid,
       subjectid: (quizRow as { subjectid: string }).subjectid,
+      subject_semester: (quizRow as { subject_semester?: unknown }).subject_semester ?? null,
+      subject_year_level: (quizRow as { subject_year_level?: unknown }).subject_year_level ?? null,
       sectionid: sectionId,
       period,
       quizname,
       assessment_type: normalizeAssessmentType((quizRow as { assessment_type?: string | null }).assessment_type),
       quizcode,
-      time_limit_minutes: (quizRow as { time_limit_minutes?: number | null }).time_limit_minutes ?? null,
+      time_limit_minutes: parseOptionalInt((quizRow as { time_limit_minutes?: unknown }).time_limit_minutes),
       allow_retake: Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake),
-      max_attempts: (quizRow as { max_attempts?: number | null }).max_attempts ?? 1,
+      max_attempts: parseOptionalInt((quizRow as { max_attempts?: unknown }).max_attempts) ?? 1,
       save_best_only: (quizRow as { save_best_only?: boolean | null }).save_best_only !== false,
       submission_deadline: (quizRow as { submission_deadline?: string | null }).submission_deadline ?? null,
       submissions_open: (quizRow as { submissions_open?: boolean | null }).submissions_open !== false,
@@ -210,11 +236,15 @@ export async function POST(
       insertRes.error?.message &&
       (insertRes.error.message.toLowerCase().includes("assessment_type") ||
         insertRes.error.message.toLowerCase().includes("submission_deadline") ||
-        insertRes.error.message.toLowerCase().includes("submissions_open"))
+        insertRes.error.message.toLowerCase().includes("submissions_open") ||
+        insertRes.error.message.toLowerCase().includes("subject_semester") ||
+        insertRes.error.message.toLowerCase().includes("subject_year_level"))
     ) {
       delete insertRow.assessment_type;
       delete insertRow.submission_deadline;
       delete insertRow.submissions_open;
+      delete insertRow.subject_semester;
+      delete insertRow.subject_year_level;
       insertRes = await supabase
         .from("quiztbl")
         .insert(insertRow)
