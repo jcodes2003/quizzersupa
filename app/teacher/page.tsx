@@ -3861,61 +3861,62 @@ export default function TeacherPage() {
                 </p>
               </div>
             ) : (
-              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
+              <div className="rounded-2xl border border-slate-600/50 bg-slate-800/60 overflow-hidden shadow-2xl">
                 <div className="overflow-x-auto w-full">
-                  <table className="w-full min-w-[640px] text-left">
+                  <table className="w-full min-w-[860px] text-left">
                     <thead>
-                      <tr className="border-b border-slate-600 bg-slate-700/50">
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Student ID</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Student Name</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Score</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Attempt</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Submission</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Section</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Subject</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Answers</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold">Created</th>
+                      <tr className="border-b border-slate-700 bg-slate-900/40">
+                        <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 md:table-cell">Student ID</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Student</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Score</th>
+                        <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 lg:table-cell">Attempt</th>
+                        <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 xl:table-cell">Submission</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Section</th>
+                        <th className="hidden px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 lg:table-cell">Subject</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400">Answers</th>
                       </tr>
                     </thead>
                     <tbody>
                       {pagedResponsesRows.map((r) => (
-                        <tr key={r.id} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                          <td className="px-4 py-3 text-slate-200">{sanitizeStudentId(r.student_id) || "?"}</td>
-                          <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "?"}</td>
+                        <tr key={r.id} className="border-b border-slate-800/60 align-top transition-colors hover:bg-slate-700/20">
+                          <td className="hidden px-4 py-4 text-slate-200 md:table-cell">{sanitizeStudentId(r.student_id) || "?"}</td>
+                          <td className="px-4 py-4 text-slate-200">
+                            <div className="min-w-[180px]">
+                              <p className="font-semibold text-slate-100">{formatNameLastFirst(r.studentname) || "?"}</p>
+                              <p className="mt-1 text-xs font-mono text-cyan-200 md:hidden">{sanitizeStudentId(r.student_id) || "?"}</p>
+                            </div>
+                          </td>
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
-                          <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
-                          <td className="px-4 py-3 text-slate-300">{formatSubmissionSource(r.submission_source)}</td>
-	                          <td className="px-4 py-3 text-slate-300">
+                          <td className="hidden px-4 py-4 text-slate-300 lg:table-cell">{r.attempt_number ?? "-"}</td>
+                          <td className="hidden px-4 py-4 text-slate-300 xl:table-cell">{formatSubmissionSource(r.submission_source)}</td>
+	                          <td className="px-4 py-4 text-slate-300">
 	                            <div className="flex flex-col items-start gap-2">
 	                              <span>{r.sectionname || r.section || getSectionName(r.sectionid)}</span>
 	                              <button
 	                                type="button"
 	                                onClick={() => handleEditResponseSection(r)}
 	                                disabled={savingAttemptId === r.id}
-	                                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
+	                                className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-600 disabled:opacity-50"
 	                              >
 	                                {savingAttemptId === r.id ? "Saving..." : "Edit Section"}
 	                              </button>
 	                            </div>
 	                          </td>
-                          <td className="px-4 py-3 text-slate-300">
+                          <td className="hidden px-4 py-4 text-slate-300 lg:table-cell">
                             {r.subjectname || r.subject || getSubjectName(r.subjectid)}
                           </td>
-                          <td className="px-4 py-3 text-slate-300">
+                          <td className="px-4 py-4 text-slate-300">
                             {r.answers ? (
                               <button
                                 type="button"
                                 onClick={() => setAnswerModal(r)}
-                                className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
+                                className="rounded-xl bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-600"
                               >
-                                View
+                                View Answers
                               </button>
                             ) : (
                               "-"
                             )}
-                          </td>
-                          <td className="px-4 py-3 text-slate-400 text-sm">
-                            {r.created_at ? new Date(r.created_at).toLocaleString() : "—"}
                           </td>
                         </tr>
                       ))}
@@ -4219,36 +4220,36 @@ export default function TeacherPage() {
                 </p>
               </div>
             ) : (
-              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 overflow-hidden shadow-2xl">
+              <div className="rounded-2xl border border-slate-600/50 bg-slate-800/60 overflow-hidden shadow-2xl">
                 <div className="overflow-x-auto w-full">
-                  <table className="w-full min-w-[640px] text-left">
+                  <table className="w-full min-w-[900px] text-left">
                     <thead>
-                      <tr className="border-b border-slate-600 bg-slate-700/50">
-                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Student ID</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Student Name</th>
+                      <tr className="border-b border-slate-700 bg-slate-900/40">
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Student ID</th>
+                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Student Name</th>
                         {!reportFilterSection && (
-                          <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Section</th>
+                          <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Section</th>
                         )}
                         {!reportFilterSubject && (
-                          <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Subject</th>
+                          <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Subject</th>
                         )}
 	                        {displayQuizColumns.map((q) => (
-	                          <th key={q.quizid} className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">
+		                          <th key={q.quizid} className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">
 	                            {q.quizname || q.quizcode}
                             <span className="ml-2 inline-flex rounded-full border border-slate-500/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
                               {formatAssessmentTypeLabel(q.assessment_type)}
                             </span>
                           </th>
                         ))}
-                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Quiz Avg %</th>
-                        <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Exam Avg %</th>
-                        <th className="px-4 py-3 text-cyan-200 font-semibold whitespace-nowrap">Final Grade %</th>
+	                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Quiz Avg %</th>
+	                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Exam Avg %</th>
+	                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-cyan-200 whitespace-nowrap">Final Grade %</th>
                       </tr>
                     </thead>
                     <tbody>
 		                      {pagedReportRows.map((r) => (
-		                        <tr key={getCurrentReportStudentKey(r)} className="border-b border-slate-700/50 hover:bg-slate-700/30">
-                          <td className="px-4 py-3 text-slate-200 font-mono">{r.student_id}</td>
+		                        <tr key={getCurrentReportStudentKey(r)} className="border-b border-slate-800/60 align-top hover:bg-slate-700/20">
+                          <td className="px-4 py-4 text-slate-200 font-mono">{r.student_id}</td>
                           <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
                           {!reportFilterSection && <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>}
                           {!reportFilterSubject && <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>}
