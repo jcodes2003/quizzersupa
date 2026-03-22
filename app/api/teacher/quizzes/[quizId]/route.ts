@@ -41,6 +41,26 @@ function parseDeadline(value: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+function normalizeQuizName(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+async function isTeacherQuizNameTaken(teacherId: string, quizName: string, excludeQuizId?: string): Promise<boolean> {
+  const normalized = normalizeQuizName(quizName);
+  if (!normalized) return false;
+  const supabase = getSupabase();
+  const res = await supabase.from("quiztbl").select("id, quizname").eq("teacherid", teacherId);
+  if (res.error) throw res.error;
+  return ((res.data ?? []) as Array<{ id?: string | null; quizname?: string | null }>).some((row) => {
+    const rowId = String(row.id ?? "").trim();
+    if (excludeQuizId && rowId === excludeQuizId) return false;
+    return normalizeQuizName(row.quizname) === normalized;
+  });
+}
+
 async function ensureQuizBelongsToTeacher(quizId: string, teacherId: string): Promise<boolean> {
   const supabase = getSupabase();
   const { data } = await supabase
@@ -83,7 +103,16 @@ export async function PUT(
   if (typeof body.subjectId === "string" && body.subjectId.trim()) update.subjectid = body.subjectId.trim();
   if (typeof body.sectionId === "string" && body.sectionId.trim()) update.sectionid = body.sectionId.trim();
   if (body.period !== undefined) update.period = normalizePeriod(body.period);
-  if (typeof body.quizname === "string") update.quizname = body.quizname.trim();
+  if (typeof body.quizname === "string") {
+    const nextQuizName = body.quizname.trim();
+    if (!nextQuizName) {
+      return NextResponse.json({ error: "Quiz name required" }, { status: 400 });
+    }
+    if (await isTeacherQuizNameTaken(teacherId, nextQuizName, quizId)) {
+      return NextResponse.json({ error: "Quiz name already taken. Please rename the quiz." }, { status: 409 });
+    }
+    update.quizname = nextQuizName;
+  }
   if (typeof body.assessmentType === "string") {
     update.assessment_type = normalizeAssessmentType(body.assessmentType);
   }
@@ -191,6 +220,12 @@ export async function POST(
     const period = providedPeriod === null ? basePeriod : providedPeriod;
     const baseQuizname = (quizRow as { quizname?: string | null }).quizname ?? "";
     const quizname = (body.quizname ?? baseQuizname).toString().trim();
+    if (!quizname) {
+      return NextResponse.json({ error: "Quiz name required" }, { status: 400 });
+    }
+    if (await isTeacherQuizNameTaken(teacherId, quizname, quizId)) {
+      return NextResponse.json({ error: "Quiz name already taken. Please rename the quiz." }, { status: 409 });
+    }
 
     // Create new quiz code
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

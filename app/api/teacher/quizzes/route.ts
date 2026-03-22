@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getTeacherId } from "../../../lib/teacher-db-auth";
+import { noStoreJson } from "../../../lib/no-store";
 import { getSupabase } from "../../../lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type AssessmentType = "quiz" | "exam";
 
@@ -41,9 +45,29 @@ function parseDeadline(value: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+function normalizeQuizName(value: unknown): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+async function isTeacherQuizNameTaken(teacherId: string, quizName: string, excludeQuizId?: string): Promise<boolean> {
+  const normalized = normalizeQuizName(quizName);
+  if (!normalized) return false;
+  const supabase = getSupabase();
+  const res = await supabase.from("quiztbl").select("id, quizname").eq("teacherid", teacherId);
+  if (res.error) throw res.error;
+  return ((res.data ?? []) as Array<{ id?: string | null; quizname?: string | null }>).some((row) => {
+    const rowId = String(row.id ?? "").trim();
+    if (excludeQuizId && rowId === excludeQuizId) return false;
+    return normalizeQuizName(row.quizname) === normalized;
+  });
+}
+
 export async function GET() {
   const teacherId = await getTeacherId();
-  if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!teacherId) return noStoreJson({ error: "Unauthorized" }, { status: 401 });
   const supabase = getSupabase();
   let data: Record<string, unknown>[] | null = null;
   let error: { message: string } | null = null;
@@ -72,13 +96,13 @@ export async function GET() {
     error = (minimal.error ?? null) as { message: string } | null;
   }
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return noStoreJson({ error: error.message }, { status: 500 });
 
   const rows = (data ?? []).map((q) => ({
     ...q,
     assessment_type: normalizeAssessmentType((q as { assessment_type?: unknown }).assessment_type),
   }));
-  return NextResponse.json(rows);
+  return noStoreJson(rows);
 }
 
 function generateQuizCode(): string {
@@ -123,7 +147,14 @@ export async function POST(request: NextRequest) {
   if (!subjectIdStr || !sectionIdStr) {
     return NextResponse.json({ error: "subjectId and sectionId required" }, { status: 400 });
   }
+  const quizNameTrimmed = String(quizname ?? "").trim();
+  if (!quizNameTrimmed) {
+    return NextResponse.json({ error: "Quiz name required" }, { status: 400 });
+  }
   const supabase = getSupabase();
+  if (await isTeacherQuizNameTaken(teacherId, quizNameTrimmed)) {
+    return NextResponse.json({ error: "Quiz name already taken. Please rename the quiz." }, { status: 409 });
+  }
 
   let subjectSemester: string | null = null;
   let subjectYearLevel: number | null = null;
@@ -155,7 +186,7 @@ export async function POST(request: NextRequest) {
     quizcode,
     sectionid: sectionIdStr,
     period: normalizePeriod(period),
-    quizname: (quizname ?? "").toString().trim(),
+    quizname: quizNameTrimmed,
     assessment_type: normalizeAssessmentType(assessmentType),
     time_limit_minutes: parseOptionalInt(timeLimitMinutes),
     allow_retake: Boolean(allowRetake),

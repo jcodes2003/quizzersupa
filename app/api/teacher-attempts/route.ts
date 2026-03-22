@@ -1,6 +1,9 @@
-import { NextResponse } from "next/server";
+import { noStoreJson } from "../../lib/no-store";
 import { getTeacherId } from "../../lib/teacher-db-auth";
 import { getSupabase } from "../../lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type AssessmentType = "quiz" | "exam";
 type QuizSummaryRow = { id: string; period?: string | null; quizname?: string | null; assessment_type?: string | null };
@@ -29,7 +32,7 @@ function normalizeAssessmentType(value: unknown): AssessmentType {
 
 export async function GET() {
   const teacherId = await getTeacherId();
-  if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!teacherId) return noStoreJson({ error: "Unauthorized" }, { status: 401 });
 
   const supabase = getSupabase();
 
@@ -54,12 +57,12 @@ export async function GET() {
     quizError = (fallbackQuizzes.error ?? null) as { message: string } | null;
   }
 
-  if (quizError) return NextResponse.json({ error: quizError.message }, { status: 500 });
+  if (quizError) return noStoreJson({ error: quizError.message }, { status: 500 });
 
   const quizRows: QuizSummaryRow[] = quizzes ?? [];
   const quizIds = quizRows.map((q) => q.id);
   if (quizIds.length === 0) {
-    return NextResponse.json({ rows: [] });
+    return noStoreJson({ rows: [] });
   }
 
   const quizPeriodNameMap = new Map(
@@ -115,7 +118,7 @@ export async function GET() {
     attemptsError = (fallback.error ?? null) as { message?: string } | null;
   }
 
-  if (attemptsError) return NextResponse.json({ error: attemptsError.message }, { status: 500 });
+  if (attemptsError) return noStoreJson({ error: attemptsError.message }, { status: 500 });
 
   // Get quiz metadata for quiz codes and backup subject/section data
   const { data: quizMetadata } = await supabase
@@ -180,5 +183,5 @@ export async function GET() {
     };
   });
 
-  return NextResponse.json({ rows });
+  return noStoreJson({ rows });
 }

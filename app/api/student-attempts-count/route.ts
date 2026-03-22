@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sameStudentId, sanitizeStudentId } from "../../lib/student-id";
 import { getSupabase } from "../../lib/supabase-server";
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
   const quizId = searchParams.get("quizId");
-  const studentId = searchParams.get("studentId");
+  const studentId = sanitizeStudentId(searchParams.get("studentId"));
 
   if (!quizId || !studentId) {
     return NextResponse.json(
@@ -39,16 +40,19 @@ export async function GET(request: NextRequest) {
   const quizIds = (relatedQuizzes ?? []).map((q) => (q as { id: string }).id);
 
   // Get the count of submitted attempts for this student on this quiz
-  const { count, error } = await supabase
+  const { data: rows, error } = await supabase
     .from("student_attempts_log")
-    .select("*", { count: "exact" })
+    .select("student_id")
     .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
-    .eq("student_id", studentId)
     .eq("is_submitted", true);
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  return NextResponse.json({ attemptCount: count ?? 0, maxAttempts, allowRetake });
+  const attemptCount = ((rows ?? []) as Array<{ student_id?: string | null }>).filter((row) =>
+    sameStudentId(row.student_id, studentId)
+  ).length;
+
+  return NextResponse.json({ attemptCount, maxAttempts, allowRetake });
 }

@@ -1,9 +1,13 @@
 import { randomBytes } from "crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getTeacherId } from "../../../lib/teacher-db-auth";
+import { noStoreJson } from "../../../lib/no-store";
 import { getSectionJoinCode } from "../../../lib/section-join";
 import { normalizeJoinCode } from "../../../lib/section-join";
 import { getSupabase } from "../../../lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -49,11 +53,11 @@ async function isCodeTaken(code: string): Promise<boolean> {
 
 export async function GET() {
   const teacherId = await getTeacherId();
-  if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!teacherId) return noStoreJson({ error: "Unauthorized" }, { status: 401 });
 
   const supabase = getSupabase();
   const { data, error } = await supabase.from("sections").select("*");
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return noStoreJson({ error: error.message }, { status: 500 });
 
   const rows = ((data ?? []) as Record<string, unknown>[])
     .map((row) => ({
@@ -65,7 +69,7 @@ export async function GET() {
     }))
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
 
-  return NextResponse.json(rows);
+  return noStoreJson(rows);
 }
 
 export async function POST(request: NextRequest) {

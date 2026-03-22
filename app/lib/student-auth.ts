@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { createHmac, timingSafeEqual } from "crypto";
 import bcrypt from "bcryptjs";
 import { getSupabase } from "./supabase-server";
+import { sanitizeStudentId } from "./student-id";
 
 const COOKIE_NAME = "student_session";
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -17,10 +18,6 @@ export type StudentSession = {
   };
   sectionIds: string[];
 };
-
-function sanitizeStudentId(value: unknown): string {
-  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
-}
 
 function toBase64Url(input: string): string {
   return Buffer.from(input, "utf8")

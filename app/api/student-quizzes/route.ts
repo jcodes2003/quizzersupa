@@ -1,7 +1,12 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
+import { noStoreJson } from "../../lib/no-store";
+import { sameStudentId, sanitizeStudentId } from "../../lib/student-id";
 import { getStudentSession } from "../../lib/student-auth";
 import { getSupabase } from "../../lib/supabase-server";
 import { getStudentSectionIds } from "../../lib/student-sections";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 function safeIso(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -19,15 +24,15 @@ function isOpen(deadlineIso: string | null, submissionsOpen: unknown): boolean {
 
 export async function GET(request: NextRequest) {
   const session = await getStudentSession();
-  if (!session) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  if (!session) return noStoreJson({ ok: false, error: "Unauthorized" }, { status: 401 });
   const dbSectionIds = await getStudentSectionIds(session.student.id).catch(() => null);
   const sectionIds = (dbSectionIds ?? session.sectionIds ?? []).map(String).filter(Boolean);
-  if (sectionIds.length === 0) return NextResponse.json({ ok: true, quizzes: [] });
+  if (sectionIds.length === 0) return noStoreJson({ ok: true, quizzes: [] });
 
   const selectedSectionId = String(request.nextUrl.searchParams.get("sectionId") ?? "").trim();
   const filterSectionIds = selectedSectionId ? [selectedSectionId] : sectionIds;
   if (selectedSectionId && !sectionIds.includes(selectedSectionId)) {
-    return NextResponse.json({ ok: false, error: "Not joined to that section" }, { status: 403 });
+    return noStoreJson({ ok: false, error: "Not joined to that section" }, { status: 403 });
   }
 
   const supabase = getSupabase();
@@ -69,7 +74,7 @@ export async function GET(request: NextRequest) {
     error = (minimal.error ?? null) as { message: string } | null;
   }
 
-  if (error) return NextResponse.json({ ok: false, error: error.message }, { status: 500 });
+  if (error) return noStoreJson({ ok: false, error: error.message }, { status: 500 });
 
   const { data: sectionsData } = await supabase.from("sections").select("id, sectionname, name").in("id", filterSectionIds);
   const sectionNameById = new Map<string, string>(
@@ -141,21 +146,16 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const studentId = String(session.student.studentId ?? "").trim();
-  const studentName = String(session.student.name ?? "").trim();
+  const studentId = sanitizeStudentId(session.student.studentId ?? "");
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
-  const hasManualSubmitByQuizId = new Map<string, boolean>();
   const bestByQuizId = new Map<
     string,
     { submittedAt: string | null; score: number | null; maxScore: number | null; percentage: number | null }
   >();
 
-  const mergeAttemptIntoBest = (qid: string, attempt: Record<string, unknown>, isManualSubmit: boolean) => {
+  const mergeAttemptIntoBest = (qid: string, attempt: Record<string, unknown>) => {
     attemptsUsedByQuizId.set(qid, (attemptsUsedByQuizId.get(qid) ?? 0) + 1);
-    if (isManualSubmit) {
-      hasManualSubmitByQuizId.set(qid, true);
-    }
 
     const submittedAtRaw = safeIso(attempt.submitted_at ?? attempt.created_at);
     const scoreNum = Number(attempt.score);
@@ -190,9 +190,8 @@ export async function GET(request: NextRequest) {
   if (studentId && quizIds.length > 0) {
     const fullAttempts = await supabase
       .from("student_attempts_log")
-      .select("quizid, score, max_score, submitted_at, created_at, submission_source")
+      .select("quizid, student_id, score, max_score, submitted_at, created_at, submission_source")
       .in("quizid", quizIds)
-      .eq("student_id", studentId)
       .eq("is_submitted", true);
 
     // Backward compatibility if some columns don't exist yet.
@@ -206,17 +205,16 @@ export async function GET(request: NextRequest) {
         errMsg.toLowerCase().includes("submission_source"))
         ? await supabase
             .from("student_attempts_log")
-            .select("quizid, created_at")
+            .select("quizid, student_id, created_at")
             .in("quizid", quizIds)
-            .eq("student_id", studentId)
             .eq("is_submitted", true)
         : fullAttempts;
 
 	    const attempts = (attemptsRes.data ?? []) as Array<Record<string, unknown>>;
 	    for (const a of attempts) {
 	      const qid = String(a.quizid ?? "").trim();
-	      if (!qid) continue;
-	      mergeAttemptIntoBest(qid, a, String(a.submission_source ?? "").trim() === "manual_submit");
+	      if (!qid || !sameStudentId(a.student_id, studentId)) continue;
+      mergeAttemptIntoBest(qid, a);
 	    }
 	  }
 
@@ -227,21 +225,9 @@ export async function GET(request: NextRequest) {
       const fallbackById = await supabase
         .from("student_attempts")
         .select("quizid, score, max_score, created_at, student_id, studentname")
-        .in("quizid", quizIds)
-        .eq("student_id", studentId);
+        .in("quizid", quizIds);
       if (!fallbackById.error) {
         fallbackRows.push(...(((fallbackById.data ?? []) as Array<Record<string, unknown>>)));
-      }
-    }
-
-    if (studentName) {
-      const fallbackByName = await supabase
-        .from("student_attempts")
-        .select("quizid, score, max_score, created_at, student_id, studentname")
-        .in("quizid", quizIds)
-        .eq("studentname", studentName);
-      if (!fallbackByName.error) {
-        fallbackRows.push(...(((fallbackByName.data ?? []) as Array<Record<string, unknown>>)));
       }
     }
 
@@ -249,12 +235,13 @@ export async function GET(request: NextRequest) {
     for (const row of fallbackRows) {
       const qid = String(row.quizid ?? "").trim();
       if (!qid || attemptsUsedByQuizId.has(qid)) continue;
+      if (!sameStudentId(row.student_id, studentId)) continue;
       const sid = String(row.student_id ?? "").trim();
       const sname = String(row.studentname ?? "").trim();
       const dedupeKey = `${qid}::${sid}::${sname}::${String(row.created_at ?? "")}`;
       if (seenFallbackKeys.has(dedupeKey)) continue;
       seenFallbackKeys.add(dedupeKey);
-      mergeAttemptIntoBest(qid, row, true);
+      mergeAttemptIntoBest(qid, row);
     }
   }
 
@@ -273,14 +260,12 @@ export async function GET(request: NextRequest) {
       const attemptsRemaining = Math.max(0, (q.max_attempts ?? 1) - attemptsUsed);
       const best = bestByQuizId.get(q.id) ?? null;
       const submitted = attemptsUsed > 0;
-      const manuallySubmitted = hasManualSubmitByQuizId.get(q.id) === true;
-      const overdueOrClosedByTeacher = !q._open;
-      const canStillAttempt = attemptsRemaining > 0 || (q._open && !manuallySubmitted);
-      const status: "open" | "closed" | "missing" = manuallySubmitted
-        ? "closed"
-        : !overdueOrClosedByTeacher && canStillAttempt
+      const canStillAttempt = q._open && attemptsRemaining > 0;
+      const status: "open" | "closed" | "missing" | "completed" = submitted
+        ? "completed"
+        : canStillAttempt
           ? "open"
-          : "missing"; // overdue/closed without a successful submission yet
+          : "missing";
       const submittedAt = best?.submittedAt ?? null;
       const score = best?.score ?? null;
       const maxScore = best?.maxScore ?? null;
@@ -311,8 +296,8 @@ export async function GET(request: NextRequest) {
       };
     })
     .sort((a, b) => {
-      // Open first, then missing, then closed; within group, closest deadline first, else by code.
-      const rank = (s: string) => (s === "open" ? 0 : s === "missing" ? 1 : 2);
+      // Open first, then missing, then completed, then closed; within group, closest deadline first, else by code.
+      const rank = (s: string) => (s === "open" ? 0 : s === "missing" ? 1 : s === "completed" ? 2 : 3);
       const r = rank(a.status) - rank(b.status);
       if (r !== 0) return r;
       const ad = a.submission_deadline ? new Date(a.submission_deadline).getTime() : Number.POSITIVE_INFINITY;
@@ -321,5 +306,5 @@ export async function GET(request: NextRequest) {
       return a.quizcode.localeCompare(b.quizcode);
     });
 
-  return NextResponse.json({ ok: true, quizzes });
+  return noStoreJson({ ok: true, quizzes });
 }

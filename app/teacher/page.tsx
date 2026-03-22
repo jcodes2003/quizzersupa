@@ -89,6 +89,34 @@ type PendingQuizDraft = {
   submissionsOpen: boolean;
 };
 
+type SectionMemberActivity = {
+  id: string;
+  quizcode: string;
+  quizname: string;
+  assessmentType: "quiz" | "exam";
+  period: string;
+  submissionDeadline?: string | null;
+  status?: "no_deadline" | "upcoming" | "overdue";
+};
+
+type SectionMemberRow = {
+  dbId: string;
+  studentName: string;
+  studentId: string;
+  completedCount: number;
+  completedActivities?: SectionMemberActivity[];
+  missingCount: number;
+  overdueCount?: number;
+  missingActivities: SectionMemberActivity[];
+};
+
+type SectionMembersPayload = {
+  section: Section;
+  activities: SectionMemberActivity[];
+  students: SectionMemberRow[];
+  relationAvailable: boolean;
+};
+
 async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
   try {
     const text = await res.text();
@@ -334,6 +362,19 @@ function getReportStudentKey(
   return "";
 }
 
+function getMergedReportStudentKey(
+  row: Pick<QuizResponseRow, "student_id" | "studentname">
+): string {
+  return getStudentIdentityKey(row);
+}
+
+function normalizeReportQuizName(value?: string | null): string {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
 function makeClientId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -479,7 +520,7 @@ function downloadReportCsv(rows: QuizResponseRow[]) {
 
 function calculateWeightedGrade(
   row: ConsolidatedRow,
-  quizColumns: { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" }[]
+  quizColumns: { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam"; quizIds?: string[] }[]
 ): { quizAverage: number; examAverage: number; finalGrade: number } {
   let quizSum = 0;
   let quizCount = 0;
@@ -487,7 +528,13 @@ function calculateWeightedGrade(
   let examCount = 0;
 
   for (const col of quizColumns) {
-    const q = row.quizzes.get(col.quizid);
+    const candidateIds = col.quizIds && col.quizIds.length > 0 ? col.quizIds : [col.quizid];
+    let q: { score: number; max_score: number; assessment_type: "quiz" | "exam" } | undefined;
+    for (const candidateId of candidateIds) {
+      const next = row.quizzes.get(candidateId);
+      if (!next) continue;
+      if (!q || next.score > q.score) q = next;
+    }
     if (!q || !q.max_score || q.max_score <= 0) continue;
     const percent = (q.score / q.max_score) * 100;
     if (normalizeAssessmentType(q.assessment_type) === "exam") {
@@ -503,6 +550,21 @@ function calculateWeightedGrade(
   const examAverage = examCount > 0 ? examSum / examCount : 0;
   const finalGrade = quizAverage * 0.7 + examAverage * 0.3;
   return { quizAverage, examAverage, finalGrade };
+}
+
+function getBestQuizCellValue(
+  row: ConsolidatedRow,
+  quizIds: string[]
+): { score: number; max_score: number; assessment_type: "quiz" | "exam"; attemptId?: string; isTemporary?: boolean } | undefined {
+  let best:
+    | { score: number; max_score: number; assessment_type: "quiz" | "exam"; attemptId?: string; isTemporary?: boolean }
+    | undefined;
+  for (const quizId of quizIds) {
+    const next = row.quizzes.get(quizId);
+    if (!next) continue;
+    if (!best || next.score > best.score) best = next;
+  }
+  return best;
 }
 
 function downloadConsolidatedReportCsv(
@@ -872,6 +934,7 @@ export default function TeacherPage() {
   const [editQuizSaveBestOnly, setEditQuizSaveBestOnly] = useState(true);
   const [editQuizSubmissionDeadline, setEditQuizSubmissionDeadline] = useState("");
   const [editQuizSubmissionsOpen, setEditQuizSubmissionsOpen] = useState(true);
+  const [togglingQuizId, setTogglingQuizId] = useState<string | null>(null);
   const [reuseSectionIds, setReuseSectionIds] = useState<string[]>([]);
   const [reusePeriod, setReusePeriod] = useState("");
   const [newQuestionText, setNewQuestionText] = useState("");
@@ -900,6 +963,11 @@ export default function TeacherPage() {
   const [quizzesPage, setQuizzesPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
   const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
+  const [sectionStatusModalOpen, setSectionStatusModalOpen] = useState(false);
+  const [selectedSectionStatusId, setSelectedSectionStatusId] = useState("");
+  const [sectionStatusById, setSectionStatusById] = useState<Record<string, SectionMembersPayload>>({});
+  const [sectionStatusLoading, setSectionStatusLoading] = useState(false);
+  const [sectionStatusError, setSectionStatusError] = useState<string | null>(null);
   const [copiedQuizCode, setCopiedQuizCode] = useState<string | null>(null);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
@@ -924,6 +992,7 @@ export default function TeacherPage() {
   const [genMultipleChoiceCount, setGenMultipleChoiceCount] = useState("0");
   const [genIdentificationCount, setGenIdentificationCount] = useState("0");
   const [genEnumerationCount, setGenEnumerationCount] = useState("0");
+  const [genRephraseQuestions, setGenRephraseQuestions] = useState(true);
   const [genLoading, setGenLoading] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [genCreated, setGenCreated] = useState<{ id: string; quizcode?: string; quizname?: string } | null>(null);
@@ -948,6 +1017,13 @@ export default function TeacherPage() {
   const dragQuestionIdRef = useRef<string | null>(null);
   const PAGE_SIZE = 10;
   const QUIZ_PAGE_SIZE = 6;
+  const combineReportsByStudent =
+    !reportFilterSection && !reportFilterSubject && !reportFilterDate && !reportFilterPeriod;
+  const getCurrentReportStudentKey = useCallback(
+    (row: Pick<QuizResponseRow, "student_id" | "studentname" | "sectionid" | "subjectid">) =>
+      combineReportsByStudent ? getMergedReportStudentKey(row) : getReportStudentKey(row),
+    [combineReportsByStudent]
+  );
 
   const saveQuizFormDraft = () => {
     if (typeof window === "undefined") return;
@@ -1457,7 +1533,7 @@ export default function TeacherPage() {
   const fetchScores = useCallback(async () => {
     setScoresLoading(true);
     try {
-      const res = await fetch("/api/teacher-attempts", { credentials: "include" });
+      const res = await fetch("/api/teacher-attempts", { credentials: "include", cache: "no-store" });
       if (res.status === 401) {
         setAuthenticated(false);
         setRows([]);
@@ -1599,8 +1675,8 @@ export default function TeacherPage() {
       const normalized = entered.trim().toLowerCase();
       const matchedSection = sections.find(
         (section) =>
-          section.id.trim().toLowerCase() === normalized ||
-          section.name.trim().toLowerCase() === normalized
+          String(section.id).trim().toLowerCase() === normalized ||
+          String(section.name).trim().toLowerCase() === normalized
       );
 
       if (!matchedSection) {
@@ -1644,7 +1720,7 @@ export default function TeacherPage() {
       maxScore: number,
       existingScore?: number
     ) => {
-      const studentKey = getReportStudentKey(student);
+      const studentKey = getCurrentReportStudentKey(student);
       if (!studentKey) {
         setError("This row is missing a student identifier, so a temporary score cannot be added.");
         return;
@@ -1676,26 +1752,26 @@ export default function TeacherPage() {
         },
       }));
     },
-    []
+    [getCurrentReportStudentKey]
   );
 
   const clearTemporaryReportScore = useCallback((
     student: { studentname: string; student_id: string; sectionid: string; subjectid: string },
     quizId: string
   ) => {
-    const studentKey = getReportStudentKey(student);
+    const studentKey = getCurrentReportStudentKey(student);
     if (!studentKey) return;
     setTempReportScores((prev) => {
       const next = { ...prev };
       delete next[getTempReportScoreKey(studentKey, quizId)];
       return next;
     });
-  }, []);
+  }, [getCurrentReportStudentKey]);
 
   const fetchQuizzes = useCallback(async () => {
     setQuizzesLoading(true);
     try {
-      const res = await fetch("/api/teacher/quizzes", { credentials: "include" });
+      const res = await fetch("/api/teacher/quizzes", { credentials: "include", cache: "no-store" });
       if (res.status === 401) return;
       if (res.ok) {
         setQuizzes(await res.json());
@@ -1709,7 +1785,7 @@ export default function TeacherPage() {
   const fetchQuestionsForQuiz = useCallback(async (quizId: string) => {
     setQuestionsLoading(true);
     try {
-      const res = await fetch(`/api/teacher/quizzes/${quizId}/questions`, { credentials: "include" });
+      const res = await fetch(`/api/teacher/quizzes/${quizId}/questions`, { credentials: "include", cache: "no-store" });
       if (res.ok) setQuestionsForQuiz(await res.json());
       else setQuestionsForQuiz([]);
     } finally {
@@ -1718,14 +1794,59 @@ export default function TeacherPage() {
   }, []);
 
   const fetchSubjects = useCallback(async () => {
-    const res = await fetch("/api/subjects", { credentials: "include" });
+    const res = await fetch("/api/subjects", { credentials: "include", cache: "no-store" });
     if (res.ok) setSubjects(await res.json());
   }, []);
 
   const fetchSections = useCallback(async () => {
-    const res = await fetch("/api/sections", { credentials: "include" });
+    const res = await fetch("/api/sections", { credentials: "include", cache: "no-store" });
     if (res.ok) setSections(await res.json());
   }, []);
+
+  const fetchSectionStatus = useCallback(async (sectionId: string) => {
+    const normalizedSectionId = String(sectionId ?? "").trim();
+    if (!normalizedSectionId) return;
+    setSectionStatusLoading(true);
+    setSectionStatusError(null);
+    try {
+      const res = await fetch(`/api/teacher/classes/${encodeURIComponent(normalizedSectionId)}/members`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const data = await readJsonSafe(res);
+      if (!res.ok) {
+        setSectionStatusError(readStringField(data, "error") ?? "Failed to load section status");
+        return;
+      }
+      setSectionStatusById((prev) => ({
+        ...prev,
+        [normalizedSectionId]: data as unknown as SectionMembersPayload,
+      }));
+    } catch {
+      setSectionStatusError("Failed to load section status");
+    } finally {
+      setSectionStatusLoading(false);
+    }
+  }, []);
+
+  const openSectionStatusModal = useCallback(async () => {
+    setSectionStatusModalOpen(true);
+    setSectionStatusError(null);
+    let availableSections = sections;
+    if (availableSections.length === 0) {
+      const res = await fetch("/api/sections", { credentials: "include", cache: "no-store" });
+      if (res.ok) {
+        availableSections = (await res.json()) as Section[];
+        setSections(availableSections);
+      }
+    }
+    const targetSectionId = selectedSectionStatusId || availableSections[0]?.id || "";
+    if (!targetSectionId) return;
+    setSelectedSectionStatusId(targetSectionId);
+    if (!sectionStatusById[targetSectionId]) {
+      await fetchSectionStatus(targetSectionId);
+    }
+  }, [fetchSectionStatus, sectionStatusById, sections, selectedSectionStatusId]);
 
   const normalizePeriodValue = useCallback((value: unknown): string => {
     const s = String(value ?? "").trim();
@@ -1789,6 +1910,13 @@ export default function TeacherPage() {
   }, [tab, subjects.length, sections.length, quizzes.length, fetchSubjects, fetchSections, fetchQuizzes]);
 
   useEffect(() => {
+    if (!sectionStatusModalOpen) return;
+    if (!selectedSectionStatusId) return;
+    if (sectionStatusById[selectedSectionStatusId]) return;
+    fetchSectionStatus(selectedSectionStatusId);
+  }, [fetchSectionStatus, sectionStatusById, sectionStatusModalOpen, selectedSectionStatusId]);
+
+  useEffect(() => {
     if (genSelectedQuizIds.length === 0) return;
     const first = quizzes.find((q) => q.id === genSelectedQuizIds[0]);
     if (!first) return;
@@ -1818,20 +1946,20 @@ export default function TeacherPage() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/teacher-attempts", { credentials: "include" });
+      const res = await fetch("/api/teacher-attempts", { credentials: "include", cache: "no-store" });
       if (cancelled) return;
       if (res.ok) {
         const data = await res.json();
         setRows(data.rows ?? []);
         setAuthenticated(true);
-        const qRes = await fetch("/api/teacher/quizzes", { credentials: "include" });
+        const qRes = await fetch("/api/teacher/quizzes", { credentials: "include", cache: "no-store" });
         if (qRes.ok) {
           setQuizzes(await qRes.json());
           setCanCreateQuestions(true);
         }
-        const sRes = await fetch("/api/subjects", { credentials: "include" });
+        const sRes = await fetch("/api/subjects", { credentials: "include", cache: "no-store" });
         if (sRes.ok) setSubjects(await sRes.json());
-        const secRes = await fetch("/api/sections", { credentials: "include" });
+        const secRes = await fetch("/api/sections", { credentials: "include", cache: "no-store" });
         if (secRes.ok) setSections(await secRes.json());
       } else setAuthenticated(false);
     })();
@@ -1917,7 +2045,7 @@ export default function TeacherPage() {
     setAnswersLoading(true);
     (async () => {
       try {
-        const res = await fetch(`/api/teacher/quizzes/${answerModal.quizid}/questions`, { credentials: "include" });
+        const res = await fetch(`/api/teacher/quizzes/${answerModal.quizid}/questions`, { credentials: "include", cache: "no-store" });
         if (!res.ok) return;
         const data = (await res.json()) as Array<{ id: string; question: string; answerkey?: string | null; quiztype?: string | null }>;
         if (cancelled) return;
@@ -2176,6 +2304,33 @@ export default function TeacherPage() {
     }
   };
 
+  const handleToggleQuizSubmissions = useCallback(
+    async (quiz: Pick<QuizRow, "id" | "quizname" | "quizcode" | "submissions_open">) => {
+      const nextOpen = quiz.submissions_open === false;
+      setTogglingQuizId(quiz.id);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher/quizzes/${quiz.id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ submissionsOpen: nextOpen }),
+        });
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          setError(readStringField(data, "error") ?? "Failed to update quiz availability.");
+          return;
+        }
+        await fetchQuizzes();
+      } catch {
+        setError("Failed to update quiz availability.");
+      } finally {
+        setTogglingQuizId(null);
+      }
+    },
+    [fetchQuizzes]
+  );
+
   const handleReuseQuiz = async (action: "duplicate" | "assign") => {
     if (!editingQuizId) return;
     if (reuseSectionIds.length === 0) {
@@ -2276,6 +2431,7 @@ export default function TeacherPage() {
           multipleChoiceCount: mc,
           identificationCount: id,
           enumerationCount: en,
+          rephraseQuestions: genRephraseQuestions,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -3093,6 +3249,8 @@ export default function TeacherPage() {
     ? rows.filter((r) => r.subjectid === recheckSubject && r.sectionid === recheckSection)
     : [];
 
+  const selectedSectionStatus = selectedSectionStatusId ? sectionStatusById[selectedSectionStatusId] ?? null : null;
+
   // Filter for reports tab - cascade filters using IDs and period
   let reportFilteredRows = rows;
   if (reportFilterSection) {
@@ -3111,11 +3269,12 @@ export default function TeacherPage() {
     });
   }
 
-	  // Highest-score attempt per (student_name, section, subject, quiz) for consolidated report
+	  // Consolidate best attempts per student/quiz. When no report filters are applied,
+	  // merge all subjects into a single student row.
 	  const bestByStudentQuizForReports = new Map<string, QuizResponseRow>();
 	  const bestStudentIdByStudentKey = new Map<string, { studentId: string; bestPercent: number; bestAt?: string }>();
 	  for (const r of reportFilteredRows) {
-	    const identityKey = getReportStudentKey(r);
+	    const identityKey = getCurrentReportStudentKey(r);
 	    if (!identityKey) continue;
 	    const key = `${identityKey}-${r.quizid ?? r.quizcode}`;
 	    const existing = bestByStudentQuizForReports.get(key);
@@ -3146,6 +3305,7 @@ export default function TeacherPage() {
 
   // Consolidated: one row per student; columns = Student ID, Name, Section, Subject, then one column per quiz (score/max or —)
   type QuizColumn = { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" };
+  type DisplayQuizColumn = QuizColumn & { quizIds?: string[] };
 	  const quizColumns: QuizColumn[] = Array.from(
 	    new Map(
 	      latestRows
@@ -3162,6 +3322,26 @@ export default function TeacherPage() {
 	    ).values()
 	  );
 
+	  const displayQuizColumns: DisplayQuizColumn[] = Array.from(
+	    new Map(
+	      quizColumns.map((q) => {
+	        const title = (q.quizname || q.quizcode).trim() || q.quizcode;
+	        const key = normalizeReportQuizName(title);
+	        const existing = quizColumns
+	          .filter((x) => normalizeReportQuizName((x.quizname || x.quizcode).trim() || x.quizcode) === key)
+	          .map((x) => x.quizid);
+	        return [
+	          key,
+	          {
+	            ...q,
+	            quizname: title,
+	            quizIds: existing,
+	          },
+	        ] as const;
+	      })
+	    ).values()
+	  );
+
 	  const quizMaxScoreById = new Map<string, number>();
 	  for (const r of latestRows) {
 	    const qid = r.quizid ?? r.quizcode;
@@ -3173,7 +3353,7 @@ export default function TeacherPage() {
 
 	  const consolidatedByStudent = new Map<string, ConsolidatedRow>();
 	  for (const r of latestRows) {
-	    const identityKey = getReportStudentKey(r);
+	    const identityKey = getCurrentReportStudentKey(r);
 	    if (!identityKey) continue;
 	    const nextSection = r.sectionname ?? r.section ?? "";
 	    const nextSubject = r.subjectname ?? r.subject ?? "";
@@ -3219,12 +3399,12 @@ export default function TeacherPage() {
 	    }
 	  }
 	  const consolidatedRows = Array.from(consolidatedByStudent.values()).map((row) => ({
-	    ...row,
-	    quizzes: new Map(row.quizzes),
-	  }));
-	  for (const row of consolidatedRows) {
-	    const studentKey = getReportStudentKey(row);
-	    if (!studentKey) continue;
+		    ...row,
+		    quizzes: new Map(row.quizzes),
+		  }));
+		  for (const row of consolidatedRows) {
+		    const studentKey = getCurrentReportStudentKey(row);
+		    if (!studentKey) continue;
 	    for (const quiz of quizColumns) {
 	      const tempScore = tempReportScores[getTempReportScoreKey(studentKey, quiz.quizid)];
 	      if (!tempScore) continue;
@@ -3251,7 +3431,7 @@ export default function TeacherPage() {
   const pagedReportRows = sortedConsolidatedRows.slice(reportsStartIndex, reportsEndIndex);
 
 	  const weightedByStudentKey = new Map(
-	    sortedConsolidatedRows.map((row) => [getReportStudentKey(row), calculateWeightedGrade(row, quizColumns)])
+	    sortedConsolidatedRows.map((row) => [getCurrentReportStudentKey(row), calculateWeightedGrade(row, displayQuizColumns)])
 	  );
 
   const nameImportMatchResult = useMemo(() => {
@@ -3708,14 +3888,14 @@ export default function TeacherPage() {
 	                          <td className="px-4 py-3 text-slate-300">
 	                            <div className="flex flex-col items-start gap-2">
 	                              <span>{r.sectionname || r.section || getSectionName(r.sectionid)}</span>
-	                              {/* <button
+	                              <button
 	                                type="button"
 	                                onClick={() => handleEditResponseSection(r)}
 	                                disabled={savingAttemptId === r.id}
 	                                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
 	                              >
 	                                {savingAttemptId === r.id ? "Saving..." : "Edit Section"}
-	                              </button> */}
+	                              </button>
 	                            </div>
 	                          </td>
                           <td className="px-4 py-3 text-slate-300">
@@ -4052,9 +4232,9 @@ export default function TeacherPage() {
                         {!reportFilterSubject && (
                           <th className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">Subject</th>
                         )}
-                        {quizColumns.map((q) => (
-                          <th key={q.quizid} className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">
-                            {q.quizname || q.quizcode}
+	                        {displayQuizColumns.map((q) => (
+	                          <th key={q.quizid} className="px-4 py-3 text-slate-300 font-semibold whitespace-nowrap">
+	                            {q.quizname || q.quizcode}
                             <span className="ml-2 inline-flex rounded-full border border-slate-500/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
                               {formatAssessmentTypeLabel(q.assessment_type)}
                             </span>
@@ -4066,15 +4246,19 @@ export default function TeacherPage() {
                       </tr>
                     </thead>
                     <tbody>
-	                      {pagedReportRows.map((r) => (
-	                        <tr key={getReportStudentKey(r)} className="border-b border-slate-700/50 hover:bg-slate-700/30">
+		                      {pagedReportRows.map((r) => (
+		                        <tr key={getCurrentReportStudentKey(r)} className="border-b border-slate-700/50 hover:bg-slate-700/30">
                           <td className="px-4 py-3 text-slate-200 font-mono">{r.student_id}</td>
                           <td className="px-4 py-3 text-slate-200">{formatNameLastFirst(r.studentname) || "—"}</td>
                           {!reportFilterSection && <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>}
                           {!reportFilterSubject && <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>}
-                          {quizColumns.map((q) => {
-	                            const qq = r.quizzes.get(q.quizid);
-	                            const inferredMaxScore = quizMaxScoreById.get(q.quizid) ?? 0;
+	                          {displayQuizColumns.map((q) => {
+		                            const candidateQuizIds = q.quizIds && q.quizIds.length > 0 ? q.quizIds : [q.quizid];
+		                            const qq = getBestQuizCellValue(r, candidateQuizIds);
+		                            const inferredMaxScore = candidateQuizIds.reduce(
+		                              (best, quizId) => Math.max(best, quizMaxScoreById.get(quizId) ?? 0),
+		                              0
+		                            );
 	                            const cell = qq
                               ? qq.max_score
                                 ? `${qq.score}/${qq.max_score} (${Math.round((qq.score / qq.max_score) * 100)}%)`
@@ -4127,7 +4311,7 @@ export default function TeacherPage() {
 		                                            }
 		                                            className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-[11px] text-white"
 		                                          >
-		                                            Clear
+			                                            Reset Original
 		                                          </button>
 		                                        </>
 		                                      ) : (
@@ -4180,7 +4364,7 @@ export default function TeacherPage() {
                             );
                           })}
                           {(() => {
-	                            const weighted = weightedByStudentKey.get(getReportStudentKey(r)) ?? {
+		                            const weighted = weightedByStudentKey.get(getCurrentReportStudentKey(r)) ?? {
 	                              quizAverage: 0,
 	                              examAverage: 0,
 	                              finalGrade: 0,
@@ -4444,9 +4628,9 @@ export default function TeacherPage() {
 	                  </div>
 	                </div>
 
-	                <div>
-	                  <label className="block text-slate-400 text-sm mb-2">How many questions to generate?</label>
-	                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+		                <div>
+		                  <label className="block text-slate-400 text-sm mb-2">How many questions to generate?</label>
+		                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
 	                    <div>
 	                      <label className="block text-slate-500 text-xs mb-1">Multiple Choice</label>
 	                      <input
@@ -4476,12 +4660,27 @@ export default function TeacherPage() {
 	                        onChange={(e) => setGenEnumerationCount(e.target.value)}
 	                        className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
 	                      />
-	                    </div>
-	                  </div>
-	                </div>
+		                    </div>
+		                  </div>
+		                </div>
 
-	                {genError && (
-	                  <div className="p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+		                <label className="flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-800/60 px-4 py-3">
+		                  <input
+		                    type="checkbox"
+		                    checked={genRephraseQuestions}
+		                    onChange={(e) => setGenRephraseQuestions(e.target.checked)}
+		                    className="mt-1 h-4 w-4 rounded border-slate-500 bg-slate-700 text-cyan-500 focus:ring-cyan-500"
+		                  />
+		                  <span className="text-sm text-slate-300">
+		                    Rephrase generated multiple choice and identification questions.
+		                    <span className="block text-xs text-slate-500 mt-1">
+		                      Enumeration questions stay exactly as they are so the expected answers do not change.
+		                    </span>
+		                  </span>
+		                </label>
+
+		                {genError && (
+		                  <div className="p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
 	                    {genError}
 	                  </div>
 	                )}
@@ -4568,16 +4767,23 @@ export default function TeacherPage() {
 	                    Resume Draft
 	                  </button>
 	                )}
-	                <Link
-	                  href="/teacher/classes"
-	                  className="px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-semibold"
-	                >
-	                  Manage Sections
-	                </Link>
-	                <Link
-	                  href="/teacher/guide"
-	                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
-	                >
+		                <Link
+		                  href="/teacher/classes"
+		                  className="px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-semibold"
+		                >
+		                  Manage Sections
+		                </Link>
+		                <button
+		                  type="button"
+		                  onClick={openSectionStatusModal}
+		                  className="px-4 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 text-white font-semibold"
+		                >
+		                  Section Status
+		                </button>
+		                <Link
+		                  href="/teacher/guide"
+		                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+		                >
 	                  Teacher Guide
 	                </Link>
 	                <button
@@ -5275,18 +5481,18 @@ export default function TeacherPage() {
 		                      return pageQuizzes.map((quiz) => (
                       <li
                         key={quiz.id}
-                        className={`flex flex-wrap items-center justify-between gap-4 p-3 rounded-lg transition-colors ${selectedQuizId === quiz.id ? "bg-cyan-600/30 border border-cyan-500/50" : "bg-slate-700/50 hover:bg-slate-700"}`}
+                        className={`rounded-2xl border p-4 transition-all ${selectedQuizId === quiz.id ? "border-cyan-400/60 bg-cyan-500/10 shadow-[0_0_0_1px_rgba(34,211,238,0.08)]" : "border-slate-700/80 bg-slate-800/70 hover:border-slate-600 hover:bg-slate-800"}`}
                       >
-                        <div className="w-full flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
                           <button
                             type="button"
                             onClick={() => setSelectedQuizId(selectedQuizId === quiz.id ? null : quiz.id)}
-                            className="text-left text-slate-200"
+                            className="min-w-0 flex-1 space-y-3 text-left text-slate-200"
                           >
                             {quiz.quizname ? (
                               <>
                                 <strong>{quiz.quizname}</strong> {quiz.period ? `(Period ${quiz.period})` : ""} ·{" "}
-                                <span className="text-xs uppercase tracking-wide text-amber-300">
+                                <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-200">
                                   {formatAssessmentTypeLabel(quiz.assessment_type)}
                                 </span>{" "}
                                 ·{" "}
@@ -5297,18 +5503,18 @@ export default function TeacherPage() {
                                     e.stopPropagation();
                                     handleCopyQuizCode(quiz.quizcode);
                                   }}
-                                  className="font-semibold text-cyan-200 hover:text-cyan-100 cursor-pointer"
+                                  className="cursor-pointer rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 font-semibold text-cyan-200 hover:bg-cyan-500/15 hover:text-cyan-100"
                                   title="Click to copy quiz code"
                                 >
                                   {quiz.quizcode}
                                 </span>
                                 {copiedQuizCode === quiz.quizcode && (
-                                  <span className="ml-2 text-xs text-emerald-300">Copied!</span>
+                                  <span className="text-xs font-medium text-emerald-300">Copied!</span>
                                 )}
                               </>
                             ) : (
                               <>
-                                <span className="text-xs uppercase tracking-wide text-amber-300">
+                                <span className="rounded-full border border-amber-500/35 bg-amber-500/10 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] text-amber-200">
                                   {formatAssessmentTypeLabel(quiz.assessment_type)}
                                 </span>{" "}
                                 ·{" "}
@@ -5319,58 +5525,78 @@ export default function TeacherPage() {
                                     e.stopPropagation();
                                     handleCopyQuizCode(quiz.quizcode);
                                   }}
-                                  className="font-semibold text-cyan-200 hover:text-cyan-100 cursor-pointer"
+                                  className="cursor-pointer rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1 font-semibold text-cyan-200 hover:bg-cyan-500/15 hover:text-cyan-100"
                                   title="Click to copy quiz code"
                                 >
                                   {quiz.quizcode}
                                 </span>
                                 {copiedQuizCode === quiz.quizcode && (
-                                  <span className="ml-2 text-xs text-emerald-300">Copied!</span>
+                                  <span className="text-xs font-medium text-emerald-300">Copied!</span>
                                 )}
                               </>
                             )}
                           </button>
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-xs ${
-                              quiz.submissions_open === false
-                                ? "bg-rose-500/20 border border-rose-500/40 text-rose-300"
-                                : quiz.submission_deadline &&
-                                    !Number.isNaN(new Date(quiz.submission_deadline).getTime()) &&
-                                    Date.now() > new Date(quiz.submission_deadline).getTime()
-                                  ? "bg-amber-500/20 border border-amber-500/40 text-amber-300"
-                                  : "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
-                            }`}
-                            title={`Deadline: ${formatDeadlineLabel(quiz.submission_deadline)}`}
-                          >
-                            {quiz.submissions_open === false
-                              ? "Closed"
-                              : quiz.submission_deadline &&
-                                  !Number.isNaN(new Date(quiz.submission_deadline).getTime()) &&
-                                  Date.now() > new Date(quiz.submission_deadline).getTime()
-                                ? "Deadline passed"
-                                : "Open"}
-                          </span>
-                          {quiz.source_quiz_id && (
-                            <span className="px-2 py-0.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-300 text-xs">
-                              Shared
-                            </span>
-                          )}
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => startEditQuiz(quiz)}
-                              className="px-3 py-1 rounded bg-slate-600 hover:bg-slate-500 text-xs text-white"
-                            >
+                          <div className="flex shrink-0 flex-col gap-3 xl:min-w-[320px] xl:items-end">
+                            <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+                              <span
+                                className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                                  quiz.submissions_open === false
+                                    ? "bg-rose-500/15 border-rose-500/40 text-rose-200"
+                                    : quiz.submission_deadline &&
+                                        !Number.isNaN(new Date(quiz.submission_deadline).getTime()) &&
+                                        Date.now() > new Date(quiz.submission_deadline).getTime()
+                                      ? "bg-amber-500/15 border-amber-500/40 text-amber-200"
+                                      : "bg-emerald-500/15 border-emerald-500/40 text-emerald-200"
+                                }`}
+                                title={`Deadline: ${formatDeadlineLabel(quiz.submission_deadline)}`}
+                              >
+                                {quiz.submissions_open === false
+                                  ? "Closed"
+                                  : quiz.submission_deadline &&
+                                      !Number.isNaN(new Date(quiz.submission_deadline).getTime()) &&
+                                      Date.now() > new Date(quiz.submission_deadline).getTime()
+                                    ? "Deadline passed"
+                                    : "Open"}
+                              </span>
+                              {quiz.source_quiz_id && (
+                                <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-3 py-1 text-xs font-semibold text-amber-200">
+                                  Shared
+                                </span>
+                              )}
+                            </div>
+	                          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+	                            <button
+	                              type="button"
+	                              onClick={() => handleToggleQuizSubmissions(quiz)}
+	                              disabled={togglingQuizId === quiz.id}
+	                              className={`rounded-xl px-4 py-2 text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
+	                                quiz.submissions_open === false
+	                                  ? "bg-emerald-600 hover:bg-emerald-500"
+	                                  : "bg-amber-600 hover:bg-amber-500"
+	                              }`}
+	                            >
+	                              {togglingQuizId === quiz.id
+	                                ? "Saving..."
+	                                : quiz.submissions_open === false
+	                                  ? "Open Quiz"
+	                                  : "Close Quiz"}
+	                            </button>
+	                            <button
+	                              type="button"
+	                              onClick={() => startEditQuiz(quiz)}
+	                              className="rounded-xl bg-slate-600 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-500"
+	                            >
                               Edit
                             </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteQuiz(quiz.id)}
-                              className="px-3 py-1 rounded bg-red-600/80 hover:bg-red-600 text-xs text-white"
+                              className="rounded-xl bg-red-600/90 px-4 py-2 text-sm font-semibold text-white hover:bg-red-600"
                             >
                               Delete
                             </button>
-                            <span className="text-slate-500 text-xs">Select to add questions</span>
+                            <span className="text-sm text-slate-400 xl:text-right">Select this quiz to add questions</span>
+                          </div>
                           </div>
                         </div>
                         {editingQuizId === quiz.id && (
@@ -5939,6 +6165,186 @@ export default function TeacherPage() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+      {sectionStatusModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-5xl max-h-[90vh] overflow-auto rounded-2xl bg-slate-900 border border-slate-700 p-6 shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-cyan-300">Section Status</h3>
+                <p className="text-sm text-slate-400">
+                  See who joined a section and which activities are completed, missing, or overdue.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSectionStatusModalOpen(false)}
+                className="px-3 py-1 rounded bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_auto]">
+              <div>
+                <label className="block text-slate-400 text-sm mb-1">Section</label>
+                <select
+                  value={selectedSectionStatusId}
+                  onChange={(e) => {
+                    const nextId = e.target.value;
+                    setSelectedSectionStatusId(nextId);
+                    if (nextId && !sectionStatusById[nextId]) {
+                      fetchSectionStatus(nextId);
+                    }
+                  }}
+                  className="w-full px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  {sections.length === 0 ? (
+                    <option value="">No sections available</option>
+                  ) : (
+                    sections.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  disabled={!selectedSectionStatusId || sectionStatusLoading}
+                  onClick={() => {
+                    if (selectedSectionStatusId) fetchSectionStatus(selectedSectionStatusId);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-slate-100 font-medium"
+                >
+                  {sectionStatusLoading ? "Loading..." : "Refresh"}
+                </button>
+              </div>
+            </div>
+
+            {sectionStatusError && (
+              <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
+                {sectionStatusError}
+              </div>
+            )}
+
+            {!selectedSectionStatusId ? (
+              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/70 p-8 text-center text-sm text-slate-500">
+                No sections available yet.
+              </div>
+            ) : sectionStatusLoading && !selectedSectionStatus ? (
+              <div className="rounded-xl bg-slate-800/60 border border-slate-700 p-6 text-sm text-slate-400">
+                Loading section status...
+              </div>
+            ) : !selectedSectionStatus ? (
+              <div className="rounded-xl bg-slate-800/60 border border-slate-700 p-6 text-sm text-slate-400">
+                Select a section to view joined students.
+              </div>
+            ) : !selectedSectionStatus.relationAvailable ? (
+              <div className="rounded-xl bg-slate-800/60 border border-slate-700 p-6 text-sm text-slate-400">
+                Student-section membership data is not available yet because the `student_sections` table is missing.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full border border-cyan-500/40 bg-cyan-500/10 px-3 py-1 text-cyan-200">
+                    Section: {selectedSectionStatus.section.name}
+                  </span>
+                  <span className="rounded-full border border-slate-600 bg-slate-800 px-3 py-1 text-slate-300">
+                    Joined: {selectedSectionStatus.students.length}
+                  </span>
+                  <span className="rounded-full border border-slate-600 bg-slate-800 px-3 py-1 text-slate-300">
+                    Activities: {selectedSectionStatus.activities.length}
+                  </span>
+                </div>
+
+                {selectedSectionStatus.students.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/70 p-8 text-center text-sm text-slate-500">
+                    No students have joined this section yet.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {selectedSectionStatus.students.map((student) => (
+                      <div key={`${selectedSectionStatus.section.id}-${student.dbId}`} className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                        <div className="flex flex-wrap items-center justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-semibold text-white">{formatNameLastFirst(student.studentName) || "Student"}</p>
+                            <p className="text-xs text-slate-400">
+                              {student.studentId ? `Student ID: ${student.studentId}` : "No student ID"}
+                            </p>
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-3 py-1 text-emerald-200">
+                              Completed: {student.completedCount}
+                            </span>
+                            <span className="rounded-full border border-amber-500/40 bg-amber-500/15 px-3 py-1 text-amber-200">
+                              Missing: {student.missingCount}
+                            </span>
+                            <span className="rounded-full border border-rose-500/40 bg-rose-500/15 px-3 py-1 text-rose-200">
+                              Overdue: {student.overdueCount ?? 0}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="mt-3">
+                          <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">Completed Activities</p>
+                          {!student.completedActivities || student.completedActivities.length === 0 ? (
+                            <p className="text-sm text-slate-500">No completed activities yet.</p>
+                          ) : (
+                            <div className="flex flex-wrap gap-2 mb-3">
+                              {student.completedActivities.map((activity) => (
+                                <span
+                                  key={`${student.dbId}-done-${activity.id}`}
+                                  className="rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs text-emerald-200"
+                                >
+                                  {activity.quizname || activity.quizcode || "Untitled"}{" "}
+                                  {activity.period ? `(P${activity.period})` : ""} • submitted
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          <div className="border-t border-slate-800 pt-3">
+                            <p className="mb-2 text-xs uppercase tracking-[0.18em] text-slate-500">Missing Activities</p>
+                            {student.missingActivities.length === 0 ? (
+                              <p className="text-sm text-emerald-300">No missing activities.</p>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {student.missingActivities.map((activity) => (
+                                  <span
+                                    key={`${student.dbId}-${activity.id}`}
+                                    title={formatDeadlineLabel(activity.submissionDeadline)}
+                                    className={`rounded-full border px-3 py-1 text-xs ${
+                                      activity.status === "overdue"
+                                        ? "border-rose-500/40 bg-rose-500/10 text-rose-200"
+                                        : activity.status === "upcoming"
+                                          ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+                                          : "border-slate-700 bg-slate-900 text-slate-300"
+                                    }`}
+                                  >
+                                    {activity.quizname || activity.quizcode || "Untitled"}{" "}
+                                    {activity.period ? `(P${activity.period})` : ""} • {activity.assessmentType}
+                                    {activity.status === "overdue"
+                                      ? " • overdue"
+                                      : activity.status === "upcoming"
+                                        ? " • pending"
+                                        : ""}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

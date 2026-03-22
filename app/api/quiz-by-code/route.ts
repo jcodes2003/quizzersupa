@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sameStudentId, sanitizeStudentId } from "../../lib/student-id";
 import { getSupabase } from "../../lib/supabase-server";
 import { getStudentSession } from "../../lib/student-auth";
 
@@ -88,12 +89,12 @@ export async function GET(request: NextRequest) {
 
   const rawMaxAttempts = (quizRow as { max_attempts?: number | null }).max_attempts ?? 1;
   const maxAttempts = Math.max(1, rawMaxAttempts);
-  const allowRetake =
+  const baseAllowRetake =
     Boolean((quizRow as { allow_retake?: boolean | null }).allow_retake) ||
     maxAttempts > 1;
 
   // If the student is logged in, block access when they have no attempts remaining.
-  const studentId = String(studentSession?.student?.studentId ?? "").trim();
+  const studentId = sanitizeStudentId(studentSession?.student?.studentId ?? "");
   let attemptsUsed: number | null = null;
   let attemptsRemaining: number | null = null;
   if (studentId) {
@@ -109,25 +110,26 @@ export async function GET(request: NextRequest) {
 
     const countRes = await supabase
       .from("student_attempts_log")
-      .select("submission_source", { count: "exact" })
+      .select("student_id, submission_source")
       .in("quizid", quizIds.length > 0 ? quizIds : [String(quizRow.id ?? "")])
-      .eq("student_id", studentId)
       .eq("is_submitted", true);
 
     // If student_attempts_log isn't migrated, don't block here (quiz-start still enforces attempts when possible).
     const countErr = (countRes.error as { message?: string } | null)?.message ?? "";
     if (!countErr || !countErr.toLowerCase().includes("student_attempts_log")) {
-      const used = countRes.count ?? 0;
-      const hasManualSubmit = ((countRes.data ?? []) as Array<{ submission_source?: string | null }>).some(
-        (row) => String(row.submission_source ?? "").trim() === "manual_submit"
+      const matchingRows = ((countRes.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>).filter(
+        (row) => sameStudentId(row.student_id, studentId)
       );
+      const used = matchingRows.length;
+      const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
       attemptsUsed = used;
-      attemptsRemaining = Math.max(0, maxAttempts - used);
-      if (used >= maxAttempts && hasManualSubmit) {
+      attemptsRemaining = hasManualSubmit ? 0 : Math.max(0, maxAttempts - used);
+      if (hasManualSubmit) {
         return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
       }
     }
   }
+  const allowRetake = attemptsRemaining === 0 && attemptsUsed !== null ? false : baseAllowRetake;
 
   const { data: sectionRow } = await supabase
     .from("sections")

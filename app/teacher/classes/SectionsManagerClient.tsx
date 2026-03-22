@@ -9,6 +9,34 @@ type SectionRow = {
   joinCode?: string;
 };
 
+type SectionMemberActivity = {
+  id: string;
+  quizcode: string;
+  quizname: string;
+  assessmentType: "quiz" | "exam";
+  period: string;
+  submissionDeadline?: string | null;
+  status?: "no_deadline" | "upcoming" | "overdue";
+};
+
+type SectionMemberRow = {
+  dbId: string;
+  studentName: string;
+  studentId: string;
+  completedCount: number;
+  missingCount: number;
+  overdueCount?: number;
+  missingActivities: SectionMemberActivity[];
+  overdueActivities?: SectionMemberActivity[];
+};
+
+type SectionMembersPayload = {
+  section: SectionRow;
+  activities: SectionMemberActivity[];
+  students: SectionMemberRow[];
+  relationAvailable: boolean;
+};
+
 async function readJsonSafe(res: Response): Promise<Record<string, unknown>> {
   try {
     const text = await res.text();
@@ -33,6 +61,9 @@ export default function SectionsManagerClient({ initialSections }: { initialSect
   const [sectionName, setSectionName] = useState("");
   const [sectionCode, setSectionCode] = useState("");
   const [copiedCode, setCopiedCode] = useState<string | null>(null);
+  const [expandedSectionId, setExpandedSectionId] = useState<string | null>(null);
+  const [sectionMembersById, setSectionMembersById] = useState<Record<string, SectionMembersPayload>>({});
+  const [loadingSectionId, setLoadingSectionId] = useState<string | null>(null);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const visibleSections = useMemo(() => {
@@ -114,6 +145,39 @@ export default function SectionsManagerClient({ initialSections }: { initialSect
       setError("Failed to create section");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleToggleMembers = async (section: SectionRow) => {
+    const isOpen = expandedSectionId === section.id;
+    if (isOpen) {
+      setExpandedSectionId(null);
+      return;
+    }
+
+    setExpandedSectionId(section.id);
+    if (sectionMembersById[section.id]) return;
+
+    setLoadingSectionId(section.id);
+    setError("");
+    try {
+      const res = await fetch(`/api/teacher/classes/${encodeURIComponent(section.id)}/members`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const data = await readJsonSafe(res);
+      if (!res.ok) {
+        setError(readStringField(data, "error") ?? "Failed to load joined students");
+        return;
+      }
+      setSectionMembersById((prev) => ({
+        ...prev,
+        [section.id]: data as unknown as SectionMembersPayload,
+      }));
+    } catch {
+      setError("Failed to load joined students");
+    } finally {
+      setLoadingSectionId(null);
     }
   };
 
@@ -212,19 +276,88 @@ export default function SectionsManagerClient({ initialSections }: { initialSect
               {visibleSections.map((section) => (
                 <div
                   key={section.id}
-                  className="flex items-center justify-between gap-4 rounded-2xl border border-slate-700 bg-slate-950/80 p-4"
+                  className="rounded-2xl border border-slate-700 bg-slate-950/80 p-4"
                 >
-                  <div className="min-w-0">
-                    <p className="truncate text-base font-semibold text-white">{section.name}</p>
-                    <p className="mt-1 font-mono text-sm tracking-[0.15em] text-cyan-300">{section.joinCode}</p>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="truncate text-base font-semibold text-white">{section.name}</p>
+                      <p className="mt-1 font-mono text-sm tracking-[0.15em] text-cyan-300">{section.joinCode}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleMembers(section)}
+                        className="rounded-xl bg-slate-800 px-4 py-2 text-sm font-medium text-slate-100 hover:bg-slate-700"
+                      >
+                        {expandedSectionId === section.id ? "Hide Joined" : "View Joined"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCopy(section.joinCode ?? "")}
+                        className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500"
+                      >
+                        {copiedCode === section.joinCode ? "Copied!" : "Copy Code"}
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleCopy(section.joinCode ?? "")}
-                    className="shrink-0 rounded-xl bg-cyan-600 px-4 py-2 text-sm font-medium text-white hover:bg-cyan-500"
-                  >
-                    {copiedCode === section.joinCode ? "Copied!" : "Copy Code"}
-                  </button>
+
+                  {expandedSectionId === section.id && (
+                    <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/70 p-4">
+                      {loadingSectionId === section.id ? (
+                        <p className="text-sm text-slate-400">Loading joined students...</p>
+                      ) : (() => {
+                        const details = sectionMembersById[section.id];
+                        if (!details) {
+                          return <p className="text-sm text-slate-400">No details loaded yet.</p>;
+                        }
+                        if (!details.relationAvailable) {
+                          return (
+                            <p className="text-sm text-slate-400">
+                              Student-section membership data is not available yet because the `student_sections` table is missing.
+                            </p>
+                          );
+                        }
+                        return (
+                          <div className="space-y-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="text-sm text-slate-300">
+                                {details.students.length} joined student{details.students.length === 1 ? "" : "s"}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                Activity tracking is available in the Section Status modal on the main dashboard.
+                              </p>
+                            </div>
+
+                            {details.students.length === 0 ? (
+                              <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/70 p-5 text-sm text-slate-500">
+                                No students have joined this section yet.
+                              </div>
+                            ) : (
+                              <div className="space-y-3">
+                                {details.students.map((student) => (
+                                  <div key={`${section.id}-${student.dbId}`} className="rounded-xl border border-slate-800 bg-slate-950/80 p-4">
+                                    <div className="flex flex-wrap items-center justify-between gap-3">
+                                      <div>
+                                        <p className="text-sm font-semibold text-white">{student.studentName}</p>
+                                        <p className="text-xs text-slate-400">
+                                          {student.studentId ? `Student ID: ${student.studentId}` : "No student ID"}
+                                        </p>
+                                      </div>
+                                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                                        <span className="rounded-full border border-cyan-500/40 bg-cyan-500/15 px-3 py-1 text-cyan-200">
+                                          Joined
+                                        </span>
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

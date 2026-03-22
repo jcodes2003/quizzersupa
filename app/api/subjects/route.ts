@@ -1,5 +1,8 @@
-import { NextResponse } from "next/server";
+import { noStoreJson } from "../../lib/no-store";
 import { getSupabase } from "../../lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export async function GET() {
   try {
@@ -17,10 +20,10 @@ export async function GET() {
       error = (fallback.error ?? null) as { message: string } | null;
     }
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) return noStoreJson({ error: error.message }, { status: 500 });
     const rowsAll = (data ?? []) as Array<{ id: string; subjectname: string; archived?: boolean }>;
     const rows = rowsAll.filter((r) => r.archived === undefined ? true : !Boolean(r.archived));
-    return NextResponse.json(
+    return noStoreJson(
       rows.map((r) => ({
         id: r.id,
         name: r.subjectname,
@@ -28,6 +31,6 @@ export async function GET() {
       }))
     );
   } catch (e) {
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return noStoreJson({ error: "Server error" }, { status: 500 });
   }
 }

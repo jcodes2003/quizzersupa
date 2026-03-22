@@ -1,9 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sameStudentId, sanitizeStudentId } from "../../lib/student-id";
 import { getSupabase } from "../../lib/supabase-server";
-
-function sanitizeStudentId(value: string): string {
-  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
-}
 
 function normalizeStudentNameKey(value: string): string {
   return String(value ?? "")
@@ -173,7 +170,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (attemptRow) {
-      if (attemptRow.quizid !== quizId || attemptRow.student_id !== studentId) {
+      if (attemptRow.quizid !== quizId || !sameStudentId(attemptRow.student_id, studentId)) {
         // Fallback: if the open attempt belongs to a different related quiz/student,
         // ignore this attemptId and continue with normal save flow.
         console.warn("Ignoring mismatched attemptId in student-attempts", {
@@ -248,17 +245,19 @@ export async function POST(request: NextRequest) {
 
   if (saveBestOnly) {
     // Keep only the first attempt row; update its score if a later attempt is higher.
-    const { data: firstAttempt } = await supabase
+    const { data: firstAttemptRows } = await supabase
       .from("student_attempts")
       .select("*")
       .eq("quizid", quizId)
-      .eq("student_id", studentId)
       .order("created_at", { ascending: true })
-      .limit(1)
-      .maybeSingle();
+      .limit(500);
+    const firstAttempt = ((firstAttemptRows ?? []) as Array<Record<string, unknown>>).find((row) =>
+      sameStudentId(row.student_id, studentId)
+    );
 
     if (firstAttempt) {
-      if (score > firstAttempt.score) {
+      const firstAttemptScore = Number(firstAttempt.score);
+      if (!Number.isFinite(firstAttemptScore) || score > firstAttemptScore) {
         const result = await supabase
           .from("student_attempts")
           .update({

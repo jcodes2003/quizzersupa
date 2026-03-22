@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sameStudentId, sanitizeStudentId } from "../../lib/student-id";
 import { getSupabase } from "../../lib/supabase-server";
 import { getStudentSession } from "../../lib/student-auth";
-
-function sanitizeStudentId(value: string): string {
-  return String(value ?? "").replace(/[^A-Za-z0-9]/g, "");
-}
 
 function normalizeStudentNameKey(value: string): string {
   return String(value ?? "")
@@ -113,14 +110,14 @@ export async function POST(request: NextRequest) {
 
   const rawMaxAttempts = (quizSettings as { max_attempts?: number | null }).max_attempts ?? 1;
   let maxAttempts = Math.max(1, rawMaxAttempts);
-  const allowRetake =
+  const baseAllowRetake =
     Boolean((quizSettings as { allow_retake?: boolean | null }).allow_retake) ||
     maxAttempts > 1;
   console.log("[quiz-start] settings", {
     quizId,
     rawMaxAttempts,
     maxAttempts,
-    allowRetake,
+    allowRetake: baseAllowRetake,
     allowRetakeDb: (quizSettings as { allow_retake?: boolean | null }).allow_retake,
   });
 
@@ -182,17 +179,15 @@ export async function POST(request: NextRequest) {
 
 	  const existingOpenRes = await supabase
 	    .from("student_attempts_log")
-	    .select("id, attempt_number, started_at, quizid")
+	    .select("id, attempt_number, started_at, quizid, student_id")
 	    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
-	    .eq("student_id", studentId)
 	    .eq("is_submitted", false)
 	    .order("created_at", { ascending: false })
-	    .limit(1)
-	    .maybeSingle();
+	    .limit(200);
 
-	  let existingOpen = (existingOpenRes.data ?? null) as
-	    | { id?: string; attempt_number?: number; started_at?: string; quizid?: string | null }
-	    | null;
+	  let existingOpen = (((existingOpenRes.data ?? []) as Array<
+	    { id?: string; attempt_number?: number; started_at?: string; quizid?: string | null; student_id?: string | null }
+	  >).find((row) => sameStudentId(row.student_id, studentId)) ?? null);
 	  const existingOpenError = existingOpenRes.error as { message?: string } | null;
 
   if (existingOpenError?.message && existingOpenError.message.toLowerCase().includes("student_attempts_log")) {
@@ -202,23 +197,29 @@ export async function POST(request: NextRequest) {
   if (existingOpen) {
     const countResult = await supabase
       .from("student_attempts_log")
-      .select("submission_source", { count: "exact" })
+      .select("student_id, submission_source")
       .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
-      .eq("student_id", studentId)
       .eq("is_submitted", true);
     const countErr = (countResult.error as { message?: string } | null)?.message ?? "";
+    const matchingRows =
+      countErr && countErr.toLowerCase().includes("student_attempts_log")
+        ? []
+        : (((countResult.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>).filter(
+            (row) => sameStudentId(row.student_id, studentId)
+          ));
     const attemptsUsed =
       countErr && countErr.toLowerCase().includes("student_attempts_log")
         ? null
-        : (countResult.count ?? 0);
+        : matchingRows.length;
     const hasManualSubmit =
       countErr && countErr.toLowerCase().includes("student_attempts_log")
         ? false
-        : ((countResult.data ?? []) as Array<{ submission_source?: string | null }>).some(
+        : matchingRows.some(
             (row) => String(row.submission_source ?? "").trim() === "manual_submit"
           );
     const attemptsRemaining =
       typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
+    const allowRetake = hasManualSubmit ? false : baseAllowRetake;
 
     let timeLimitMinutes = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;
     if (!timeLimitMinutes && existingOpen.quizid && existingOpen.quizid !== quizId) {
@@ -246,38 +247,45 @@ export async function POST(request: NextRequest) {
       maxAttempts,
       allowRetake,
       attemptsUsed,
-      attemptsRemaining: attemptsRemaining === 0 && !hasManualSubmit ? 1 : attemptsRemaining,
+      attemptsRemaining: hasManualSubmit
+        ? 0
+        : attemptsRemaining === 0
+          ? 1
+          : attemptsRemaining,
     });
   }
 
   let count: number | null = null;
   const countResult = await supabase
     .from("student_attempts_log")
-    .select("submission_source", { count: "exact" })
+    .select("student_id, submission_source")
     .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
-    .eq("student_id", studentId)
     .eq("is_submitted", true);
   if (countResult.error?.message && countResult.error.message.toLowerCase().includes("student_attempts_log")) {
     const fallbackCount = await supabase
       .from("student_attempts")
-      .select("*", { count: "exact" })
-      .eq("quizid", quizId)
-      .eq("student_id", studentId);
-    count = fallbackCount.count ?? 0;
+      .select("student_id")
+      .eq("quizid", quizId);
+    count = ((fallbackCount.data ?? []) as Array<{ student_id?: string | null }>).filter((row) =>
+      sameStudentId(row.student_id, studentId)
+    ).length;
   } else {
-    count = countResult.count ?? 0;
+    count = ((countResult.data ?? []) as Array<{ student_id?: string | null }>).filter((row) =>
+      sameStudentId(row.student_id, studentId)
+    ).length;
   }
 
   const attemptCount = count ?? 0;
   const hasManualSubmit =
     countResult.error?.message && countResult.error.message.toLowerCase().includes("student_attempts_log")
       ? false
-      : ((countResult.data ?? []) as Array<{ submission_source?: string | null }>).some(
-          (row) => String(row.submission_source ?? "").trim() === "manual_submit"
-        );
-    if (attemptCount >= maxAttempts && hasManualSubmit) {
-      return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
-    }
+      : ((countResult.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>)
+          .filter((row) => sameStudentId(row.student_id, studentId))
+          .some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
+  if (hasManualSubmit) {
+    return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
+  }
+  const allowRetake = hasManualSubmit ? false : baseAllowRetake;
 
   const attemptNumber = attemptCount + 1;
   type AttemptRow = { id: string; attempt_number: number; started_at: string };
@@ -318,7 +326,7 @@ export async function POST(request: NextRequest) {
     maxAttempts,
     allowRetake,
     attemptsUsed: attemptCount,
-    attemptsRemaining: Math.max(0, maxAttempts - attemptCount),
+    attemptsRemaining: hasManualSubmit ? 0 : Math.max(0, maxAttempts - attemptCount),
   });
   } catch {
     return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });

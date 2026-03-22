@@ -24,7 +24,7 @@ type QuizRow = {
   max_attempts: number;
   submission_deadline?: string | null;
   submissions_open?: boolean;
-  status: "open" | "closed" | "missing";
+  status: "open" | "closed" | "missing" | "completed";
   submitted: boolean;
   submittedAt?: string | null;
   score?: number | null;
@@ -46,7 +46,7 @@ export default function StudentDashboardPage() {
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
 
-  const [pageSize, setPageSize] = useState(5);
+  const [pageSize, setPageSize] = useState(3);
   const [openPage, setOpenPage] = useState(1);
   const [missingPage, setMissingPage] = useState(1);
   const [closedPage, setClosedPage] = useState(1);
@@ -54,7 +54,7 @@ export default function StudentDashboardPage() {
   const router = useRouter();
 
   const loadMe = async () => {
-    const res = await fetch("/api/student-me", { credentials: "include" });
+    const res = await fetch("/api/student-me", { credentials: "include", cache: "no-store" });
     if (res.status === 401) {
       router.push("/student/login");
       return null;
@@ -75,7 +75,7 @@ export default function StudentDashboardPage() {
     try {
       const sid = (sectionId ?? selectedSectionId).trim();
       const url = sid ? `/api/student-quizzes?sectionId=${encodeURIComponent(sid)}` : "/api/student-quizzes";
-      const res = await fetch(url, { credentials: "include" });
+      const res = await fetch(url, { credentials: "include", cache: "no-store" });
       if (res.status === 401) {
         router.push("/student/login");
         return;
@@ -158,7 +158,7 @@ export default function StudentDashboardPage() {
   const statusBadge = (q: QuizRow) => {
     if (q.status === "missing") return { text: "Overdue", cls: "bg-red-600/20 text-red-200 border-red-600/40" };
     if (q.status === "open") return { text: "Open", cls: "bg-emerald-600/20 text-emerald-200 border-emerald-600/40" };
-    if (q.submitted) return { text: "Completed", cls: "bg-cyan-600/20 text-cyan-200 border-cyan-600/40" };
+    if (q.status === "completed" || q.submitted) return { text: "Completed", cls: "bg-cyan-600/20 text-cyan-200 border-cyan-600/40" };
     return { text: "Closed", cls: "bg-slate-600/20 text-slate-200 border-slate-600/40" };
   };
 
@@ -187,7 +187,7 @@ export default function StudentDashboardPage() {
   const openList = filteredQuizzes.filter((q) => q.status === "open");
   const missingList = filteredQuizzes.filter((q) => q.status === "missing");
   const closedList = filteredQuizzes
-    .filter((q) => q.status === "closed")
+    .filter((q) => q.status === "closed" || q.status === "completed")
     .slice()
     .sort((a, b) => {
       const at = a.submittedAt ? new Date(a.submittedAt).getTime() : 0;
@@ -320,14 +320,22 @@ export default function StudentDashboardPage() {
               {me?.student?.studentId ? <span className="text-slate-500"> · {me.student.studentId}</span> : null}
             </p>
           </div>
-	          <button
-	            type="button"
-	            onClick={handleLogout}
-	            className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
-	          >
-	            Log out
-	          </button>
-	        </div>
+		          <div className="flex w-full sm:w-auto gap-2">
+		            <Link
+		              href="/student/account"
+		              className="w-full sm:w-auto px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-semibold text-center"
+		            >
+		              Account Settings
+		            </Link>
+		            <button
+		              type="button"
+		              onClick={handleLogout}
+		              className="w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
+		            >
+		              Log out
+		            </button>
+		          </div>
+		        </div>
 
         {error && (
           <div className="rounded-xl bg-red-900/20 border border-red-700/30 p-4 text-red-200">

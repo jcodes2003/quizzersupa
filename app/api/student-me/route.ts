@@ -1,12 +1,15 @@
-import { NextResponse } from "next/server";
+import { noStoreJson } from "../../lib/no-store";
 import { getStudentSession } from "../../lib/student-auth";
 import { getSupabase } from "../../lib/supabase-server";
 import { getSectionJoinCode } from "../../lib/section-join";
 import { getStudentSectionIds } from "../../lib/student-sections";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET() {
   const session = await getStudentSession();
-  if (!session) return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  if (!session) return noStoreJson({ ok: false, error: "Unauthorized" }, { status: 401 });
 
   const supabase = getSupabase();
   const dbSectionIds = await getStudentSectionIds(session.student.id).catch(() => null);
@@ -24,7 +27,7 @@ export async function GET() {
     });
   }
 
-  return NextResponse.json({
+  return noStoreJson({
     ok: true,
     student: session.student,
     sections,

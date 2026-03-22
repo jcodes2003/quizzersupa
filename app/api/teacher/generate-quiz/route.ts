@@ -8,6 +8,10 @@ type QuizTypeCounts = {
   enumeration: number;
 };
 
+type RephraseMode = {
+  enabled: boolean;
+};
+
 function toNonNegativeInt(value: unknown): number {
   const n = typeof value === "number" ? value : Number(String(value ?? "").trim());
   if (!Number.isFinite(n)) return 0;
@@ -67,6 +71,76 @@ function safeParseOptions(raw: unknown): string[] {
   }
 }
 
+function preserveEndingPunctuation(original: string, next: string): string {
+  const trimmedOriginal = original.trim();
+  const trimmedNext = next.trim().replace(/[.?!]+$/, "");
+  if (!trimmedOriginal) return trimmedNext;
+  const match = trimmedOriginal.match(/([.?!])\s*$/);
+  return match ? `${trimmedNext}${match[1]}` : trimmedNext;
+}
+
+function applyReplacement(
+  question: string,
+  pattern: RegExp,
+  replace: (match: string, ...groups: string[]) => string
+): string | null {
+  if (!pattern.test(question)) return null;
+  const next = question.replace(pattern, replace).replace(/\s+/g, " ").trim();
+  return next && next !== question ? preserveEndingPunctuation(question, next) : null;
+}
+
+function rephraseMultipleChoiceQuestion(question: string): string {
+  const trimmed = question.trim();
+  if (!trimmed) return trimmed;
+
+  const transformed =
+    applyReplacement(trimmed, /^Which of the following is NOT\s+/i, () => "Select the option that is NOT ") ??
+    applyReplacement(trimmed, /^Which of the following\s+/i, () => "Select the correct option that ") ??
+    applyReplacement(trimmed, /^What does (.+?) stand for\??$/i, (_m, term) => `${term} stands for which term`) ??
+    applyReplacement(trimmed, /^What is the main difference between (.+?) and (.+?)\??$/i, (_m, first, second) => `How do ${first} and ${second} differ`) ??
+    applyReplacement(trimmed, /^What is the main purpose of (.+?)\??$/i, (_m, subject) => `Which option best describes the main purpose of ${subject}`) ??
+    applyReplacement(trimmed, /^Which keyword is used to (.+?)\??$/i, (_m, action) => `What keyword is used to ${action}`) ??
+    applyReplacement(trimmed, /^Which operator is used to (.+?)\??$/i, (_m, action) => `What operator is used to ${action}`) ??
+    applyReplacement(trimmed, /^Which method is used to (.+?)\??$/i, (_m, action) => `What method is used to ${action}`) ??
+    applyReplacement(trimmed, /^Which statement is used to (.+?)\??$/i, (_m, action) => `What statement is used to ${action}`) ??
+    applyReplacement(trimmed, /^Which of these is (.+?)\??$/i, (_m, phrase) => `Identify which choice is ${phrase}`) ??
+    applyReplacement(trimmed, /^Which of the following is (.+?)\??$/i, (_m, phrase) => `Select the choice that is ${phrase}`) ??
+    applyReplacement(trimmed, /^Which of the following are (.+?)\??$/i, (_m, phrase) => `Select the choices that are ${phrase}`) ??
+    applyReplacement(trimmed, /^Which (.+?)\??$/i, (_m, phrase) => `Identify which ${phrase}`) ??
+    applyReplacement(trimmed, /^What (.+?)\??$/i, (_m, phrase) => `Identify ${phrase}`) ??
+    applyReplacement(trimmed, /^This (.+?) is called:?$/i, (_m, phrase) => `What is the term for this ${phrase}`) ??
+    applyReplacement(trimmed, /^A (.+?) is called:?$/i, (_m, phrase) => `What do we call a ${phrase}`);
+
+  return transformed ?? trimmed;
+}
+
+function rephraseIdentificationQuestion(question: string): string {
+  const trimmed = question.trim();
+  if (!trimmed) return trimmed;
+
+  const transformed =
+    applyReplacement(trimmed, /^The keyword used to (.+?)\.?$/i, (_m, action) => `Name the keyword used to ${action}`) ??
+    applyReplacement(trimmed, /^The operator that (.+?)\.?$/i, (_m, action) => `Identify the operator that ${action}`) ??
+    applyReplacement(trimmed, /^What data type is used to (.+?)\??$/i, (_m, phrase) => `Name the data type used to ${phrase}`) ??
+    applyReplacement(trimmed, /^What does (.+?) stand for\??$/i, (_m, term) => `Write the meaning of ${term}`) ??
+    applyReplacement(trimmed, /^It is (.+)$/i, (_m, phrase) => `Identify what is ${phrase}`) ??
+    applyReplacement(trimmed, /^This is (.+)$/i, (_m, phrase) => `Identify what is ${phrase}`) ??
+    applyReplacement(trimmed, /^A (.+?) is called what\??$/i, (_m, phrase) => `What is the term for a ${phrase}`) ??
+    applyReplacement(trimmed, /^Condition first loop$/i, () => "Name the loop that checks the condition first") ??
+    applyReplacement(trimmed, /^(.+?) is called what\??$/i, (_m, phrase) => `What is the term for ${phrase}`) ??
+    (trimmed.endsWith("?") ? preserveEndingPunctuation(trimmed, `Identify ${trimmed.slice(0, -1)}`) : `Identify ${trimmed}`);
+
+  return transformed ?? trimmed;
+}
+
+function rephraseQuestionText(question: string, quizType: string, mode: RephraseMode): string {
+  if (!mode.enabled) return question.trim();
+  if (quizType === "enumeration") return question.trim();
+  if (quizType === "identification") return rephraseIdentificationQuestion(question);
+  if (quizType === "multiple_choice") return rephraseMultipleChoiceQuestion(question);
+  return question.trim();
+}
+
 export async function POST(request: NextRequest) {
   const teacherId = await getTeacherId();
   if (!teacherId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -76,6 +150,7 @@ export async function POST(request: NextRequest) {
     multipleChoiceCount?: unknown;
     identificationCount?: unknown;
     enumerationCount?: unknown;
+    rephraseQuestions?: unknown;
   };
 
   const sourceQuizIds = uniqueStrings(Array.isArray(body.sourceQuizIds) ? (body.sourceQuizIds as string[]) : []);
@@ -87,6 +162,9 @@ export async function POST(request: NextRequest) {
     multiple_choice: toNonNegativeInt(body.multipleChoiceCount),
     identification: toNonNegativeInt(body.identificationCount),
     enumeration: toNonNegativeInt(body.enumerationCount),
+  };
+  const rephraseMode: RephraseMode = {
+    enabled: body.rephraseQuestions !== false,
   };
   const totalRequested = counts.multiple_choice + counts.identification + counts.enumeration;
   if (totalRequested <= 0) {
@@ -162,7 +240,7 @@ export async function POST(request: NextRequest) {
       ? String((q as { image_url?: unknown }).image_url).trim()
       : "";
     return {
-      question: String(q.question ?? "").trim(),
+      question: rephraseQuestionText(String(q.question ?? "").trim(), quizType, rephraseMode),
       quizType,
       options,
       answerkey: String(q.answerkey ?? "").trim(),
