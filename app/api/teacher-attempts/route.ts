@@ -140,10 +140,10 @@ export async function GET() {
   // Transform attempts to match expected format, including joined names
   const rows = (attempts ?? []).map((a) => {
     const quiz = quizMap.get(a.quizid);
-    // Prefer current quiz metadata so filters reflect edited quiz section/subject.
-    // Fallback to attempt-level values only when quiz metadata is unavailable.
-    const rawSubjectId = quiz?.subjectid ?? a.subjectid ?? null;
-    const rawSectionId = quiz?.sectionid ?? a.sectionid ?? null;
+    // Prefer attempt-level values so manual response edits remain visible in the teacher view.
+    // Fallback to current quiz metadata when the attempt record does not carry these fields.
+    const rawSubjectId = a.subjectid ?? quiz?.subjectid ?? null;
+    const rawSectionId = a.sectionid ?? quiz?.sectionid ?? null;
 
     const subjectid = rawSubjectId != null ? String(rawSubjectId) : "";
     const sectionid = rawSectionId != null ? String(rawSectionId) : "";

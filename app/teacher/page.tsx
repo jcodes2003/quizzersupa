@@ -113,7 +113,16 @@ type ConsolidatedRow = {
   subject: string;
   sectionid: string;
   subjectid: string;
-  quizzes: Map<string, { score: number; max_score: number; assessment_type: "quiz" | "exam" }>;
+  quizzes: Map<
+    string,
+    {
+      score: number;
+      max_score: number;
+      assessment_type: "quiz" | "exam";
+      attemptId?: string;
+      isTemporary?: boolean;
+    }
+  >;
 };
 
 type NameImportEntry = {
@@ -163,6 +172,21 @@ function escapeCsvCell(value: string | number): string {
   const s = String(value);
   if (s.includes(",") || s.includes('"') || s.includes("\n")) return `"${s.replace(/"/g, '""')}"`;
   return s;
+}
+
+function getExcelColumnLabel(index: number): string {
+  let n = index;
+  let label = "";
+  while (n > 0) {
+    const remainder = (n - 1) % 26;
+    label = String.fromCharCode(65 + remainder) + label;
+    n = Math.floor((n - 1) / 26);
+  }
+  return label;
+}
+
+function getTempReportScoreKey(studentKey: string, quizId: string): string {
+  return `${studentKey}::${quizId}`;
 }
 
 function parseCsv(text: string): string[][] {
@@ -477,7 +501,7 @@ function calculateWeightedGrade(
 
   const quizAverage = quizCount > 0 ? quizSum / quizCount : 0;
   const examAverage = examCount > 0 ? examSum / examCount : 0;
-  const finalGrade = quizAverage * 0.6 + examAverage * 0.4;
+  const finalGrade = quizAverage * 0.7 + examAverage * 0.3;
   return { quizAverage, examAverage, finalGrade };
 }
 
@@ -497,6 +521,7 @@ function downloadConsolidatedReportCsv(
             (q.quizname || q.quizcode).trim().toLowerCase(),
             {
               title: (q.quizname || q.quizcode).trim() || q.quizcode,
+              assessment_type: normalizeAssessmentType(q.assessment_type),
               quizIds: quizColumns
                 .filter(
                   (x) => (x.quizname || x.quizcode).trim().toLowerCase() === (q.quizname || q.quizcode).trim().toLowerCase()
@@ -508,23 +533,23 @@ function downloadConsolidatedReportCsv(
       )
     : quizColumns.map((q) => ({
         title: q.quizname || q.quizcode,
+        assessment_type: normalizeAssessmentType(q.assessment_type),
         quizIds: [q.quizid],
       }));
 
   const quizHeaders = splitScoreAndPercentageColumns
     ? exportColumns.flatMap((c) => [
-        escapeCsvCell(`${c.title} Score`),
+        escapeCsvCell(`${c.title} Actual Score`),
         escapeCsvCell(`${c.title} Percentage`),
       ])
     : exportColumns.map((c) => escapeCsvCell(c.title));
   const headers = ["Student ID", "Student Name"];
   if (includeSectionColumn) headers.push("Section");
   if (includeSubjectColumn) headers.push("Subject");
-  headers.push(...quizHeaders, "Quiz Avg %", "Exam Avg %", "Final Grade %");
+  headers.push(...quizHeaders, "Quiz Avg %", "Exam Avg %", "Final Grade % (70% Quiz, 30% Exam)");
   const lines = [
     headers.join(","),
-    ...rows.map((row) => {
-      const weighted = calculateWeightedGrade(row, quizColumns);
+    ...rows.map((row, rowIndex) => {
       const quizCells = exportColumns.flatMap((col) => {
         let best: { score: number; max_score: number; assessment_type: "quiz" | "exam" } | undefined;
         for (const qid of col.quizIds) {
@@ -550,12 +575,37 @@ function downloadConsolidatedReportCsv(
       const rowCells = [escapeCsvCell(row.student_id), escapeCsvCell(formatNameLastFirst(row.studentname))];
       if (includeSectionColumn) rowCells.push(escapeCsvCell(row.section));
       if (includeSubjectColumn) rowCells.push(escapeCsvCell(row.subject));
-      rowCells.push(
-        ...quizCells,
-        escapeCsvCell(weighted.quizAverage.toFixed(2)),
-        escapeCsvCell(weighted.examAverage.toFixed(2)),
-        escapeCsvCell(weighted.finalGrade.toFixed(2))
-      );
+      rowCells.push(...quizCells);
+
+      if (splitScoreAndPercentageColumns) {
+        const baseColumnOffset = 2 + (includeSectionColumn ? 1 : 0) + (includeSubjectColumn ? 1 : 0);
+        const percentageColumnRefs = exportColumns.map((col, index) => ({
+          assessment_type: col.assessment_type,
+          ref: `${getExcelColumnLabel(baseColumnOffset + index * 2 + 2)}${rowIndex + 2}`,
+        }));
+        const quizRefs = percentageColumnRefs
+          .filter((col) => col.assessment_type === "quiz")
+          .map((col) => col.ref);
+        const examRefs = percentageColumnRefs
+          .filter((col) => col.assessment_type === "exam")
+          .map((col) => col.ref);
+        const quizAverageFormula = quizRefs.length > 0 ? `=AVERAGE(${quizRefs.join(",")})` : "0";
+        const examAverageFormula = examRefs.length > 0 ? `=AVERAGE(${examRefs.join(",")})` : "0";
+        const quizAvgRef = `${getExcelColumnLabel(rowCells.length + 1)}${rowIndex + 2}`;
+        const examAvgRef = `${getExcelColumnLabel(rowCells.length + 2)}${rowIndex + 2}`;
+        rowCells.push(
+          escapeCsvCell(quizAverageFormula),
+          escapeCsvCell(examAverageFormula),
+          escapeCsvCell(`=${quizAvgRef}*0.7+${examAvgRef}*0.3`)
+        );
+      } else {
+        const weighted = calculateWeightedGrade(row, quizColumns);
+        rowCells.push(
+          escapeCsvCell(weighted.quizAverage.toFixed(2)),
+          escapeCsvCell(weighted.examAverage.toFixed(2)),
+          escapeCsvCell(weighted.finalGrade.toFixed(2))
+        );
+      }
       return rowCells.join(",");
     }),
   ];
@@ -854,6 +904,10 @@ export default function TeacherPage() {
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
   const [answersLoading, setAnswersLoading] = useState(false);
+  const [savingAttemptId, setSavingAttemptId] = useState<string | null>(null);
+  const [tempReportScores, setTempReportScores] = useState<
+    Record<string, { score: number; max_score: number; assessment_type: "quiz" | "exam" }>
+  >({});
 
   // Generator (build a new quiz by sampling questions from selected quizzes)
   const [genSelectedQuizIds, setGenSelectedQuizIds] = useState<string[]>([]);
@@ -1468,6 +1522,176 @@ export default function TeacherPage() {
     }
   }, [recheckSubject, recheckSection, fetchScores, subjects, sections]);
 
+  const handleEditReportScore = useCallback(
+    async (
+      student: { studentname: string; student_id: string },
+      quiz: { quizname: string; quizcode: string },
+      attempt: { attemptId: string; score: number; max_score: number }
+    ) => {
+      if (!attempt.attemptId) {
+        setError("This score cannot be edited because the saved attempt ID is missing.");
+        return;
+      }
+
+      const currentScore = Number(attempt.score ?? 0);
+      const maxScore = Number(attempt.max_score ?? 0);
+      const entered = window.prompt(
+        `Update the score for ${formatNameLastFirst(student.studentname) || student.studentname || "this student"} in ${quiz.quizname || quiz.quizcode}:`,
+        String(currentScore)
+      );
+      if (entered === null) return;
+
+      const nextScore = Number(entered.trim());
+      if (!Number.isFinite(nextScore) || nextScore < 0) {
+        setError("Please enter a valid score.");
+        return;
+      }
+      if (maxScore > 0 && nextScore > maxScore) {
+        setError(`Score cannot be greater than ${maxScore}.`);
+        return;
+      }
+
+      setSavingAttemptId(attempt.attemptId);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(attempt.attemptId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ score: nextScore }),
+        });
+        if (res.status === 401) {
+          setAuthenticated(false);
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          setError(readStringField(data, "error") ?? "Failed to update score.");
+          return;
+        }
+        await fetchScores();
+      } catch {
+        setError("Failed to update score.");
+      } finally {
+        setSavingAttemptId(null);
+      }
+    },
+    [fetchScores]
+  );
+
+  const handleEditResponseSection = useCallback(
+    async (row: Pick<QuizResponseRow, "id" | "sectionid" | "sectionname" | "section" | "studentname">) => {
+      if (sections.length === 0) {
+        setError("No sections are loaded yet.");
+        return;
+      }
+
+      const options = sections
+        .map((section) => `${section.id} - ${section.name}`)
+        .join("\n");
+      const entered = window.prompt(
+        `Enter the new section ID or exact section name for ${formatNameLastFirst(row.studentname) || row.studentname || "this response"}:\n\n${options}`,
+        row.sectionid || row.sectionname || row.section || ""
+      );
+      if (entered === null) return;
+
+      const normalized = entered.trim().toLowerCase();
+      const matchedSection = sections.find(
+        (section) =>
+          section.id.trim().toLowerCase() === normalized ||
+          section.name.trim().toLowerCase() === normalized
+      );
+
+      if (!matchedSection) {
+        setError("Section not found. Enter an existing section ID or exact section name.");
+        return;
+      }
+
+      setSavingAttemptId(row.id);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(row.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ sectionId: matchedSection.id }),
+        });
+        if (res.status === 401) {
+          setAuthenticated(false);
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          setError(readStringField(data, "error") ?? "Failed to update section.");
+          return;
+        }
+        await fetchScores();
+      } catch {
+        setError("Failed to update section.");
+      } finally {
+        setSavingAttemptId(null);
+      }
+    },
+    [fetchScores, sections]
+  );
+
+  const handleSetTemporaryReportScore = useCallback(
+    (
+      student: { studentname: string; student_id: string; sectionid: string; subjectid: string },
+      quiz: { quizid: string; quizname: string; quizcode: string; assessment_type: "quiz" | "exam" },
+      maxScore: number,
+      existingScore?: number
+    ) => {
+      const studentKey = getReportStudentKey(student);
+      if (!studentKey) {
+        setError("This row is missing a student identifier, so a temporary score cannot be added.");
+        return;
+      }
+
+      const entered = window.prompt(
+        `Enter a temporary score for ${formatNameLastFirst(student.studentname) || student.studentname || "this student"} in ${quiz.quizname || quiz.quizcode}:`,
+        existingScore != null ? String(existingScore) : ""
+      );
+      if (entered === null) return;
+
+      const nextScore = Number(entered.trim());
+      if (!Number.isFinite(nextScore) || nextScore < 0) {
+        setError("Please enter a valid score.");
+        return;
+      }
+      if (maxScore > 0 && nextScore > maxScore) {
+        setError(`Score cannot be greater than ${maxScore}.`);
+        return;
+      }
+
+      setError("");
+      setTempReportScores((prev) => ({
+        ...prev,
+        [getTempReportScoreKey(studentKey, quiz.quizid)]: {
+          score: nextScore,
+          max_score: maxScore,
+          assessment_type: quiz.assessment_type,
+        },
+      }));
+    },
+    []
+  );
+
+  const clearTemporaryReportScore = useCallback((
+    student: { studentname: string; student_id: string; sectionid: string; subjectid: string },
+    quizId: string
+  ) => {
+    const studentKey = getReportStudentKey(student);
+    if (!studentKey) return;
+    setTempReportScores((prev) => {
+      const next = { ...prev };
+      delete next[getTempReportScoreKey(studentKey, quizId)];
+      return next;
+    });
+  }, []);
+
   const fetchQuizzes = useCallback(async () => {
     setQuizzesLoading(true);
     try {
@@ -1509,22 +1733,23 @@ export default function TeacherPage() {
   }, []);
 
   const teacherCreatedQuizzes = useMemo(() => {
-    // Only show "source" quizzes created by this teacher (exclude assigned quizzes).
-    // Assigned quizzes have `source_quiz_id` set.
+    // Source quizzes only. Shared/assigned quizzes have `source_quiz_id` set.
     return quizzes.filter((q) => !q.source_quiz_id);
   }, [quizzes]);
 
+  const questionBankQuizzes = useMemo(() => quizzes, [quizzes]);
+
   const quizListPeriods = useMemo(() => {
     const base = quizListSubjectFilter
-      ? teacherCreatedQuizzes.filter((q) => q.subjectid === quizListSubjectFilter)
-      : teacherCreatedQuizzes;
+      ? questionBankQuizzes.filter((q) => q.subjectid === quizListSubjectFilter)
+      : questionBankQuizzes;
     const set = new Set<string>();
     for (const q of base) {
       const p = normalizePeriodValue((q as { period?: unknown }).period);
       if (p) set.add(p);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
-  }, [teacherCreatedQuizzes, quizListSubjectFilter, normalizePeriodValue]);
+  }, [questionBankQuizzes, quizListSubjectFilter, normalizePeriodValue]);
 
   const genQuizPeriods = useMemo(() => {
     const base = genQuizSubjectFilter
@@ -1539,13 +1764,13 @@ export default function TeacherPage() {
   }, [teacherCreatedQuizzes, genQuizSubjectFilter, normalizePeriodValue]);
 
   const quizListFilteredQuizzes = useMemo(() => {
-    return teacherCreatedQuizzes.filter((q) => {
+    return questionBankQuizzes.filter((q) => {
       if (quizListSubjectFilter && q.subjectid !== quizListSubjectFilter) return false;
       const p = normalizePeriodValue((q as { period?: unknown }).period);
       if (quizListPeriodFilter && p !== quizListPeriodFilter) return false;
       return true;
     });
-  }, [teacherCreatedQuizzes, quizListSubjectFilter, quizListPeriodFilter, normalizePeriodValue]);
+  }, [questionBankQuizzes, quizListSubjectFilter, quizListPeriodFilter, normalizePeriodValue]);
 
   const genFilteredQuizzes = useMemo(() => {
     return teacherCreatedQuizzes.filter((q) => {
@@ -1578,9 +1803,9 @@ export default function TeacherPage() {
   useEffect(() => {
     // If a quiz becomes hidden (assigned), clear selection to avoid confusion.
     if (!selectedQuizId) return;
-    const ok = teacherCreatedQuizzes.some((q) => q.id === selectedQuizId);
+    const ok = questionBankQuizzes.some((q) => q.id === selectedQuizId);
     if (!ok) setSelectedQuizId(null);
-  }, [teacherCreatedQuizzes, selectedQuizId]);
+  }, [questionBankQuizzes, selectedQuizId]);
 
   useEffect(() => {
     // Keep generator selections valid for the visible quiz set.
@@ -2921,9 +3146,9 @@ export default function TeacherPage() {
 
   // Consolidated: one row per student; columns = Student ID, Name, Section, Subject, then one column per quiz (score/max or —)
   type QuizColumn = { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" };
-  const quizColumns: QuizColumn[] = Array.from(
-    new Map(
-      latestRows
+	  const quizColumns: QuizColumn[] = Array.from(
+	    new Map(
+	      latestRows
         .filter((r) => r.quizid || r.quizcode)
         .map((r) => [
           r.quizid ?? r.quizcode,
@@ -2934,8 +3159,17 @@ export default function TeacherPage() {
             assessment_type: normalizeAssessmentType(r.assessment_type),
           },
         ])
-    ).values()
-  );
+	    ).values()
+	  );
+
+	  const quizMaxScoreById = new Map<string, number>();
+	  for (const r of latestRows) {
+	    const qid = r.quizid ?? r.quizcode;
+	    const maxScore = Number(r.max_score ?? 0);
+	    if (!qid || maxScore <= 0) continue;
+	    const existing = quizMaxScoreById.get(qid) ?? 0;
+	    if (maxScore > existing) quizMaxScoreById.set(qid, maxScore);
+	  }
 
 	  const consolidatedByStudent = new Map<string, ConsolidatedRow>();
 	  for (const r of latestRows) {
@@ -2945,11 +3179,11 @@ export default function TeacherPage() {
 	    const nextSubject = r.subjectname ?? r.subject ?? "";
 	    let row = consolidatedByStudent.get(identityKey);
 	    if (!row) {
-	      row = {
-	        student_id: bestStudentIdByStudentKey.get(identityKey)?.studentId ?? sanitizeStudentId(r.student_id),
-	        studentname: r.studentname ?? "",
-	        section: nextSection,
-	        subject: nextSubject,
+	        row = {
+	          student_id: bestStudentIdByStudentKey.get(identityKey)?.studentId ?? sanitizeStudentId(r.student_id),
+	          studentname: r.studentname ?? "",
+	          section: nextSection,
+	          subject: nextSubject,
 	        sectionid: r.sectionid ?? "",
 	        subjectid: r.subjectid ?? "",
 	        quizzes: new Map(),
@@ -2976,6 +3210,7 @@ export default function TeacherPage() {
           score: r.score,
           max_score: r.max_score ?? 0,
           assessment_type: normalizeAssessmentType(r.assessment_type),
+          attemptId: String(r.id ?? ""),
         });
       }
     }
@@ -2983,8 +3218,25 @@ export default function TeacherPage() {
 	      row.student_id = sanitizeStudentId(r.student_id);
 	    }
 	  }
-  const consolidatedRows = Array.from(consolidatedByStudent.values());
-  const sortedConsolidatedRows = [...consolidatedRows].sort((a, b) => {
+	  const consolidatedRows = Array.from(consolidatedByStudent.values()).map((row) => ({
+	    ...row,
+	    quizzes: new Map(row.quizzes),
+	  }));
+	  for (const row of consolidatedRows) {
+	    const studentKey = getReportStudentKey(row);
+	    if (!studentKey) continue;
+	    for (const quiz of quizColumns) {
+	      const tempScore = tempReportScores[getTempReportScoreKey(studentKey, quiz.quizid)];
+	      if (!tempScore) continue;
+	      row.quizzes.set(quiz.quizid, {
+	        score: tempScore.score,
+	        max_score: tempScore.max_score || quizMaxScoreById.get(quiz.quizid) || 0,
+	        assessment_type: tempScore.assessment_type,
+	        isTemporary: true,
+	      });
+	    }
+	  }
+	  const sortedConsolidatedRows = [...consolidatedRows].sort((a, b) => {
     const lastA = getLastNameForSort(a.studentname);
     const lastB = getLastNameForSort(b.studentname);
     const lastCmp = lastA.localeCompare(lastB, undefined, { sensitivity: "base" });
@@ -3085,7 +3337,7 @@ export default function TeacherPage() {
     }
 
     return { matchedRows, unmatchedEntries, exportRows, matchedEntriesCount };
-  }, [nameImportEntries, sortedConsolidatedRows]);
+	  }, [nameImportEntries, sortedConsolidatedRows]);
 
   const handleNameImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -3453,9 +3705,19 @@ export default function TeacherPage() {
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
                           <td className="px-4 py-3 text-slate-300">{r.attempt_number ?? "-"}</td>
                           <td className="px-4 py-3 text-slate-300">{formatSubmissionSource(r.submission_source)}</td>
-                          <td className="px-4 py-3 text-slate-300">
-                            {r.sectionname || r.section || getSectionName(r.sectionid)}
-                          </td>
+	                          <td className="px-4 py-3 text-slate-300">
+	                            <div className="flex flex-col items-start gap-2">
+	                              <span>{r.sectionname || r.section || getSectionName(r.sectionid)}</span>
+	                              <button
+	                                type="button"
+	                                onClick={() => handleEditResponseSection(r)}
+	                                disabled={savingAttemptId === r.id}
+	                                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
+	                              >
+	                                {savingAttemptId === r.id ? "Saving..." : "Edit Section"}
+	                              </button>
+	                            </div>
+	                          </td>
                           <td className="px-4 py-3 text-slate-300">
                             {r.subjectname || r.subject || getSubjectName(r.subjectid)}
                           </td>
@@ -3703,18 +3965,18 @@ export default function TeacherPage() {
 
             {/* Export and Refresh Buttons */}
 	            <div className="flex flex-wrap items-center gap-3 mb-6">
-	              <button
-	                onClick={() =>
-	                  downloadConsolidatedReportCsv(
-	                    sortedConsolidatedRows,
-	                    quizColumns,
-	                    "student-report-consolidated",
-	                    false,
-	                    false,
-	                    !reportFilterSection,
-	                    !reportFilterSubject
-	                  )
-	                }
+		              <button
+		                onClick={() =>
+		                  downloadConsolidatedReportCsv(
+		                    sortedConsolidatedRows,
+		                    quizColumns,
+		                    "student-report-consolidated",
+		                    false,
+		                    true,
+		                    !reportFilterSection,
+		                    !reportFilterSubject
+		                  )
+		                }
 	                disabled={sortedConsolidatedRows.length === 0}
 	                className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
 	              >
@@ -3811,16 +4073,110 @@ export default function TeacherPage() {
                           {!reportFilterSection && <td className="px-4 py-3 text-slate-300">{r.section || "—"}</td>}
                           {!reportFilterSubject && <td className="px-4 py-3 text-slate-300">{r.subject || "—"}</td>}
                           {quizColumns.map((q) => {
-                            const qq = r.quizzes.get(q.quizid);
-                            const cell = qq
+	                            const qq = r.quizzes.get(q.quizid);
+	                            const inferredMaxScore = quizMaxScoreById.get(q.quizid) ?? 0;
+	                            const cell = qq
                               ? qq.max_score
                                 ? `${qq.score}/${qq.max_score} (${Math.round((qq.score / qq.max_score) * 100)}%)`
                                 : String(qq.score)
                               : "—";
                             return (
-                              <td key={q.quizid} className="px-4 py-3 text-emerald-400 font-medium">
-                                {cell}
-                              </td>
+	                              <td key={q.quizid} className="px-4 py-3 text-emerald-400 font-medium">
+		                                {qq ? (
+		                                  <div className="flex flex-col items-start gap-2">
+		                                    <span className={qq.isTemporary ? "text-amber-300" : undefined}>{cell}</span>
+		                                    <div className="flex items-center gap-2">
+		                                      {qq.isTemporary ? (
+		                                        <>
+		                                          <button
+		                                            type="button"
+		                                            onClick={() =>
+		                                              handleSetTemporaryReportScore(
+		                                                {
+		                                                  studentname: r.studentname,
+		                                                  student_id: r.student_id,
+		                                                  sectionid: r.sectionid,
+		                                                  subjectid: r.subjectid,
+		                                                },
+		                                                {
+		                                                  quizid: q.quizid,
+		                                                  quizname: q.quizname,
+		                                                  quizcode: q.quizcode,
+		                                                  assessment_type: q.assessment_type,
+		                                                },
+		                                                inferredMaxScore,
+		                                                qq.score
+		                                              )
+		                                            }
+		                                            className="px-2 py-1 rounded bg-amber-700/70 hover:bg-amber-600 text-[11px] text-white"
+		                                          >
+		                                            Edit Temp
+		                                          </button>
+		                                          <button
+		                                            type="button"
+		                                            onClick={() =>
+		                                              clearTemporaryReportScore(
+		                                                {
+		                                                  studentname: r.studentname,
+		                                                  student_id: r.student_id,
+		                                                  sectionid: r.sectionid,
+		                                                  subjectid: r.subjectid,
+		                                                },
+		                                                q.quizid
+		                                              )
+		                                            }
+		                                            className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-[11px] text-white"
+		                                          >
+		                                            Clear
+		                                          </button>
+		                                        </>
+		                                      ) : (
+		                                        <button
+		                                          type="button"
+		                                          onClick={() =>
+		                                            handleEditReportScore(
+		                                              { studentname: r.studentname, student_id: r.student_id },
+		                                              { quizname: q.quizname, quizcode: q.quizcode },
+		                                              { attemptId: qq.attemptId ?? "", score: qq.score, max_score: qq.max_score }
+		                                            )
+		                                          }
+		                                          disabled={savingAttemptId === qq.attemptId}
+		                                          className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
+		                                        >
+		                                          {savingAttemptId === qq.attemptId ? "Saving..." : "Edit"}
+		                                        </button>
+		                                      )}
+		                                    </div>
+		                                  </div>
+		                                ) : (
+		                                  <div className="flex flex-col items-start gap-2">
+		                                    <span className="text-slate-500">{cell}</span>
+		                                    <button
+		                                      type="button"
+		                                      onClick={() =>
+		                                        handleSetTemporaryReportScore(
+		                                          {
+		                                            studentname: r.studentname,
+		                                            student_id: r.student_id,
+		                                            sectionid: r.sectionid,
+		                                            subjectid: r.subjectid,
+		                                          },
+		                                          {
+		                                            quizid: q.quizid,
+		                                            quizname: q.quizname,
+		                                            quizcode: q.quizcode,
+		                                            assessment_type: q.assessment_type,
+		                                          },
+		                                          inferredMaxScore
+		                                        )
+		                                      }
+		                                      className="px-2 py-1 rounded bg-cyan-700/80 hover:bg-cyan-600 text-[11px] text-white"
+		                                    >
+		                                      Add Temp
+		                                    </button>
+		                                  </div>
+		                                )}
+	                              </td>
                             );
                           })}
                           {(() => {
@@ -3846,8 +4202,9 @@ export default function TeacherPage() {
             )}
 
             <div className="mt-4 text-slate-500 text-sm">
-              <p>One row per student. Total students: {sortedConsolidatedRows.length}</p>
-              <p className="mt-1">Weighted grade formula: (Quiz Average x 60%) + (Exam Average x 40%).</p>
+	              <p>One row per student. Total students: {sortedConsolidatedRows.length}</p>
+	              <p className="mt-1">Use `Add Temp` on blank score cells to add export-only scores without saving them to the database.</p>
+	              <p className="mt-1">Weighted grade formula: (Quiz Average x 70%) + (Exam Average x 30%).</p>
               {reportFilterPeriod && <p className="mt-1">Period: {reportFilterPeriod}</p>}
               {reportFilterSection && (
                 <p className="mt-1">Section: {getSectionLabelFromRows(reportFilterSection)}</p>
@@ -4847,10 +5204,10 @@ export default function TeacherPage() {
 
 	            {quizzesLoading ? (
 	              <p className="text-slate-400 text-center py-8">Loading quizzes...</p>
-	            ) : teacherCreatedQuizzes.length === 0 && !pendingQuizDraft ? (
-	              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
-	                No quizzes yet. Create a quiz, then add questions to it.
-	              </div>
+		            ) : questionBankQuizzes.length === 0 && !pendingQuizDraft ? (
+		              <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">
+		                No quizzes yet. Create a quiz, then add questions to it.
+		              </div>
 	            ) : (
               <div className="space-y-6">
                 {pendingQuizDraft && (
@@ -4900,9 +5257,9 @@ export default function TeacherPage() {
 	                        Clear filters
 	                      </button>
 	                    )}
-		                    <span className="text-xs text-slate-400 ml-auto">
-		                      Showing {quizListFilteredQuizzes.length} of {teacherCreatedQuizzes.length}
-		                    </span>
+			                    <span className="text-xs text-slate-400 ml-auto">
+			                      Showing {quizListFilteredQuizzes.length} of {questionBankQuizzes.length}
+			                    </span>
 	                  </div>
 		                  <ul className="space-y-2">
 		                    {quizListFilteredQuizzes.length === 0 ? (
