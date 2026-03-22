@@ -3708,14 +3708,14 @@ export default function TeacherPage() {
 	                          <td className="px-4 py-3 text-slate-300">
 	                            <div className="flex flex-col items-start gap-2">
 	                              <span>{r.sectionname || r.section || getSectionName(r.sectionid)}</span>
-	                              <button
+	                              {/* <button
 	                                type="button"
 	                                onClick={() => handleEditResponseSection(r)}
 	                                disabled={savingAttemptId === r.id}
 	                                className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
 	                              >
 	                                {savingAttemptId === r.id ? "Saving..." : "Edit Section"}
-	                              </button>
+	                              </button> */}
 	                            </div>
 	                          </td>
                           <td className="px-4 py-3 text-slate-300">
