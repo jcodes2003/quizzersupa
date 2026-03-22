@@ -56,6 +56,10 @@ export async function POST(
     answerkey?: string;
     score?: number;
     imageUrl?: string;
+    handsOnMode?: "html_css" | "java_console";
+    starterHtml?: string;
+    starterCss?: string;
+    starterJava?: string;
     questions?: Array<{
       question: string;
       quizType: string;
@@ -63,6 +67,10 @@ export async function POST(
       answerkey?: string;
       score?: number;
       imageUrl?: string;
+      handsOnMode?: "html_css" | "java_console";
+      starterHtml?: string;
+      starterCss?: string;
+      starterJava?: string;
     }>;
   };
   
@@ -115,7 +123,15 @@ export async function POST(
     if (type === "multiple_choice" && Array.isArray(options)) {
       insert.answerkey = (answerkey ?? "").trim();
       insert.options = JSON.stringify(options.map((o) => String(o).trim()).filter(Boolean));
-    } else if (type === "identification" || type === "long_answer" || type === "enumeration") {
+    } else if (type === "hands_on") {
+      insert.answerkey = (answerkey ?? "").trim();
+      insert.options = JSON.stringify({
+        mode: q.handsOnMode === "java_console" ? "java_console" : "html_css",
+        starterHtml: typeof q.starterHtml === "string" ? q.starterHtml : "",
+        starterCss: typeof q.starterCss === "string" ? q.starterCss : "",
+        starterJava: typeof q.starterJava === "string" ? q.starterJava : "",
+      });
+    } else if (type === "identification" || type === "long_answer" || type === "enumeration" || type === "hands_on") {
       insert.answerkey = (answerkey ?? "").trim();
     }
     if (typeof q.imageUrl === "string" && q.imageUrl.trim()) {

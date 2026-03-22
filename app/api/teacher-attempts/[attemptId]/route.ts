@@ -38,8 +38,10 @@ export async function PATCH(
 
   const body = await request.json().catch(() => ({}));
   const hasScore = body.score !== undefined && body.score !== null && String(body.score).trim() !== "";
+  const hasMaxScore = body.maxScore !== undefined && body.maxScore !== null && String(body.maxScore).trim() !== "";
   const hasSection = body.sectionId !== undefined && body.sectionId !== null && String(body.sectionId).trim() !== "";
-  if (!hasScore && !hasSection) {
+  const hasAnswers = body.answers !== undefined && body.answers !== null && typeof body.answers === "object";
+  if (!hasScore && !hasSection && !hasMaxScore && !hasAnswers) {
     return NextResponse.json({ error: "At least one field to update is required." }, { status: 400 });
   }
 
@@ -88,9 +90,15 @@ export async function PATCH(
     return NextResponse.json({ error: "A valid score is required." }, { status: 400 });
   }
 
-  if (hasScore && attempt.max_score != null && Number.isFinite(Number(attempt.max_score)) && rawScore > Number(attempt.max_score)) {
+  const rawMaxScore = hasMaxScore ? Number(body.maxScore) : Number(attempt.max_score ?? 0);
+  if (hasMaxScore && (!Number.isFinite(rawMaxScore) || rawMaxScore < 0)) {
+    return NextResponse.json({ error: "A valid max score is required." }, { status: 400 });
+  }
+
+  const effectiveMaxScore = hasMaxScore ? rawMaxScore : Number(attempt.max_score ?? 0);
+  if (hasScore && effectiveMaxScore > 0 && rawScore > effectiveMaxScore) {
     return NextResponse.json(
-      { error: `Score cannot be greater than ${Number(attempt.max_score)}.` },
+      { error: `Score cannot be greater than ${Number(effectiveMaxScore)}.` },
       { status: 400 }
     );
   }
@@ -108,15 +116,18 @@ export async function PATCH(
   }
 
   const nextScore = hasScore ? Number(rawScore) : Number(attempt.score ?? 0);
-  const logPatch: { score?: number; sectionid?: string } = {};
+  const nextMaxScore = hasMaxScore ? Number(rawMaxScore) : Number(attempt.max_score ?? 0);
+  const logPatch: { score?: number; max_score?: number; sectionid?: string; answers?: unknown } = {};
   if (hasScore) logPatch.score = nextScore;
+  if (hasMaxScore) logPatch.max_score = nextMaxScore;
   if (nextSectionId) logPatch.sectionid = nextSectionId;
+  if (hasAnswers) logPatch.answers = body.answers;
 
   const updateLog = await supabase
     .from("student_attempts_log")
     .update(logPatch)
     .eq("id", normalizedAttemptId)
-    .select("id, score, max_score, sectionid")
+    .select("id, score, max_score, sectionid, answers")
     .maybeSingle();
 
   if (updateLog.error) {
@@ -162,7 +173,7 @@ export async function PATCH(
           .from("student_attempts")
           .update({
             score: bestLog.score ?? nextScore,
-            max_score: bestLog.max_score ?? attempt.max_score ?? null,
+            max_score: bestLog.max_score ?? nextMaxScore ?? attempt.max_score ?? null,
             studentname: bestLog.studentname ?? attempt.studentname ?? "",
             attempt_number: bestLog.attempt_number ?? 1,
             sectionid: String(bestLog.sectionid ?? nextSectionId ?? attempt.sectionid ?? "").trim() || null,
@@ -184,7 +195,7 @@ export async function PATCH(
             student_id: studentId,
             score: bestLog.score ?? nextScore,
             attempt_number: bestLog.attempt_number ?? 1,
-            max_score: bestLog.max_score ?? attempt.max_score ?? null,
+            max_score: bestLog.max_score ?? nextMaxScore ?? attempt.max_score ?? null,
             sectionid: String(bestLog.sectionid ?? nextSectionId ?? attempt.sectionid ?? "").trim() || null,
           });
           const insertBestMessage = String(insertBest.error?.message ?? "");
@@ -197,7 +208,7 @@ export async function PATCH(
           .from("student_attempts")
           .update({
             score: nextScore,
-            max_score: attempt.max_score ?? null,
+            max_score: nextMaxScore ?? attempt.max_score ?? null,
             studentname: attempt.studentname ?? "",
             ...(nextSectionId ? { sectionid: nextSectionId } : {}),
           })
@@ -219,7 +230,7 @@ export async function PATCH(
             student_id: studentId,
             score: nextScore,
             attempt_number: attempt.attempt_number ?? 1,
-            max_score: attempt.max_score ?? null,
+            max_score: nextMaxScore ?? attempt.max_score ?? null,
             sectionid: nextSectionId ?? (String(attempt.sectionid ?? "").trim() || null),
           });
           const insertAttemptMessage = String(insertAttempt.error?.message ?? "");
@@ -244,8 +255,9 @@ export async function PATCH(
     attempt: {
       id: normalizedAttemptId,
       score: nextScore,
-      max_score: attempt.max_score ?? null,
+      max_score: nextMaxScore ?? attempt.max_score ?? null,
       sectionid: nextSectionId ?? (String(attempt.sectionid ?? "").trim() || null),
+      answers: updateLog.data?.answers ?? body.answers ?? null,
     },
   });
 }

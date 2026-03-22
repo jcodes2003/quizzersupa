@@ -64,7 +64,7 @@ export async function PATCH(
 
   if (body.answerkey !== undefined) {
     const ak = String(body.answerkey ?? "").trim();
-    if (!ak) {
+    if (!ak && existing.quiztype !== "hands_on") {
       return NextResponse.json({ error: "answerkey required" }, { status: 400 });
     }
     if (existing.quiztype === "multiple_choice" && existing.options) {

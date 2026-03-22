@@ -26,6 +26,19 @@ export interface EnumerationQuestion {
   imageUrl?: string;
 }
 
+export interface HandsOnQuestion {
+  id: string;
+  question: string;
+  score?: number;
+  imageUrl?: string;
+  rubric?: string;
+  answerKey?: string;
+  mode?: "html_css" | "java_console";
+  starterHtml?: string;
+  starterCss?: string;
+  starterJava?: string;
+}
+
 export const multipleChoiceQuestions: MultipleChoiceQuestion[] = [
   {
     id: "mc1",
@@ -191,6 +204,7 @@ export interface QuizData {
   identification: IdentificationQuestion[];
   enumeration?: EnumerationQuestion[];
   programming?: ProgrammingSection;
+  handsOn?: HandsOnQuestion[];
 }
 
 export const QUIZ_BY_TOPIC: Record<QuizTopic, QuizData | null> = {

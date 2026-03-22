@@ -122,9 +122,10 @@ export async function GET(request: NextRequest) {
       );
       const used = matchingRows.length;
       const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
+      const noAttemptsLeft = used >= maxAttempts;
       attemptsUsed = used;
-      attemptsRemaining = hasManualSubmit ? 0 : Math.max(0, maxAttempts - used);
-      if (hasManualSubmit) {
+      attemptsRemaining = hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
+      if (hasManualSubmit || noAttemptsLeft) {
         return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
       }
     }

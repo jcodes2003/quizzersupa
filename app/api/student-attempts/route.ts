@@ -66,7 +66,16 @@ export async function POST(request: NextRequest) {
   ]);
   const submissionSource = allowedSources.has(sourceRaw) ? sourceRaw : "manual_submit";
 
-  if (!quizId || !studentName || !studentId || score === undefined || !maxScore || !attemptNumber) {
+  if (
+    !quizId ||
+    !studentName ||
+    !studentId ||
+    score === undefined ||
+    maxScore === undefined ||
+    maxScore === null ||
+    attemptNumber === undefined ||
+    attemptNumber === null
+  ) {
     return NextResponse.json(
       { error: "quizId, studentName, studentId, score, maxScore, and attemptNumber required" },
       { status: 400 }

@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import Quiz from "../components/Quiz";
 import { QUIZ_BY_TOPIC, type QuizTopic } from "../quiz-data";
-import type { QuizData } from "../quiz-data";
+import type { HandsOnQuestion, QuizData } from "../quiz-data";
 
 const TOPIC_LABELS: Record<string, string> = {
   hci: "Human Computer Interaction",
@@ -49,6 +49,27 @@ function parseOptions(options: string | null | undefined): string[] {
 function getQuizType(q: ApiQuestion): string {
   const t = (q.quiztype ?? (q as Record<string, unknown>).quizType ?? "").toString().trim().toLowerCase();
   return t;
+}
+
+function parseHandsOnMeta(
+  options: string | null | undefined
+): Pick<HandsOnQuestion, "mode" | "starterHtml" | "starterCss" | "starterJava"> {
+  if (!options) return {};
+  try {
+    const parsed = JSON.parse(options) as unknown;
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") return {};
+    const meta = parsed as Record<string, unknown>;
+    const mode =
+      meta.mode === "java_console" || meta.mode === "html_css"
+        ? (meta.mode as "java_console" | "html_css")
+        : undefined;
+    const starterHtml = typeof meta.starterHtml === "string" ? meta.starterHtml : undefined;
+    const starterCss = typeof meta.starterCss === "string" ? meta.starterCss : undefined;
+    const starterJava = typeof meta.starterJava === "string" ? meta.starterJava : undefined;
+    return { mode, starterHtml, starterCss, starterJava };
+  } catch {
+    return {};
+  }
 }
 
 // UNIQUE: Guarantee that option keys are unique per question, even if values repeat or are indices
@@ -126,11 +147,30 @@ function buildQuizDataFromApi(questions: ApiQuestion[]): QuizData {
         imageUrl: (q.image_url ?? "").toString().trim() || undefined,
       };
     });
+  const handsOn = list
+    .filter((q) => getQuizType(q) === "hands_on")
+    .map((q) => {
+      const scoreRaw = Number((q as Record<string, unknown>).score);
+      const score = Number.isFinite(scoreRaw) ? scoreRaw : undefined;
+      const meta = parseHandsOnMeta(q.options);
+      return {
+        id: (q.id ?? "").toString(),
+        question: (q.question ?? "").toString(),
+        answerKey: (q.answerkey ?? (q as Record<string, unknown>).answerkey ?? "").toString().trim() || undefined,
+        score,
+        imageUrl: (q.image_url ?? "").toString().trim() || undefined,
+        mode: meta.mode,
+        starterHtml: meta.starterHtml,
+        starterCss: meta.starterCss,
+        starterJava: meta.starterJava,
+      };
+    });
   return {
     title: "Teacher Quiz",
     multipleChoice,
     identification,
     enumeration,
+    handsOn,
   };
 }
 
@@ -202,7 +242,8 @@ function QuizContent() {
     const hasAnyQuestions =
       dynamicData.multipleChoice.length > 0 ||
       dynamicData.identification.length > 0 ||
-      (dynamicData.enumeration?.length ?? 0) > 0;
+      (dynamicData.enumeration?.length ?? 0) > 0 ||
+      (dynamicData.handsOn?.length ?? 0) > 0;
     if (!hasAnyQuestions) {
       return (
         <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 flex items-center justify-center">

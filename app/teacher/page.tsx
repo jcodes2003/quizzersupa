@@ -63,16 +63,23 @@ type QuestionInfo = {
   text: string;
   answerkey: string;
   quiztype: string;
+  imageUrl?: string;
+  score?: number;
+  handsOnMode?: "html_css" | "java_console";
 };
 
 type GeneratedDraftQuestion = {
   clientId: string;
   question: string;
-  quizType: "multiple_choice" | "identification" | "enumeration";
+  quizType: "multiple_choice" | "identification" | "enumeration" | "hands_on";
   options: string[];
   answerkey: string;
   score: number;
   imageUrl?: string;
+  handsOnMode?: "html_css" | "java_console";
+  starterHtml?: string;
+  starterCss?: string;
+  starterJava?: string;
 };
 
 type PendingQuizDraft = {
@@ -270,7 +277,80 @@ function normalizeQuizType(value: string): typeof QUESTION_TYPES[number]["value"
   if (t === "identification" || t === "id") return "identification";
   if (t === "enumeration" || t === "enum") return "enumeration";
   if (t === "long_answer" || t === "longanswer" || t === "essay") return "long_answer";
+  if (t === "hands_on" || t === "handson" || t === "hands-on" || t === "coding") return "hands_on";
   return "";
+}
+
+function parseHandsOnOptionsMeta(raw: string | null | undefined): {
+  mode: "html_css" | "java_console";
+  starterHtml?: string;
+  starterCss?: string;
+  starterJava?: string;
+} {
+  if (!raw) return { mode: "html_css" };
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const mode = parsed.mode === "java_console" ? "java_console" : "html_css";
+    return {
+      mode,
+      starterHtml: typeof parsed.starterHtml === "string" ? parsed.starterHtml : undefined,
+      starterCss: typeof parsed.starterCss === "string" ? parsed.starterCss : undefined,
+      starterJava: typeof parsed.starterJava === "string" ? parsed.starterJava : undefined,
+    };
+  } catch {
+    return { mode: "html_css" };
+  }
+}
+
+const DEFAULT_HANDS_ON_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+      <h1> bayloe ni diri mo magcode!</h1> 
+</body>
+</html>`;
+
+const DEFAULT_HANDS_ON_CSS = `body {
+  font-family: Arial, sans-serif;
+  padding: 24px;
+  background: #f8fafc;
+}
+
+.card {
+  max-width: 420px;
+  margin: 0 auto;
+  padding: 24px;
+  border-radius: 16px;
+  background: white;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+}`;
+
+const DEFAULT_HANDS_ON_JAVA = `// Online Java Compiler
+// Use this editor to write, compile and run your Java code online
+
+class Main {
+    public static void main(String[] args) {
+        System.out.println("Try programiz.pro");
+    }
+}`;
+
+function setTextareaCursorPosition(el: HTMLTextAreaElement, start: number, end = start) {
+  if (typeof window === "undefined") return;
+  window.requestAnimationFrame(() => {
+    el.focus();
+    el.setSelectionRange(start, end);
+  });
+}
+
+function getTextareaIndentOfLine(value: string, cursor: number): string {
+  const lineStart = value.lastIndexOf("\n", Math.max(0, cursor - 1)) + 1;
+  const line = value.slice(lineStart, cursor);
+  const match = line.match(/^\s*/);
+  return match?.[0] ?? "";
 }
 
 function getLastNameForSort(name?: string | null): string {
@@ -684,17 +764,19 @@ function normalizeAnswer(s: string): string {
   return s
     .toLowerCase()
     .trim()
-    .replace(/\s+/g, " ")
-    .replace(/[^\w\s/-]/g, "")
-    .replace(/-/g, " ");
+    .replace(/[._<>()[\]{}:,;\\]+/g, " ")
+    .replace(/-/g, " ")
+    .replace(/[^\w\s/+*-]/g, "")
+    .replace(/\s+/g, " ");
 }
 
 function normalizeForEnum(s: string): string {
   return s
     .toLowerCase()
     .trim()
+    .replace(/[._<>()[\]{}:,;\\]+/g, " ")
+    .replace(/[^\w\s/+*-]/g, "")
     .replace(/\s+/g, " ")
-    .replace(/[^\w\s/-]/g, "")
     .replace(/\band\b/gi, " ");
 }
 
@@ -792,6 +874,30 @@ function isCorrectAnswer(studentAnswer: string, answerKey: string, quizType: str
   return { ok };
 }
 
+function getHandsOnAnswerText(answer: HandsOnAnswerItem | null | undefined, mode?: "html_css" | "java_console"): string {
+  if (!answer) return "";
+  if (mode === "java_console") {
+    return String(answer.java ?? "").trim();
+  }
+  const html = String(answer.html ?? "").trim();
+  const css = String(answer.css ?? "").trim();
+  return [html, css].filter(Boolean).join("\n\n").trim();
+}
+
+function getHandsOnAutoScore(
+  answer: HandsOnAnswerItem | null | undefined,
+  answerKey: string,
+  maxScore?: number,
+  mode?: "html_css" | "java_console"
+): number | null {
+  const safeKey = String(answerKey ?? "").trim();
+  const safeMax = Number(maxScore ?? 0);
+  if (!safeKey || !Number.isFinite(safeMax) || safeMax <= 0) return null;
+  const submitted = getHandsOnAnswerText(answer, mode);
+  if (!submitted) return null;
+  return normalizeAnswer(submitted) === normalizeAnswer(safeKey) ? safeMax : null;
+}
+
 function renderAnswerBlock(
   title: string,
   items: Array<{ questionId: string; answer: string }>,
@@ -805,14 +911,23 @@ function renderAnswerBlock(
         {items.map((item, idx) => (
           <div key={`${title}-${item.questionId}-${idx}`} className="rounded-lg bg-slate-800 border border-slate-700 p-3">
             <div className="text-xs text-slate-500 mb-1">Question ID: {item.questionId}</div>
-            {questionMap[item.questionId] ? (
-              <div className="text-sm text-slate-200 mb-2 whitespace-pre-wrap">
-                {questionMap[item.questionId]?.text}
-              </div>
-            ) : (
-              <div className="text-xs text-slate-500 mb-2">Question text not found.</div>
-            )}
-            {(() => {
+	            {questionMap[item.questionId] ? (
+	              <div className="text-sm text-slate-200 mb-2 whitespace-pre-wrap">
+	                {questionMap[item.questionId]?.text}
+	              </div>
+	            ) : (
+	              <div className="text-xs text-slate-500 mb-2">Question text not found.</div>
+	            )}
+	            {questionMap[item.questionId]?.imageUrl && (
+	              <div className="mb-2">
+	                <img
+	                  src={questionMap[item.questionId]!.imageUrl}
+	                  alt="Question reference"
+	                  className="w-full max-h-72 object-contain rounded-lg border border-slate-700 bg-slate-900/40"
+	                />
+	              </div>
+	            )}
+	            {(() => {
               const info = questionMap[item.questionId];
               const answerKey = info?.answerkey ?? "";
               const quizType = info?.quiztype ?? "";
@@ -838,11 +953,152 @@ function renderAnswerBlock(
   );
 }
 
+function renderHandsOnAnswerBlock(
+  title: string,
+  items: Array<{ questionId: string; answer: HandsOnAnswerItem | null }>,
+  questionMap: Record<string, QuestionInfo>,
+  manualScores: Record<string, string>,
+  onManualScoreChange: (questionId: string, value: string) => void,
+  invalidQuestionIds: Set<string>
+) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mb-4">
+      <h4 className="text-sm font-semibold text-slate-200 mb-2">{title}</h4>
+      <div className="space-y-2">
+		        {items.map((item, idx) => {
+		          const info = questionMap[item.questionId];
+		          const isInvalid = invalidQuestionIds.has(item.questionId);
+		          const mode = item.answer?.mode ?? info?.handsOnMode ?? "html_css";
+		          const answerKey = info?.answerkey ?? "";
+		          const autoScore = getHandsOnAutoScore(item.answer, answerKey, info?.score, mode);
+		          const html = item.answer?.html ?? "";
+		          const css = item.answer?.css ?? "";
+		          const java = item.answer?.java ?? "";
+	          const consoleOutput = item.answer?.consoleOutput ?? "";
+	          const preview = item.answer?.answer ?? "";
+	          return (
+	            <div key={`${title}-${item.questionId}-${idx}`} className="rounded-lg bg-slate-800 border border-slate-700 p-3">
+	              <div className="text-xs text-slate-500 mb-1">Question ID: {item.questionId}</div>
+	              {info ? (
+	                <div className="text-sm text-slate-200 mb-3 whitespace-pre-wrap">{info.text}</div>
+	              ) : (
+	                <div className="text-xs text-slate-500 mb-3">Question text not found.</div>
+	              )}
+	              {info?.imageUrl && (
+	                <div className="mb-3">
+	                  <img
+	                    src={info.imageUrl}
+	                    alt="Question reference"
+	                    className="w-full max-h-80 object-contain rounded-lg border border-slate-700 bg-slate-900/40"
+	                  />
+	                </div>
+	              )}
+	              <div className="mb-3 rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-2">
+	                <label className="block text-xs uppercase tracking-wide text-cyan-200 mb-1">
+		                  Hands on Score {typeof info?.score === "number" ? `(max ${info.score})` : ""}
+	                </label>
+			                <input
+			                  type="number"
+			                  min={0}
+			                  max={typeof info?.score === "number" ? info.score : undefined}
+			                  step={1}
+			                  value={manualScores[item.questionId] ?? ""}
+			                  onChange={(e) => onManualScoreChange(item.questionId, e.target.value.replace(/[^\d]/g, ""))}
+			                  className={`w-32 rounded-lg border bg-slate-900 px-3 py-2 text-sm text-slate-100 focus:outline-none focus:ring-2 ${
+			                    isInvalid
+			                      ? "border-red-500 focus:ring-red-500"
+			                      : "border-slate-600 focus:ring-cyan-500"
+			                  }`}
+				                />
+				                {autoScore !== null && (
+				                  <p className="mt-2 text-xs text-emerald-300">
+				                    Exact match with answer key detected. Full score suggested: {autoScore}.
+				                  </p>
+				                )}
+				                {isInvalid && (
+				                  <p className="mt-2 text-xs text-red-300">
+				                    Score must not exceed the max score for this hands-on item.
+			                  </p>
+			                )}
+		              </div>
+	              {mode === "java_console" ? (
+	                <>
+	                  <div className="grid gap-3 xl:grid-cols-2">
+	                    <div>
+	                      <div className="text-xs text-slate-500 mb-1">Java Program</div>
+	                      <pre className="text-xs whitespace-pre-wrap rounded-lg bg-slate-900/70 p-3 text-slate-100 overflow-auto">{java || "--"}</pre>
+	                    </div>
+	                    <div>
+	                      <div className="text-xs text-slate-500 mb-1">Console Output / Notes</div>
+	                      <pre className="text-xs whitespace-pre-wrap rounded-lg bg-slate-900/70 p-3 text-emerald-300 overflow-auto">{consoleOutput || preview || "--"}</pre>
+	                    </div>
+	                  </div>
+	                </>
+	              ) : (
+	                <>
+	                  <div className="grid gap-3 xl:grid-cols-2">
+	                    <div>
+	                      <div className="text-xs text-slate-500 mb-1">HTML</div>
+	                      <pre className="text-xs whitespace-pre-wrap rounded-lg bg-slate-900/70 p-3 text-slate-100 overflow-auto">{html || "--"}</pre>
+	                    </div>
+	                    <div>
+	                      <div className="text-xs text-slate-500 mb-1">CSS</div>
+	                      <pre className="text-xs whitespace-pre-wrap rounded-lg bg-slate-900/70 p-3 text-slate-100 overflow-auto">{css || "--"}</pre>
+	                    </div>
+	                  </div>
+	                  {preview && (
+	                    <div className="mt-3">
+	                      <div className="text-xs text-slate-500 mb-1">Submitted Output</div>
+	                      <iframe
+	                        title={`Answer preview ${item.questionId}`}
+	                        srcDoc={preview}
+	                        sandbox="allow-scripts"
+	                        className="w-full min-h-[18rem] rounded-lg border border-slate-600/50 bg-white"
+	                      />
+	                    </div>
+	                  )}
+	                </>
+	              )}
+	              {!!answerKey && (
+	                <>
+	                  <div className="text-xs text-slate-500 mt-3 mb-1">Teacher Notes</div>
+	                  <div className="text-sm text-emerald-400 whitespace-pre-wrap">{answerKey}</div>
+	                </>
+	              )}
+	            </div>
+	          );
+	        })}
+      </div>
+    </div>
+  );
+}
+
 function buildAnswerMap(items: Array<{ questionId: string; answer: string }>): Map<string, string> {
   const map = new Map<string, string>();
   for (const item of items) {
     if (!item?.questionId) continue;
     map.set(item.questionId, String(item.answer ?? ""));
+  }
+  return map;
+}
+
+type HandsOnAnswerItem = {
+  questionId: string;
+  mode?: "html_css" | "java_console";
+  html?: string;
+  css?: string;
+  java?: string;
+  consoleOutput?: string;
+  answer?: string;
+  score?: number;
+};
+
+function buildHandsOnAnswerMap(items: HandsOnAnswerItem[]): Map<string, HandsOnAnswerItem> {
+  const map = new Map<string, HandsOnAnswerItem>();
+  for (const item of items) {
+    if (!item?.questionId) continue;
+    map.set(item.questionId, item);
   }
   return map;
 }
@@ -854,9 +1110,21 @@ function buildQuestionItems(
 ): Array<{ questionId: string; answer: string }> {
   return Object.entries(questionMap)
     .filter(([, info]) => info.quiztype === quiztype)
+	    .map(([questionId]) => ({
+	      questionId,
+	      answer: answers.get(questionId) ?? "",
+	    }));
+}
+
+function buildHandsOnQuestionItems(
+  questionMap: Record<string, QuestionInfo>,
+  answers: Map<string, HandsOnAnswerItem>
+): Array<{ questionId: string; answer: HandsOnAnswerItem | null }> {
+  return Object.entries(questionMap)
+    .filter(([, info]) => info.quiztype === "hands_on")
     .map(([questionId]) => ({
       questionId,
-      answer: answers.get(questionId) ?? "",
+      answer: answers.get(questionId) ?? null,
     }));
 }
 
@@ -865,6 +1133,7 @@ const QUESTION_TYPES = [
   { value: "identification", label: "Identification" },
   { value: "enumeration", label: "Enumeration" },
   { value: "long_answer", label: "Long Answer" },
+  { value: "hands_on", label: "Hands on" },
 ] as const;
 
 const QUIZ_FORM_DRAFT_KEY = "quiz_form_draft_v1";
@@ -947,32 +1216,53 @@ export default function TeacherPage() {
   const [newQuestionImageUrl, setNewQuestionImageUrl] = useState<string>("");
   const [newQuestionImageUploading, setNewQuestionImageUploading] = useState(false);
   const [newQuestionImageError, setNewQuestionImageError] = useState<string>("");
+  const [newHandsOnMode, setNewHandsOnMode] = useState<"html_css" | "java_console">("html_css");
+  const [newHandsOnStarterHtml, setNewHandsOnStarterHtml] = useState(DEFAULT_HANDS_ON_HTML);
+  const [newHandsOnStarterCss, setNewHandsOnStarterCss] = useState(DEFAULT_HANDS_ON_CSS);
+  const [newHandsOnStarterJava, setNewHandsOnStarterJava] = useState(DEFAULT_HANDS_ON_JAVA);
   const [enumScoreMode, setEnumScoreMode] = useState<"fixed" | "per_item">("fixed");
   const [importStatus, setImportStatus] = useState<string>("");
   const [batchQuestions, setBatchQuestions] = useState<Array<{
     question: string;
     quizType: typeof QUESTION_TYPES[number]["value"];
-    options?: string[];
-    answerkey?: string;
-    score: number;
-    imageUrl?: string;
-  }>>([]);
+	    options?: string[];
+	    answerkey?: string;
+	    score: number;
+	    imageUrl?: string;
+	    handsOnMode?: "html_css" | "java_console";
+	    starterHtml?: string;
+	    starterCss?: string;
+	    starterJava?: string;
+	  }>>([]);
   const [editingBatchIndex, setEditingBatchIndex] = useState<number | null>(null);
   const [responsesPage, setResponsesPage] = useState(1);
   const [reportsPage, setReportsPage] = useState(1);
   const [quizzesPage, setQuizzesPage] = useState(1);
   const [navOpen, setNavOpen] = useState(false);
-  const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
-  const [sectionStatusModalOpen, setSectionStatusModalOpen] = useState(false);
+	  const [answerModal, setAnswerModal] = useState<QuizResponseRow | null>(null);
+	  const [sectionStatusModalOpen, setSectionStatusModalOpen] = useState(false);
   const [selectedSectionStatusId, setSelectedSectionStatusId] = useState("");
   const [sectionStatusById, setSectionStatusById] = useState<Record<string, SectionMembersPayload>>({});
   const [sectionStatusLoading, setSectionStatusLoading] = useState(false);
   const [sectionStatusError, setSectionStatusError] = useState<string | null>(null);
   const [copiedQuizCode, setCopiedQuizCode] = useState<string | null>(null);
+  useEffect(() => {
+    if (newQuizType !== "hands_on") return;
+    if (newHandsOnMode === "java_console") {
+      if (!newQuestionAnswerKey.trim() || newQuestionAnswerKey.trim() === DEFAULT_HANDS_ON_HTML.trim()) {
+        setNewQuestionAnswerKey(DEFAULT_HANDS_ON_JAVA);
+      }
+      return;
+    }
+    if (!newQuestionAnswerKey.trim() || newQuestionAnswerKey.trim() === DEFAULT_HANDS_ON_JAVA.trim()) {
+      setNewQuestionAnswerKey(DEFAULT_HANDS_ON_HTML);
+    }
+  }, [newQuizType, newHandsOnMode]);
   const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
-  const [answersLoading, setAnswersLoading] = useState(false);
-  const [savingAttemptId, setSavingAttemptId] = useState<string | null>(null);
+	  const [answerQuestions, setAnswerQuestions] = useState<Record<string, QuestionInfo>>({});
+	  const [answersLoading, setAnswersLoading] = useState(false);
+	  const [manualHandsOnScores, setManualHandsOnScores] = useState<Record<string, string>>({});
+	  const [savingAttemptId, setSavingAttemptId] = useState<string | null>(null);
   const [tempReportScores, setTempReportScores] = useState<
     Record<string, { score: number; max_score: number; assessment_type: "quiz" | "exam" }>
   >({});
@@ -1001,7 +1291,7 @@ export default function TeacherPage() {
   const [genUploadLoading, setGenUploadLoading] = useState(false);
   const [genUploadError, setGenUploadError] = useState<string | null>(null);
   const [questionTypeFilter, setQuestionTypeFilter] = useState<
-    "all" | "multiple_choice" | "identification" | "enumeration" | "long_answer"
+    "all" | "multiple_choice" | "identification" | "enumeration" | "long_answer" | "hands_on"
   >("all");
   const [editingQuestionId, setEditingQuestionId] = useState<string | null>(null);
   const [editQuestionText, setEditQuestionText] = useState("");
@@ -1113,18 +1403,19 @@ export default function TeacherPage() {
     },
     { mc: 0, id: 0, en: 0 }
   );
-  const questionTypeCounts = questionsForQuiz.reduce(
-    (acc, q) => {
-      if (q.quiztype === "multiple_choice") acc.mc++;
-      else if (q.quiztype === "identification") acc.id++;
-      else if (q.quiztype === "enumeration") acc.en++;
-      else if (q.quiztype === "long_answer") acc.la++;
-      return acc;
-    },
-    { mc: 0, id: 0, en: 0, la: 0 }
-  );
-  const totalQuestionCount =
-    questionTypeCounts.mc + questionTypeCounts.id + questionTypeCounts.en + questionTypeCounts.la;
+	  const questionTypeCounts = questionsForQuiz.reduce(
+	    (acc, q) => {
+	      if (q.quiztype === "multiple_choice") acc.mc++;
+	      else if (q.quiztype === "identification") acc.id++;
+	      else if (q.quiztype === "enumeration") acc.en++;
+	      else if (q.quiztype === "long_answer") acc.la++;
+	      else if (q.quiztype === "hands_on") acc.hs++;
+	      return acc;
+	    },
+	    { mc: 0, id: 0, en: 0, la: 0, hs: 0 }
+	  );
+	  const totalQuestionCount =
+	    questionTypeCounts.mc + questionTypeCounts.id + questionTypeCounts.en + questionTypeCounts.la + questionTypeCounts.hs;
   const filteredQuestions = orderedQuestions.filter((q) =>
     questionTypeFilter === "all" ? true : q.quiztype === questionTypeFilter
   );
@@ -1179,15 +1470,24 @@ export default function TeacherPage() {
             >
               Enumeration
             </button>
-            <button
-              type="button"
-              onClick={() => setQuestionTypeFilter("long_answer")}
-              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
-                questionTypeFilter === "long_answer" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
-              }`}
-            >
-              Long Answer
-            </button>
+	            <button
+	              type="button"
+	              onClick={() => setQuestionTypeFilter("long_answer")}
+	              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+	                questionTypeFilter === "long_answer" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+	              }`}
+	            >
+	              Long Answer
+	            </button>
+	            <button
+	              type="button"
+	              onClick={() => setQuestionTypeFilter("hands_on")}
+	              className={`px-3 py-1.5 text-xs md:text-sm font-medium rounded-lg ${
+	                questionTypeFilter === "hands_on" ? "bg-cyan-600 text-white" : "text-slate-300 hover:bg-slate-700"
+	              }`}
+	            >
+	              Hands on
+	            </button>
           </div>
           <button
             onClick={handleDeleteAllQuestions}
@@ -1256,17 +1556,17 @@ export default function TeacherPage() {
                       <span className="text-slate-500 text-xs uppercase">
                         Editing {q.quiztype.replace("_", " ")}
                       </span>
-                      <span className="text-slate-400 text-xs">
-                        Score:&nbsp;
-                        <input
-                          type="number"
-                          min={0.5}
-                          step={0.5}
-                          value={editScore}
-                          onChange={(e) => setEditScore(e.target.value)}
-                          disabled={q.quiztype === "enumeration" && editEnumScoreMode === "per_item"}
-                          className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                        />
+	                      <span className="text-slate-400 text-xs">
+	                        {q.quiztype === "hands_on" ? "Max Score:" : "Score:"}&nbsp;
+		                        <input
+		                          type="number"
+	                          min={q.quiztype === "hands_on" ? 1 : 0.5}
+	                          step={q.quiztype === "hands_on" ? 1 : 0.5}
+	                          value={editScore}
+	                          onChange={(e) => setEditScore(q.quiztype === "hands_on" ? e.target.value.replace(/[^\d]/g, "") : e.target.value)}
+	                          disabled={q.quiztype === "enumeration" && editEnumScoreMode === "per_item"}
+	                          className="w-20 px-2 py-1 rounded bg-slate-800 border border-slate-600 text-slate-100 text-xs focus:outline-none focus:ring-1 focus:ring-cyan-500"
+	                        />
                       </span>
                     </div>
                     <div>
@@ -1278,30 +1578,36 @@ export default function TeacherPage() {
                         className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
                       />
                     </div>
-                    <div>
-                      <label className="block text-slate-400 text-xs mb-1">Answer key</label>
-                      {q.quiztype === "multiple_choice" && editQuestionOptions.length > 0 ? (
-                        <select
-                          value={editAnswerKey}
-                          onChange={(e) => setEditAnswerKey(e.target.value)}
-                          className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        >
-                          <option value="">Select the correct option...</option>
-                          {editQuestionOptions.map((opt, i) => (
-                            <option key={`edit-answer-${i}-${opt}`} value={opt}>
-                              {opt}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <textarea
-                          value={editAnswerKey}
-                          onChange={(e) => setEditAnswerKey(e.target.value)}
-                          rows={q.quiztype === "enumeration" ? 3 : 2}
-                          className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        />
-                      )}
-                    </div>
+	                    {q.quiztype !== "hands_on" ? (
+	                      <div>
+	                        <label className="block text-slate-400 text-xs mb-1">Answer key</label>
+	                        {q.quiztype === "multiple_choice" && editQuestionOptions.length > 0 ? (
+	                          <select
+	                            value={editAnswerKey}
+	                            onChange={(e) => setEditAnswerKey(e.target.value)}
+	                            className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                          >
+	                            <option value="">Select the correct option...</option>
+	                            {editQuestionOptions.map((opt, i) => (
+	                              <option key={`edit-answer-${i}-${opt}`} value={opt}>
+	                                {opt}
+	                              </option>
+	                            ))}
+	                          </select>
+	                        ) : (
+	                          <textarea
+	                            value={editAnswerKey}
+	                            onChange={(e) => setEditAnswerKey(e.target.value)}
+	                            rows={q.quiztype === "enumeration" ? 3 : 2}
+	                            className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                          />
+	                        )}
+	                      </div>
+	                    ) : (
+	                      <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-100">
+	                        Put the full task instructions in the question text. You can also add a reference image below to guide students.
+	                      </div>
+	                    )}
                     <div>
                       <label className="block text-slate-400 text-xs mb-1">Question Image (optional)</label>
                       <div className="flex flex-wrap items-center gap-2">
@@ -1384,26 +1690,30 @@ export default function TeacherPage() {
                           setError("");
                           const trimmedQuestion = editQuestionText.trim();
                           const trimmedAnswer = editAnswerKey.trim();
-                          const scoreNumber = Number(editScore) || 1;
+	                          const scoreNumber = Number(editScore) || 1;
                           if (!trimmedQuestion) {
                             setError("Question text is required.");
                             return;
                           }
-                          if (!trimmedAnswer) {
-                            setError("Answer key is required.");
-                            return;
-                          }
-                          if (q.quiztype === "enumeration" && editEnumScoreMode === "per_item") {
-                            const count = parseEnumerationAnswerKey(trimmedAnswer).length;
-                            if (count <= 0) {
-                              setError("Enumeration needs at least 1 answer item.");
-                              return;
-                            }
-                          }
-                          if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
-                            setError("Score must be a positive number.");
-                            return;
-                          }
+	                          if (q.quiztype !== "hands_on" && !trimmedAnswer) {
+	                            setError("Answer key is required.");
+	                            return;
+	                          }
+	                          if (q.quiztype === "enumeration" && editEnumScoreMode === "per_item") {
+	                            const count = parseEnumerationAnswerKey(trimmedAnswer).length;
+	                            if (count <= 0) {
+	                              setError("Enumeration needs at least 1 answer item.");
+	                              return;
+	                            }
+	                          }
+	                          if (q.quiztype === "hands_on" && !Number.isInteger(scoreNumber)) {
+	                            setError("Hands-on max score must be a whole number.");
+	                            return;
+	                          }
+	                          if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+	                            setError("Score must be a positive number.");
+	                            return;
+	                          }
                           setSavingEdit(true);
                           try {
                             const res = await fetch(`/api/teacher/questions/${q.id}`, {
@@ -1598,7 +1908,7 @@ export default function TeacherPage() {
     }
   }, [recheckSubject, recheckSection, fetchScores, subjects, sections]);
 
-  const handleEditReportScore = useCallback(
+	  const handleEditReportScore = useCallback(
     async (
       student: { studentname: string; student_id: string },
       quiz: { quizname: string; quizcode: string },
@@ -1653,8 +1963,95 @@ export default function TeacherPage() {
         setSavingAttemptId(null);
       }
     },
-    [fetchScores]
-  );
+	    [fetchScores]
+	  );
+
+	  const handleSaveHandsOnScore = useCallback(async () => {
+	    if (!answerModal?.id) {
+	      setError("This attempt cannot be graded because the saved attempt ID is missing.");
+	      return;
+	    }
+
+	    const rawAnswers = (answerModal.answers ?? {}) as Record<string, unknown>;
+	    const handsOnItems = Array.isArray(rawAnswers.hands_on) ? (rawAnswers.hands_on as HandsOnAnswerItem[]) : [];
+	    const existingManualTotal = handsOnItems.reduce((sum, item) => {
+	      const score = Number(item.score);
+	      return Number.isFinite(score) ? sum + score : sum;
+	    }, 0);
+	    const baseScore = Math.max(0, Number(answerModal.score ?? 0) - existingManualTotal);
+
+	    let manualTotal = 0;
+	    const updatedHandsOnItems = handsOnItems.map((item) => {
+	      const questionId = String(item.questionId ?? "").trim();
+	      const maxForQuestion = Number(answerQuestions[questionId]?.score ?? 0);
+	      const rawValue = String(manualHandsOnScores[questionId] ?? "").trim();
+	      const nextScore = rawValue === "" ? 0 : Number(rawValue);
+	      if (!Number.isFinite(nextScore) || nextScore < 0) {
+	        throw new Error(`Enter a valid score for hands-on question ${questionId}.`);
+	      }
+	      if (!Number.isInteger(nextScore)) {
+	        throw new Error(`Hands-on score for question ${questionId} must be a whole number.`);
+	      }
+	      if (maxForQuestion > 0 && nextScore > maxForQuestion) {
+	        throw new Error(`Hands-on score for question ${questionId} cannot be greater than ${maxForQuestion}.`);
+	      }
+	      manualTotal += nextScore;
+	      return { ...item, score: nextScore };
+	    });
+
+	    const nextScore = baseScore + manualTotal;
+	    const computedMaxScore = Object.values(answerQuestions).reduce((sum, info) => {
+	      const score = Number(info.score ?? 0);
+	      return Number.isFinite(score) && score > 0 ? sum + score : sum;
+	    }, 0);
+	    const nextMaxScore = Math.max(Number(answerModal.max_score ?? 0), computedMaxScore);
+
+	    setSavingAttemptId(answerModal.id);
+	    setError("");
+	    try {
+	      const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(answerModal.id)}`, {
+	        method: "PATCH",
+	        headers: { "Content-Type": "application/json" },
+	        credentials: "include",
+	        body: JSON.stringify({
+	          score: nextScore,
+	          maxScore: nextMaxScore,
+	          answers: {
+	            ...rawAnswers,
+	            hands_on: updatedHandsOnItems,
+	          },
+	        }),
+	      });
+	      if (res.status === 401) {
+	        setAuthenticated(false);
+	        setError("Session expired. Please log in again.");
+	        return;
+	      }
+	      const data = await readJsonSafe(res);
+	      if (!res.ok) {
+	        setError(readStringField(data, "error") ?? "Failed to save hands-on score.");
+	        return;
+	      }
+	      setAnswerModal((prev) =>
+	        prev
+	          ? {
+	              ...prev,
+	              score: nextScore,
+	              max_score: nextMaxScore,
+	              answers: {
+	                ...rawAnswers,
+	                hands_on: updatedHandsOnItems,
+	              },
+	            }
+	          : prev
+	      );
+	      await fetchScores();
+	    } catch (err) {
+	      setError(err instanceof Error ? err.message : "Failed to save hands-on score.");
+	    } finally {
+	      setSavingAttemptId(null);
+	    }
+	  }, [answerModal, answerQuestions, manualHandsOnScores, fetchScores]);
 
   const handleEditResponseSection = useCallback(
     async (row: Pick<QuizResponseRow, "id" | "sectionid" | "sectionname" | "section" | "studentname">) => {
@@ -2037,33 +2434,54 @@ export default function TeacherPage() {
   }, [tab, rows.length, subjects.length, sections.length, fetchSubjects, fetchSections]);
 
   useEffect(() => {
-    if (!answerModal?.quizid) {
-      setAnswerQuestions({});
-      return;
-    }
+	    if (!answerModal?.quizid) {
+	      setAnswerQuestions({});
+	      setManualHandsOnScores({});
+	      return;
+	    }
     let cancelled = false;
     setAnswersLoading(true);
     (async () => {
       try {
         const res = await fetch(`/api/teacher/quizzes/${answerModal.quizid}/questions`, { credentials: "include", cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as Array<{ id: string; question: string; answerkey?: string | null; quiztype?: string | null }>;
-        if (cancelled) return;
-        const map: Record<string, QuestionInfo> = {};
-        for (const q of data) {
-          map[String(q.id)] = {
-            text: String(q.question ?? ""),
-            answerkey: String(q.answerkey ?? ""),
-            quiztype: String(q.quiztype ?? ""),
-          };
-        }
-        setAnswerQuestions(map);
-      } finally {
-        if (!cancelled) setAnswersLoading(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [answerModal?.quizid]);
+	        const data = (await res.json()) as Array<{ id: string; question: string; answerkey?: string | null; quiztype?: string | null; image_url?: string | null; score?: number | null; options?: string | null }>;
+	        if (cancelled) return;
+	        const map: Record<string, QuestionInfo> = {};
+	        for (const q of data) {
+	          const handsOnMeta = parseHandsOnOptionsMeta(typeof q.options === "string" ? q.options : null);
+	          map[String(q.id)] = {
+	            text: String(q.question ?? ""),
+	            answerkey: String(q.answerkey ?? ""),
+	            quiztype: String(q.quiztype ?? ""),
+	            imageUrl: typeof q.image_url === "string" ? q.image_url.trim() : "",
+	            score: Number.isFinite(Number(q.score)) ? Number(q.score) : undefined,
+	            handsOnMode: handsOnMeta.mode,
+	          };
+	        }
+	        setAnswerQuestions(map);
+	        const rawAnswers = (answerModal.answers ?? {}) as Record<string, unknown>;
+	        const handsOn = Array.isArray(rawAnswers.hands_on) ? (rawAnswers.hands_on as HandsOnAnswerItem[]) : [];
+	        const nextManualScores: Record<string, string> = {};
+	        for (const item of handsOn) {
+	          const questionId = String(item.questionId ?? "").trim();
+	          if (!questionId) continue;
+	          const info = map[questionId];
+	          const autoScore = getHandsOnAutoScore(item, info?.answerkey ?? "", info?.score, item.mode ?? info?.handsOnMode);
+	          const score = Number(item.score);
+	          if (autoScore !== null) {
+	            nextManualScores[questionId] = String(autoScore);
+	          } else if (Number.isFinite(score)) {
+	            nextManualScores[questionId] = String(score);
+	          }
+	        }
+	        setManualHandsOnScores(nextManualScores);
+	      } finally {
+	        if (!cancelled) setAnswersLoading(false);
+	      }
+	    })();
+	    return () => { cancelled = true; };
+	  }, [answerModal]);
 
   // Reset pagination when filters change
   useEffect(() => {
@@ -2510,12 +2928,12 @@ export default function TeacherPage() {
           setGenUploadError("Each multiple choice question must have an answer key that matches one of its options.");
           return;
         }
-      } else {
-        if (!q.answerkey) {
-          setGenUploadError("Identification and enumeration questions must have an answer key.");
-          return;
-        }
-      }
+	      } else {
+	        if (q.quizType !== "hands_on" && !q.answerkey) {
+	          setGenUploadError("Identification and enumeration questions must have an answer key.");
+	          return;
+	        }
+	      }
     }
 
     const timeLimitMinutes = genTimeLimitMinutes.trim() ? Number(genTimeLimitMinutes.trim()) : null;
@@ -2605,12 +3023,12 @@ export default function TeacherPage() {
         setError("Select the correct answer from the options.");
         return;
       }
-    } else {
-      // For identification, enumeration, and long answer, an answer key is required
-      if (!newQuestionAnswerKey.trim()) {
-        setError("Answer key is required for this question type.");
-        return;
-      }
+	    } else {
+	      // Identification, enumeration, and long answer need an answer key.
+	      if (newQuizType !== "hands_on" && !newQuestionAnswerKey.trim()) {
+	        setError("Answer key is required for this question type.");
+	        return;
+	      }
       if (newQuizType === "enumeration" && enumScoreMode === "per_item") {
         const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
         if (count <= 0) {
@@ -2619,27 +3037,40 @@ export default function TeacherPage() {
         }
       }
     }
-    const scoreNumber = Number(newQuestionScore) || 1;
-    if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
-      setError("Score must be a positive number.");
-      return;
+	    const scoreNumber = Number(newQuestionScore) || 1;
+	    if (newQuizType === "hands_on" && !Number.isInteger(scoreNumber)) {
+	      setError("Hands-on max score must be a whole number.");
+	      return;
+	    }
+	    if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+	      setError("Score must be a positive number.");
+	      return;
     }
     
-    const questionToAdd: typeof batchQuestions[0] = {
-      question: newQuestionText.trim(),
-      quizType: newQuizType,
-      score: scoreNumber,
-    };
+	    const questionToAdd: typeof batchQuestions[0] = {
+	      question: newQuestionText.trim(),
+	      quizType: newQuizType,
+	      score: scoreNumber,
+	    };
     if (newQuestionImageUrl.trim()) {
       questionToAdd.imageUrl = newQuestionImageUrl.trim();
     }
     
-    if (newQuizType === "multiple_choice") {
-      questionToAdd.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
-      questionToAdd.answerkey = newQuestionAnswerKey.trim();
-    } else {
-      questionToAdd.answerkey = newQuestionAnswerKey.trim();
-    }
+	    if (newQuizType === "multiple_choice") {
+	      questionToAdd.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
+	      questionToAdd.answerkey = newQuestionAnswerKey.trim();
+	    } else if (newQuizType === "hands_on") {
+	      questionToAdd.answerkey = newQuestionAnswerKey.trim();
+	      questionToAdd.handsOnMode = newHandsOnMode;
+	      if (newHandsOnMode === "html_css") {
+	        questionToAdd.starterHtml = newHandsOnStarterHtml.trim();
+	        questionToAdd.starterCss = newHandsOnStarterCss.trim();
+	      } else {
+	        questionToAdd.starterJava = newHandsOnStarterJava.trim();
+	      }
+	    } else {
+	      questionToAdd.answerkey = newQuestionAnswerKey.trim();
+	    }
     
     if (editingBatchIndex !== null) {
       setBatchQuestions(batchQuestions.map((item, index) => (index === editingBatchIndex ? questionToAdd : item)));
@@ -2650,27 +3081,35 @@ export default function TeacherPage() {
     // Clear form for next question
     setNewQuestionText("");
     setNewQuestionOptions(["", ""]);
-    setNewQuestionAnswerKey("");
-    setNewQuestionScore("1");
-    setNewQuestionImageUrl("");
-    setNewQuestionImageError("");
-    setEnumScoreMode("fixed");
-    setNewQuizType("multiple_choice");
+	    setNewQuestionAnswerKey("");
+	    setNewQuestionScore("1");
+	    setNewQuestionImageUrl("");
+		    setNewQuestionImageError("");
+		    setNewHandsOnMode("html_css");
+		    setNewHandsOnStarterHtml(DEFAULT_HANDS_ON_HTML);
+		    setNewHandsOnStarterCss(DEFAULT_HANDS_ON_CSS);
+		    setNewHandsOnStarterJava(DEFAULT_HANDS_ON_JAVA);
+		    setEnumScoreMode("fixed");
+		    setNewQuizType("multiple_choice");
     setEditingBatchIndex(null);
   };
 
-  const handleEditBatchQuestion = (idx: number) => {
-    const item = batchQuestions[idx];
-    if (!item) return;
+	  const handleEditBatchQuestion = (idx: number) => {
+	    const item = batchQuestions[idx];
+	    if (!item) return;
 
     setNewQuestionText(item.question);
     setNewQuizType(item.quizType);
     setNewQuestionOptions(item.quizType === "multiple_choice" ? item.options?.length ? [...item.options] : ["", ""] : ["", ""]);
-    setNewQuestionAnswerKey(item.answerkey ?? "");
-    setNewQuestionScore(String(item.score));
-    setNewQuestionImageUrl(item.imageUrl ?? "");
-    setNewQuestionImageError("");
-    if (item.quizType === "enumeration") {
+	    setNewQuestionAnswerKey(item.answerkey ?? "");
+	    setNewQuestionScore(String(item.score));
+	    setNewQuestionImageUrl(item.imageUrl ?? "");
+	    setNewQuestionImageError("");
+	    setNewHandsOnMode(item.handsOnMode ?? "html_css");
+	    setNewHandsOnStarterHtml(item.starterHtml ?? DEFAULT_HANDS_ON_HTML);
+	    setNewHandsOnStarterCss(item.starterCss ?? DEFAULT_HANDS_ON_CSS);
+	    setNewHandsOnStarterJava(item.starterJava ?? DEFAULT_HANDS_ON_JAVA);
+	    if (item.quizType === "enumeration") {
       const itemCount = parseEnumerationAnswerKey(item.answerkey ?? "").length;
       setEnumScoreMode(item.score === itemCount && itemCount > 0 ? "per_item" : "fixed");
     } else {
@@ -2794,9 +3233,9 @@ export default function TeacherPage() {
 
           if (!quizType) throw new Error(`Unknown quiz type: "${typeRaw}"`);
           if (!String(question).trim()) throw new Error("Question text is required.");
-          if (quizType !== "multiple_choice" && !String(answerkey).trim()) {
-            throw new Error("Answer key is required for this question type.");
-          }
+	          if (quizType !== "multiple_choice" && quizType !== "hands_on" && !String(answerkey).trim()) {
+	            throw new Error("Answer key is required for this question type.");
+	          }
 
           let scoreNumber = Number(scoreRaw);
           if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) scoreNumber = 1;
@@ -2994,12 +3433,12 @@ export default function TeacherPage() {
         setError("Select the correct answer from the options.");
         return;
       }
-    } else {
-      // For identification, enumeration, and long answer, an answer key is required
-      if (!newQuestionAnswerKey.trim()) {
-        setError("Answer key is required for this question type.");
-        return;
-      }
+	    } else {
+	      // Identification, enumeration, and long answer need an answer key.
+	      if (newQuizType !== "hands_on" && !newQuestionAnswerKey.trim()) {
+	        setError("Answer key is required for this question type.");
+	        return;
+	      }
       if (newQuizType === "enumeration" && enumScoreMode === "per_item") {
         const count = parseEnumerationAnswerKey(newQuestionAnswerKey).length;
         if (count <= 0) {
@@ -3008,35 +3447,52 @@ export default function TeacherPage() {
         }
       }
     }
-    const scoreNumber = Number(newQuestionScore) || 1;
-    if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
-      setError("Score must be a positive number.");
-      return;
+	    const scoreNumber = Number(newQuestionScore) || 1;
+	    if (newQuizType === "hands_on" && !Number.isInteger(scoreNumber)) {
+	      setError("Hands-on max score must be a whole number.");
+	      return;
+	    }
+	    if (!Number.isFinite(scoreNumber) || scoreNumber <= 0) {
+	      setError("Score must be a positive number.");
+	      return;
     }
     setSavingQuestion(true);
     setError("");
     try {
-      const body: {
-        question: string;
-        quizType: string;
-        options?: string[];
-        answerkey?: string;
-        score?: number;
-        imageUrl?: string;
-      } = {
-        question: newQuestionText.trim(),
-        quizType: newQuizType,
-      };
+	      const body: {
+	        question: string;
+	        quizType: string;
+	        options?: string[];
+	        answerkey?: string;
+	        score?: number;
+	        imageUrl?: string;
+	        handsOnMode?: "html_css" | "java_console";
+	        starterHtml?: string;
+	        starterCss?: string;
+	        starterJava?: string;
+	      } = {
+	        question: newQuestionText.trim(),
+	        quizType: newQuizType,
+	      };
       if (newQuizType === "multiple_choice") {
         body.options = newQuestionOptions.map((o) => o.trim()).filter(Boolean);
         body.answerkey = newQuestionAnswerKey.trim();
-      } else if (
-        newQuizType === "identification" ||
-        newQuizType === "enumeration" ||
-        newQuizType === "long_answer"
-      ) {
-        body.answerkey = newQuestionAnswerKey.trim();
-      }
+	      } else if (
+	        newQuizType === "identification" ||
+	        newQuizType === "enumeration" ||
+	        newQuizType === "long_answer"
+	      ) {
+	        body.answerkey = newQuestionAnswerKey.trim();
+	      } else if (newQuizType === "hands_on") {
+	        body.answerkey = newQuestionAnswerKey.trim();
+	        body.handsOnMode = newHandsOnMode;
+	        if (newHandsOnMode === "html_css") {
+	          body.starterHtml = newHandsOnStarterHtml.trim();
+	          body.starterCss = newHandsOnStarterCss.trim();
+	        } else {
+	          body.starterJava = newHandsOnStarterJava.trim();
+	        }
+	      }
       if (newQuestionImageUrl.trim()) body.imageUrl = newQuestionImageUrl.trim();
       body.score = scoreNumber;
       const res = await fetch(`/api/teacher/quizzes/${selectedQuizId}/questions`, {
@@ -3053,10 +3509,14 @@ export default function TeacherPage() {
       setNewQuestionText("");
       setNewQuestionOptions(["", ""]);
       setNewQuestionAnswerKey("");
-      setNewQuestionScore("1");
-      setNewQuestionImageUrl("");
-      setNewQuestionImageError("");
-      setEnumScoreMode("fixed");
+	      setNewQuestionScore("1");
+	      setNewQuestionImageUrl("");
+	      setNewQuestionImageError("");
+	      setNewHandsOnMode("html_css");
+	      setNewHandsOnStarterHtml("");
+	      setNewHandsOnStarterCss("");
+	      setNewHandsOnStarterJava("");
+	      setEnumScoreMode("fixed");
       if (selectedQuizId) fetchQuestionsForQuiz(selectedQuizId);
     } finally {
       setSavingQuestion(false);
@@ -3121,7 +3581,7 @@ export default function TeacherPage() {
   );
 
   // Get unique sections from rows by sectionid, use getSectionName for display names
-  const sectionOptionsFromRows = Array.from(
+	  const sectionOptionsFromRows = Array.from(
     new Map(
       rows
         .filter((r) => r.sectionid)
@@ -3249,10 +3709,15 @@ export default function TeacherPage() {
     ? rows.filter((r) => r.subjectid === recheckSubject && r.sectionid === recheckSection)
     : [];
 
-  const selectedSectionStatus = selectedSectionStatusId ? sectionStatusById[selectedSectionStatusId] ?? null : null;
+	  const selectedSectionStatus = selectedSectionStatusId ? sectionStatusById[selectedSectionStatusId] ?? null : null;
+	  const questionImageUploadId = selectedQuizId
+	    ? `quiz-${selectedQuizId}`
+	    : pendingQuizDraft
+	      ? `draft-${String(pendingQuizDraft.subjectId || "pending").replace(/[^a-zA-Z0-9_-]/g, "")}-${String(pendingQuizDraft.period || "na").replace(/[^a-zA-Z0-9_-]/g, "")}`
+	      : "";
 
-  // Filter for reports tab - cascade filters using IDs and period
-  let reportFilteredRows = rows;
+	  // Filter for reports tab - cascade filters using IDs and period
+	  let reportFilteredRows = rows;
   if (reportFilterSection) {
     reportFilteredRows = reportFilteredRows.filter((r) => r.sectionid === reportFilterSection);
   }
@@ -4748,53 +5213,58 @@ export default function TeacherPage() {
               </div>
             ) : (
               <>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-semibold text-slate-200">My Quizzes & Questions</h2>
-              <div className="flex items-center gap-2">
-                {!showAddQuestion && (
-                  <button
-                    onClick={() => setShowAddQuestion(true)}
-                    disabled={!(selectedQuizId || pendingQuizDraft)}
-                    className="px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
-                  >
-                    Add Questions
-                  </button>
-                )}
-	                {quizFormDraftAvailable && !showCreateQuiz && (
+	            <div className="mb-6 flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+	              <div className="min-w-0">
+	                <h2 className="text-lg font-semibold text-slate-200 leading-tight">My Quizzes & Questions</h2>
+	                <p className="mt-1 text-sm text-slate-400">
+	                  Create quizzes, add questions, and open your section tools from here.
+	                </p>
+	              </div>
+	              <div className="flex flex-wrap items-stretch gap-2 xl:max-w-[68%] xl:justify-end">
+	                {!showAddQuestion && (
 	                  <button
-	                    onClick={openDraftQuizForm}
-	                    className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold"
+	                    onClick={() => setShowAddQuestion(true)}
+	                    disabled={!(selectedQuizId || pendingQuizDraft)}
+	                    className="min-h-[44px] px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white font-semibold"
 	                  >
-	                    Resume Draft
+	                    Add Questions
 	                  </button>
 	                )}
-		                <Link
-		                  href="/teacher/classes"
-		                  className="px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-semibold"
-		                >
-		                  Manage Sections
+		                {quizFormDraftAvailable && !showCreateQuiz && (
+		                  <button
+		                    onClick={openDraftQuizForm}
+		                    className="min-h-[44px] px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold"
+		                  >
+		                    Resume Draft
+		                  </button>
+		                )}
+			                <Link
+			                  href="/teacher/classes"
+			                  className="inline-flex min-h-[44px] items-center justify-center px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 text-white font-semibold text-center"
+			                >
+			                  Manage Sections
+			                </Link>
+			                <button
+			                  type="button"
+			                  onClick={openSectionStatusModal}
+			                  className="min-h-[44px] px-4 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 text-white font-semibold"
+			                >
+			                  Section Status
+			                </button>
+			                <Link
+			                  href="/teacher/guide"
+			                  className="inline-flex min-h-[44px] items-center justify-center px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold text-center"
+			                >
+		                  Teacher Guide
 		                </Link>
 		                <button
-		                  type="button"
-		                  onClick={openSectionStatusModal}
-		                  className="px-4 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 text-white font-semibold"
+		                  onClick={() => setShowCreateQuiz(true)}
+		                  className="min-h-[44px] px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
 		                >
-		                  Section Status
-		                </button>
-		                <Link
-		                  href="/teacher/guide"
-		                  className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-semibold"
-		                >
-	                  Teacher Guide
-	                </Link>
-	                <button
-	                  onClick={() => setShowCreateQuiz(true)}
-	                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold"
-	                >
-                  Create Quiz
-                </button>
-              </div>
-            </div>
+	                  Create Quiz
+	                </button>
+	              </div>
+	            </div>
 
             {error && (
               <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
@@ -4931,27 +5401,27 @@ export default function TeacherPage() {
                   <div>
                     <label className="block text-slate-400 text-sm mb-1">Question Image (optional)</label>
                     <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        type="file"
-                        accept="image/*"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file && selectedQuizId) {
-                            uploadQuestionImage(
-                              file,
-                              selectedQuizId,
-                              setNewQuestionImageUrl,
-                              setNewQuestionImageUploading,
-                              setNewQuestionImageError
-                            );
-                          }
-                        }}
-                        disabled={newQuestionImageUploading || !selectedQuizId}
-                        className="text-slate-300 text-sm"
-                      />
-                      {newQuestionImageUploading && (
-                        <span className="text-xs text-slate-400">Uploading...</span>
-                      )}
+	                      <input
+	                        type="file"
+	                        accept="image/*"
+	                        onChange={(e) => {
+	                          const file = e.target.files?.[0];
+	                          if (file && questionImageUploadId) {
+	                            uploadQuestionImage(
+	                              file,
+	                              questionImageUploadId,
+	                              setNewQuestionImageUrl,
+	                              setNewQuestionImageUploading,
+	                              setNewQuestionImageError
+	                            );
+	                          }
+	                        }}
+	                        disabled={newQuestionImageUploading || !questionImageUploadId}
+	                        className="text-slate-300 text-sm"
+	                      />
+	                      {newQuestionImageUploading && (
+	                        <span className="text-xs text-slate-400">Uploading...</span>
+	                      )}
                       {newQuestionImageUrl && (
                         <button
                           type="button"
@@ -4969,10 +5439,15 @@ export default function TeacherPage() {
                         </button>
                       )}
                     </div>
-                    {newQuestionImageError && (
-                      <div className="text-xs text-red-400 mt-1">{newQuestionImageError}</div>
-                    )}
-                    {newQuestionImageUrl && (
+	                    {newQuestionImageError && (
+	                      <div className="text-xs text-red-400 mt-1">{newQuestionImageError}</div>
+	                    )}
+	                    {!questionImageUploadId && (
+	                      <div className="text-xs text-amber-400 mt-1">
+	                        Select a quiz or start creating one before uploading an image.
+	                      </div>
+	                    )}
+	                    {newQuestionImageUrl && (
                       <div className="mt-2">
                         <img
                           src={newQuestionImageUrl}
@@ -5064,29 +5539,130 @@ export default function TeacherPage() {
                       </div>
                     </>
                   )}
-                  {newQuizType !== "multiple_choice" && (
-                    <div>
-                      <label className="block text-slate-400 text-sm mb-1">Answer key</label>
-                      <textarea
-                        value={newQuestionAnswerKey}
-                        onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
-                        required
-                        rows={newQuizType === "enumeration" ? 3 : 2}
-                        className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                        placeholder={
-                          newQuizType === "enumeration"
-                            ? "Enter the correct items (one per line). Matching will be case-insensitive."
-                            : "Enter the correct answer. Matching will be case-insensitive."
-                        }
-                      />
-                      {newQuizType === "enumeration" && (
-                        <p className="mt-1 text-xs text-slate-500">
-                          Tip: put one correct item per line. Students&apos; answers are compared in a
-                          case-insensitive way.
-                        </p>
-                      )}
-                    </div>
-                  )}
+	                  {newQuizType !== "multiple_choice" && newQuizType !== "hands_on" && (
+	                    <div>
+	                      <label className="block text-slate-400 text-sm mb-1">Answer key</label>
+	                      <textarea
+	                        value={newQuestionAnswerKey}
+	                        onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+	                        required
+	                        rows={newQuizType === "enumeration" ? 3 : 2}
+	                        className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                        placeholder={
+	                          newQuizType === "enumeration"
+	                            ? "Enter the correct items (one per line). Matching will be case-insensitive."
+	                            : "Enter the correct answer. Matching will be case-insensitive."
+	                        }
+	                      />
+	                      {newQuizType === "enumeration" && (
+	                        <p className="mt-1 text-xs text-slate-500">
+	                          Tip: put one correct item per line. Students&apos; answers are compared in a
+	                          case-insensitive way.
+	                        </p>
+	                      )}
+	                    </div>
+	                  )}
+		                  {newQuizType === "hands_on" && (
+		                    <div className="space-y-3">
+		                      <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+		                        Put the full task instructions in the question text, then add an optional image below if you want to show the expected layout or reference design.
+		                      </div>
+		                      <div>
+		                        <label className="block text-slate-400 text-sm mb-1">Answer key (optional)</label>
+		                        <textarea
+		                          value={newQuestionAnswerKey}
+		                          onChange={(e) => setNewQuestionAnswerKey(e.target.value)}
+		                          onKeyDown={(e) => {
+		                            const el = e.currentTarget;
+		                            const start = el.selectionStart;
+		                            const end = el.selectionEnd;
+		                            if (e.key === "Tab") {
+		                              e.preventDefault();
+		                              const next = `${newQuestionAnswerKey.slice(0, start)}  ${newQuestionAnswerKey.slice(end)}`;
+		                              setNewQuestionAnswerKey(next);
+		                              setTextareaCursorPosition(el, start + 2);
+		                              return;
+		                            }
+		                            if (e.key === "Enter") {
+		                              e.preventDefault();
+		                              const indent = getTextareaIndentOfLine(newQuestionAnswerKey, start);
+		                              const before = newQuestionAnswerKey.slice(0, start);
+		                              const after = newQuestionAnswerKey.slice(end);
+		                              const trimmedBefore = before.trimEnd();
+		                              const nextIndent = trimmedBefore.endsWith("{") ? `${indent}  ` : indent;
+		                              const next = `${before}\n${nextIndent}${after}`;
+		                              setNewQuestionAnswerKey(next);
+		                              setTextareaCursorPosition(el, start + nextIndent.length + 1);
+		                            }
+		                          }}
+		                          rows={12}
+		                          spellCheck={false}
+		                          autoCapitalize="off"
+		                          autoCorrect="off"
+		                          className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 font-mono text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+		                          placeholder="Optional teacher answer key or reference solution."
+		                        />
+		                      </div>
+		                      <div>
+		                        <label className="block text-slate-400 text-sm mb-1">Hands on Mode</label>
+		                        <select
+		                          value={newHandsOnMode}
+		                          onChange={(e) => {
+		                            const nextMode = e.target.value === "java_console" ? "java_console" : "html_css";
+		                            setNewHandsOnMode(nextMode);
+		                            if (nextMode === "html_css") {
+		                              if (!newHandsOnStarterHtml.trim()) setNewHandsOnStarterHtml(DEFAULT_HANDS_ON_HTML);
+		                              if (!newHandsOnStarterCss.trim()) setNewHandsOnStarterCss(DEFAULT_HANDS_ON_CSS);
+		                            } else {
+		                              if (!newHandsOnStarterJava.trim()) setNewHandsOnStarterJava(DEFAULT_HANDS_ON_JAVA);
+		                              if (!newQuestionAnswerKey.trim() || newQuestionAnswerKey.trim() === DEFAULT_HANDS_ON_HTML.trim()) {
+		                                setNewQuestionAnswerKey(DEFAULT_HANDS_ON_JAVA);
+		                              }
+		                            }
+		                          }}
+		                          className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+		                        >
+	                          <option value="html_css">HTML &amp; CSS</option>
+	                          <option value="java_console">Java Program</option>
+	                        </select>
+	                      </div>
+	                      {newHandsOnMode === "html_css" ? (
+	                        <div className="grid gap-3 xl:grid-cols-2">
+	                          <div>
+	                            <label className="block text-slate-400 text-sm mb-1">Starter HTML (optional)</label>
+	                            <textarea
+	                              value={newHandsOnStarterHtml}
+	                              onChange={(e) => setNewHandsOnStarterHtml(e.target.value)}
+	                              rows={6}
+	                              className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-sm"
+	                            />
+	                          </div>
+	                          <div>
+	                            <label className="block text-slate-400 text-sm mb-1">Starter CSS (optional)</label>
+	                            <textarea
+	                              value={newHandsOnStarterCss}
+	                              onChange={(e) => setNewHandsOnStarterCss(e.target.value)}
+	                              rows={6}
+	                              className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-sm"
+	                            />
+	                          </div>
+	                        </div>
+	                      ) : (
+	                        <div>
+	                          <label className="block text-slate-400 text-sm mb-1">Starter Java Code (optional)</label>
+		                          <textarea
+		                            value={newHandsOnStarterJava}
+		                            onChange={(e) => setNewHandsOnStarterJava(e.target.value)}
+		                            rows={10}
+		                            spellCheck={false}
+		                            autoCapitalize="off"
+		                            autoCorrect="off"
+		                            className="w-full px-4 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500 font-mono text-sm"
+		                          />
+	                        </div>
+	                      )}
+	                    </div>
+	                  )}
                   {newQuizType === "enumeration" && (
                     <div>
                       <label className="block text-slate-400 text-sm mb-1">Enumeration scoring</label>
@@ -5109,22 +5685,26 @@ export default function TeacherPage() {
                       </select>
                     </div>
                   )}
-                  <div>
-                    <label className="block text-slate-400 text-sm mb-1">Score</label>
-                    <input
-                      type="number"
-                      min={0.5}
-                      step={0.5}
-                      value={newQuestionScore}
-                      onChange={(e) => setNewQuestionScore(e.target.value)}
-                      disabled={newQuizType === "enumeration" && enumScoreMode === "per_item"}
-                      className="w-32 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-                    />
-                    <p className="mt-1 text-xs text-slate-500">
-                      {newQuizType === "enumeration" && enumScoreMode === "per_item"
-                        ? "Score is calculated from the number of items in the answer key."
-                        : "Default is 1 point per question."}
-                    </p>
+	                  <div>
+	                    <label className="block text-slate-400 text-sm mb-1">
+	                      {newQuizType === "hands_on" ? "Hands on Max Score" : "Score"}
+	                    </label>
+	                    <input
+	                      type="number"
+	                      min={newQuizType === "hands_on" ? 1 : 0.5}
+	                      step={newQuizType === "hands_on" ? 1 : 0.5}
+	                      value={newQuestionScore}
+	                      onChange={(e) => setNewQuestionScore(newQuizType === "hands_on" ? e.target.value.replace(/[^\d]/g, "") : e.target.value)}
+	                      disabled={newQuizType === "enumeration" && enumScoreMode === "per_item"}
+	                      className="w-32 px-3 py-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	                    />
+	                    <p className="mt-1 text-xs text-slate-500">
+	                      {newQuizType === "hands_on"
+	                        ? "This is the maximum score the teacher can award for this hands on task in the answer modal."
+	                        : newQuizType === "enumeration" && enumScoreMode === "per_item"
+	                        ? "Score is calculated from the number of items in the answer key."
+	                        : "Default is 1 point per question."}
+	                    </p>
                   </div>
 	                  <div className="flex gap-2">
 	                    <button
@@ -6368,25 +6948,53 @@ export default function TeacherPage() {
               <div>Submission: <span className="text-slate-100">{formatSubmissionSource(answerModal.submission_source)}</span></div>
               <div>Attempt: <span className="text-slate-100">{answerModal.attempt_number ?? "—"}</span></div>
             </div>
-            {(() => {
-              const raw = (answerModal.answers ?? {}) as Record<string, unknown>;
-              const mc = Array.isArray(raw.multiple_choice) ? raw.multiple_choice : [];
-              const id = Array.isArray(raw.identification) ? raw.identification : [];
-              const en = Array.isArray(raw.enumeration) ? raw.enumeration : [];
-              const mcMap = buildAnswerMap(mc as Array<{ questionId: string; answer: string }>);
-              const idMap = buildAnswerMap(id as Array<{ questionId: string; answer: string }>);
-              const enMap = buildAnswerMap(en as Array<{ questionId: string; answer: string }>);
+	            {(() => {
+	              const raw = (answerModal.answers ?? {}) as Record<string, unknown>;
+	              const mc = Array.isArray(raw.multiple_choice) ? raw.multiple_choice : [];
+	              const id = Array.isArray(raw.identification) ? raw.identification : [];
+	              const en = Array.isArray(raw.enumeration) ? raw.enumeration : [];
+	              const hs = Array.isArray(raw.hands_on) ? raw.hands_on : [];
+	              const mcMap = buildAnswerMap(mc as Array<{ questionId: string; answer: string }>);
+	              const idMap = buildAnswerMap(id as Array<{ questionId: string; answer: string }>);
+	              const enMap = buildAnswerMap(en as Array<{ questionId: string; answer: string }>);
+	              const hsMap = buildHandsOnAnswerMap(hs as HandsOnAnswerItem[]);
 
-              const mcItems = buildQuestionItems(answerQuestions, "multiple_choice", mcMap);
-              const idItems = buildQuestionItems(answerQuestions, "identification", idMap);
-              const enItems = buildQuestionItems(answerQuestions, "enumeration", enMap);
-              const laItems = buildQuestionItems(answerQuestions, "long_answer", new Map());
+	              const mcItems = buildQuestionItems(answerQuestions, "multiple_choice", mcMap);
+	              const idItems = buildQuestionItems(answerQuestions, "identification", idMap);
+	              const enItems = buildQuestionItems(answerQuestions, "enumeration", enMap);
+	              const laItems = buildQuestionItems(answerQuestions, "long_answer", new Map());
+			              const hsItems = buildHandsOnQuestionItems(answerQuestions, hsMap);
+			              const invalidHandsOnQuestionIds = new Set(
+			                hsItems
+			                  .filter((item) => {
+			                    const rawValue = String(manualHandsOnScores[item.questionId] ?? "").trim();
+			                    if (!rawValue) return false;
+			                    const score = Number(rawValue);
+			                    const max = Number(answerQuestions[item.questionId]?.score ?? 0);
+			                    return Number.isFinite(score) && Number.isFinite(max) && max > 0 && score > max;
+			                  })
+			                  .map((item) => item.questionId)
+			              );
+			              const handsOnMax = hsItems.reduce((sum, item) => {
+			                const score = Number(answerQuestions[item.questionId]?.score ?? 0);
+			                return Number.isFinite(score) && score > 0 ? sum + score : sum;
+		              }, 0);
+		              const manualHandsOnTotal = hsItems.reduce((sum, item) => {
+		                const score = Number(manualHandsOnScores[item.questionId] ?? 0);
+		                return Number.isFinite(score) ? sum + score : sum;
+		              }, 0);
+		              const storedHandsOnTotal = hs.reduce((sum, item) => {
+		                const score = Number((item as HandsOnAnswerItem).score ?? 0);
+		                return Number.isFinite(score) ? sum + score : sum;
+		              }, 0);
+		              const autoScoredTotal = Math.max(0, Number(answerModal.score ?? 0) - storedHandsOnTotal);
+		              const projectedFinalScore = autoScoredTotal + manualHandsOnTotal;
 
-              const hasQuestions =
-                mcItems.length + idItems.length + enItems.length + laItems.length > 0;
-              const hasAnswers = mc.length + id.length + en.length > 0;
-              return (
-                <div className="max-h-[60vh] overflow-auto rounded-lg bg-slate-900/40 p-2">
+		              const hasQuestions =
+		                mcItems.length + idItems.length + enItems.length + laItems.length + hsItems.length > 0;
+		              const hasAnswers = mc.length + id.length + en.length + hs.length > 0;
+		              return (
+		                <div className="max-h-[60vh] overflow-auto rounded-lg bg-slate-900/40 p-2">
                   {answersLoading && (
                     <div className="mb-3 text-xs text-slate-500">Loading questions…</div>
                   )}
@@ -6395,18 +7003,45 @@ export default function TeacherPage() {
                       No questions found for this quiz.
                     </div>
                   )}
-                  {!answersLoading && hasQuestions && !hasAnswers && (
-                    <div className="rounded-lg bg-slate-800 p-3 text-xs text-slate-400 mb-3">
-                      No answers submitted for this attempt. Showing all questions.
-                    </div>
-                  )}
-                  {renderAnswerBlock("Multiple Choice", mcItems, answerQuestions)}
-                  {renderAnswerBlock("Identification", idItems, answerQuestions)}
-                  {renderAnswerBlock("Enumeration", enItems, answerQuestions)}
-                  {renderAnswerBlock("Long Answer", laItems, answerQuestions)}
-                </div>
-              );
-            })()}
+	                  {!answersLoading && hasQuestions && !hasAnswers && (
+	                    <div className="rounded-lg bg-slate-800 p-3 text-xs text-slate-400 mb-3">
+	                      No answers submitted for this attempt. Showing all questions.
+	                    </div>
+	                  )}
+	                  {hsItems.length > 0 && (
+	                    <div className="mb-3 rounded-lg border border-cyan-500/30 bg-cyan-500/10 p-3">
+	                      <div className="flex flex-wrap items-center justify-between gap-3">
+	                        <div className="text-sm text-cyan-100">
+	                          <div>Auto-scored total: <span className="font-semibold text-white">{autoScoredTotal}</span></div>
+	                          <div>Hands-on total: <span className="font-semibold text-white">{manualHandsOnTotal}</span> / {handsOnMax}</div>
+	                          <div>Final score to save: <span className="font-semibold text-white">{projectedFinalScore}</span> / {Math.max(Number(answerModal.max_score ?? 0), handsOnMax + autoScoredTotal)}</div>
+	                        </div>
+		                        <button
+		                          type="button"
+		                          onClick={handleSaveHandsOnScore}
+		                          disabled={savingAttemptId === answerModal.id || answersLoading || invalidHandsOnQuestionIds.size > 0}
+		                          className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+		                        >
+		                          {savingAttemptId === answerModal.id ? "Saving..." : "Save Hands on Score"}
+		                        </button>
+		                      </div>
+		                      {invalidHandsOnQuestionIds.size > 0 && (
+		                        <p className="mt-3 text-xs text-red-300">
+		                          One or more hands-on scores exceed their max score. Please lower them before saving.
+		                        </p>
+		                      )}
+		                    </div>
+		                  )}
+	                  {renderAnswerBlock("Multiple Choice", mcItems, answerQuestions)}
+		                  {renderAnswerBlock("Identification", idItems, answerQuestions)}
+		                  {renderAnswerBlock("Enumeration", enItems, answerQuestions)}
+		                  {renderAnswerBlock("Long Answer", laItems, answerQuestions)}
+		                  {renderHandsOnAnswerBlock("Hands on", hsItems, answerQuestions, manualHandsOnScores, (questionId, value) =>
+		                    setManualHandsOnScores((prev) => ({ ...prev, [questionId]: value }))
+		                  , invalidHandsOnQuestionIds)}
+		                </div>
+		              );
+		            })()}
           </div>
         </div>
       )}

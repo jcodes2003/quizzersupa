@@ -36,9 +36,10 @@ function normalizeAnswer(s: string): string {
   return s
     .toLowerCase()
     .trim()
-    .replace(/\s+/g, " ")
-    .replace(/[^\w\s/-]/g, "")
-    .replace(/-/g, " ");
+    .replace(/[._<>()[\]{}:,;\\]+/g, " ")
+    .replace(/-/g, " ")
+    .replace(/[^\w\s/+*-]/g, "")
+    .replace(/\s+/g, " ");
 }
 
 function singularizeWord(word: string): string {
@@ -79,8 +80,9 @@ function normalizeForEnum(s: string): string {
   return s
     .toLowerCase()
     .trim()
+    .replace(/[._<>()[\]{}:,;\\]+/g, " ")
+    .replace(/[^\w\s/+*-]/g, "")
     .replace(/\s+/g, " ")
-    .replace(/[^\w\s/-]/g, "")
     .replace(/\band\b/gi, " ");
 }
 
