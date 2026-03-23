@@ -190,6 +190,8 @@ type HandsOnAnswer = {
   consoleOutput: string;
 };
 
+let ignoreAutoSubmitUntil = 0;
+
 const DEFAULT_HANDS_ON_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1566,7 +1568,19 @@ export default function Quiz({
     };
 
     const handleWindowBlur = () => {
-      triggerAutoSubmit();
+      if (Date.now() < ignoreAutoSubmitUntil) {
+        return;
+      }
+      window.setTimeout(() => {
+        const active = document.activeElement;
+        if (
+          active instanceof HTMLIFrameElement &&
+          String(active.title ?? "").startsWith("Hands-on preview ")
+        ) {
+          return;
+        }
+        triggerAutoSubmit();
+      }, 0);
     };
 
     const handleBeforeUnload = () => {
@@ -2720,7 +2734,12 @@ function HandsOnQuestionCard({
               title={`Hands-on preview ${question.id}`}
               srcDoc={preview}
               sandbox="allow-scripts"
-              className="w-full min-h-[20rem] rounded-lg border border-slate-600/50 bg-white"
+              tabIndex={-1}
+              aria-hidden="true"
+              onPointerDown={() => {
+                ignoreAutoSubmitUntil = Date.now() + 750;
+              }}
+              className="pointer-events-none w-full min-h-[20rem] rounded-lg border border-slate-600/50 bg-white"
             />
           </div>
 
