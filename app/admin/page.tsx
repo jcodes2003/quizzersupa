@@ -14,6 +14,7 @@ type Subject = {
   code?: string | null;
 };
 type Teacher = { id: string; name: string; email: string; approved?: boolean; created_at?: string };
+type Student = { id: string; name: string; studentId: string; username: string };
 
 export default function AdminPage() {
   const [password, setPassword] = useState("");
@@ -23,7 +24,8 @@ export default function AdminPage() {
   const [sections, setSections] = useState<Section[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
-  const [tab, setTab] = useState<"sections" | "subjects" | "teachers" | "storage">("sections");
+  const [students, setStudents] = useState<Student[]>([]);
+  const [tab, setTab] = useState<"sections" | "subjects" | "teachers" | "students" | "storage">("sections");
   const [sectionName, setSectionName] = useState("");
   const [sectionCode, setSectionCode] = useState("");
   const [subjectName, setSubjectName] = useState("");
@@ -47,16 +49,19 @@ export default function AdminPage() {
   const [storageImages, setStorageImages] = useState<string[]>([]);
   const [storageSelected, setStorageSelected] = useState<string[]>([]);
   const [storageLoading, setStorageLoading] = useState(false);
+  const [resettingStudentId, setResettingStudentId] = useState<string | null>(null);
+  const [studentResetStatus, setStudentResetStatus] = useState("");
 
   const fetchData = useCallback(async () => {
     const base = "/api/admin";
     try {
-      const [sRes, subRes, tRes] = await Promise.all([
+      const [sRes, subRes, tRes, studentRes] = await Promise.all([
         fetch(`${base}/sections`, { credentials: "include" }),
         fetch(`${base}/subjects`, { credentials: "include" }),
         fetch(`${base}/teachers`, { credentials: "include" }),
+        fetch(`${base}/students`, { credentials: "include" }),
       ]);
-      if (sRes.status === 401 || subRes.status === 401 || tRes.status === 401) {
+      if (sRes.status === 401 || subRes.status === 401 || tRes.status === 401 || studentRes?.status === 401) {
         setAuthenticated(false);
         return;
       }
@@ -64,6 +69,7 @@ export default function AdminPage() {
       if (sRes.ok) setSections(await sRes.json());
       if (subRes.ok) setSubjects(await subRes.json());
       if (tRes.ok) setTeachers(await tRes.json());
+      if (studentRes?.ok) setStudents(await studentRes.json());
     } catch {
       setAuthenticated(false);
     }
@@ -330,6 +336,27 @@ export default function AdminPage() {
     if (res.ok) fetchData();
   };
 
+  const resetStudentPassword = async (student: Student) => {
+    const ok = confirm(`Reset ${student.name || student.studentId || student.username}'s password to quizzer2025?`);
+    if (!ok) return;
+    setStudentResetStatus("");
+    setResettingStudentId(student.id);
+    try {
+      const res = await fetch(`/api/admin/students/${student.id}/reset-password`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed to reset password");
+        return;
+      }
+      setStudentResetStatus(`Password reset for ${student.name || student.studentId || student.username}. Default password: quizzer2025`);
+    } finally {
+      setResettingStudentId(null);
+    }
+  };
+
   const loadStorageImages = async () => {
     setStorageLoading(true);
     try {
@@ -445,7 +472,7 @@ export default function AdminPage() {
         )}
 
         <div className="flex gap-2 mb-6">
-          {(["sections", "subjects", "teachers", "storage"] as const).map((t) => (
+          {(["sections", "subjects", "teachers", "students", "storage"] as const).map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
@@ -710,7 +737,7 @@ export default function AdminPage() {
 	            </>
 	          )}
 
-          {tab === "teachers" && (
+	          {tab === "teachers" && (
             <>
               <h2 className="text-lg font-semibold text-slate-200 mb-4">Teachers</h2>
               <div className="space-y-2 mb-4">
@@ -812,6 +839,53 @@ export default function AdminPage() {
                   </li>
                 ))}
               </ul>
+            </>
+	          )}
+          {tab === "students" && (
+            <>
+              <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-200">Students</h2>
+                  <p className="text-sm text-slate-400">Admin can reset a student password back to <span className="font-mono text-slate-200">quizzer2025</span>.</p>
+                </div>
+                <button
+                  onClick={fetchData}
+                  className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm"
+                >
+                  Refresh
+                </button>
+              </div>
+              {studentResetStatus && (
+                <div className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+                  {studentResetStatus}
+                </div>
+              )}
+              <ul className="space-y-2">
+                {students.map((student) => (
+                  <li key={student.id} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-700/50">
+                    <div className="min-w-0">
+                      <div className="font-medium text-slate-200 truncate">
+                        {student.name || "Unnamed student"}
+                      </div>
+                      <div className="text-slate-400 text-xs mt-0.5">
+                        ID: <span className="font-mono">{student.studentId || "N/A"}</span>
+                        {" · "}
+                        Username: <span>{student.username || "N/A"}</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => resetStudentPassword(student)}
+                      disabled={resettingStudentId === student.id}
+                      className="px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-500 text-white text-sm font-medium disabled:opacity-50"
+                    >
+                      {resettingStudentId === student.id ? "Resetting..." : "Reset Password"}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {students.length === 0 && (
+                <p className="text-slate-400 text-sm">No students found.</p>
+              )}
             </>
           )}
           {tab === "storage" && (

@@ -2705,9 +2705,14 @@ function HandsOnQuestionCard({
         <p className="font-medium text-slate-100 mb-2">
           {index}. {question.question}
         </p>
-        <p className="text-sm text-cyan-100">
-          Write your HTML and CSS below. Your latest code and preview will be submitted.
-        </p>
+	        <p className="text-sm text-cyan-100">
+	          {mode === "java_console"
+	            ? "Write and run your Java code below. Your latest code and console output will be submitted."
+	            : "Write your HTML and CSS below. Your latest code and preview will be submitted."}
+	        </p>
+          <p className="mt-2 text-xs text-cyan-200/80">
+            Mobile tip: rotate to landscape for a wider coding area and easier scrolling.
+          </p>
         {question.rubric && (
           <div className="mt-3 rounded-lg bg-slate-900/40 border border-slate-700/60 p-3">
             <p className="text-xs uppercase tracking-wide text-slate-400 mb-1">Task Notes</p>
@@ -2718,8 +2723,8 @@ function HandsOnQuestionCard({
 
 	      {mode === "java_console" ? (
 	        <>
-	          <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4">
-	            <div className="flex items-center justify-between gap-3">
+		          <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4">
+		            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 	              <p className="text-sm font-semibold text-cyan-100">Basic Java Checks</p>
 	              <p className="text-xs text-cyan-200/80">Helpful hints only, not a real compiler</p>
 	            </div>
@@ -2738,21 +2743,21 @@ function HandsOnQuestionCard({
 	            )}
 	          </div>
 
-		          <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
-		            <div className="flex items-center justify-between gap-3 mb-3">
-		              <p className="text-sm font-semibold text-slate-200">Java Console</p>
-		              <div className="flex items-center gap-3">
-		                <p className="text-xs text-slate-400">Real compiler output</p>
-	                <button
-	                  type="button"
-	                  onClick={handleRunJava}
-	                  disabled={javaRunLoading}
-	                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
-	                >
-	                  {javaRunLoading ? "Running..." : "Run Java"}
-	                </button>
-	              </div>
-	            </div>
+			          <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
+			            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+			              <p className="text-sm font-semibold text-slate-200">Java Console</p>
+			              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+			                <p className="text-xs text-slate-400">Real compiler output</p>
+		                <button
+		                  type="button"
+		                  onClick={handleRunJava}
+		                  disabled={javaRunLoading}
+		                  className="min-h-11 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-60"
+		                >
+		                  {javaRunLoading ? "Running..." : "Run Java"}
+		                </button>
+		              </div>
+		            </div>
 		            {javaRunError && (
 		              <p className="mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">
 		                {javaRunError}
@@ -2769,30 +2774,33 @@ function HandsOnQuestionCard({
 		                </div>
 		              </div>
 		            )}
-			            <div className="rounded-lg border border-slate-700 bg-[#111827] px-4 py-3 font-mono text-sm text-emerald-300">
-			              <div className="mb-2 text-slate-400">Console Input / Output</div>
-			              <pre className="min-h-[8rem] whitespace-pre-wrap break-words text-emerald-300">
-			                {javaConsoleTranscript || "Run the code to see console output here."}
-			              </pre>
-			              {javaSessionId && (
-			                <div className="mt-3 flex items-center gap-2 border-t border-slate-700 pt-3">
-			                  <span className="text-cyan-300">{javaConsolePrompt || "input >"}</span>
-			                  <input
-			                    ref={javaConsoleRef}
+				            <div className="rounded-lg border border-slate-700 bg-[#111827] px-4 py-3 font-mono text-sm text-emerald-300">
+				              <div className="mb-2 text-slate-400">Console Input / Output</div>
+				              <pre className="min-h-[10rem] max-h-[40vh] overflow-auto whitespace-pre-wrap break-words text-emerald-300 [webkit-overflow-scrolling:touch]">
+				                {javaConsoleTranscript || "Run the code to see console output here."}
+				              </pre>
+				              {javaSessionId && (
+				                <div className="mt-3 flex flex-col gap-2 border-t border-slate-700 pt-3 sm:flex-row sm:items-center">
+				                  <span className="text-cyan-300">{javaConsolePrompt || "input >"}</span>
+				                  <input
+				                    ref={javaConsoleRef}
 			                    value={javaConsoleDraft}
 			                    onChange={(e) => {
 			                      setJavaConsoleDraft(e.target.value);
 			                      setJavaRunError(null);
 			                      persistJavaConsoleState(e.target.value, javaConsoleTranscript);
 			                    }}
-			                    onKeyDown={handleConsoleInputKeyDown}
-			                    spellCheck={false}
-			                    placeholder="Type input and press Enter"
-			                    className="flex-1 bg-transparent text-emerald-200 placeholder:text-slate-500 focus:outline-none"
-			                  />
-			                </div>
-			              )}
-			            </div>
+				                    onKeyDown={handleConsoleInputKeyDown}
+				                    spellCheck={false}
+                                    autoCapitalize="off"
+                                    autoCorrect="off"
+                                    enterKeyHint="send"
+				                    placeholder="Type input and press Enter"
+				                    className="min-h-11 flex-1 rounded-md bg-slate-900/40 px-3 py-2 text-emerald-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+				                  />
+				                </div>
+				              )}
+				            </div>
 			            {javaSessionId && (
 			              <p className="mt-2 text-xs text-cyan-200">
 			                Java is still running. Type the next input and press `Enter`.
@@ -2805,38 +2813,39 @@ function HandsOnQuestionCard({
 			            )}
 		          </div>
 
-		          <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
-		            <label className="block text-sm font-semibold text-slate-200 mb-2">Java Program</label>
-		            <div className="relative rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-cyan-500">
-		              <div
-		                ref={javaLineNumberRef}
-		                aria-hidden="true"
-		                className="pointer-events-none absolute inset-y-0 left-0 w-12 overflow-hidden border-r border-slate-800 bg-slate-900/90 px-2 py-3 text-right font-mono text-sm leading-6 text-slate-500"
-		              >
+			          <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
+			            <label className="block text-sm font-semibold text-slate-200 mb-2">Java Program</label>
+			            <div className="relative overflow-hidden rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-cyan-500">
+			              <div
+			                ref={javaLineNumberRef}
+			                aria-hidden="true"
+			                className="pointer-events-none absolute inset-y-0 left-0 w-10 overflow-hidden border-r border-slate-800 bg-slate-900/90 px-1.5 py-3 text-right font-mono text-xs leading-6 text-slate-500 sm:w-12 sm:px-2 sm:text-sm"
+			              >
 		                {javaLineNumbers.map((line) => (
 		                  <div key={`${question.id}-java-line-${line}`}>{line}</div>
 		                ))}
 		              </div>
-		              <pre
-		                ref={javaHighlightRef}
-		                aria-hidden="true"
-		                className="pointer-events-none absolute inset-0 overflow-auto px-4 py-3 pl-16 whitespace-pre-wrap break-words font-mono text-sm leading-6"
-		              >
-		                {renderHighlightedJava(java)}
-		              </pre>
-		              <textarea
-		                ref={javaEditorRef}
+			              <pre
+			                ref={javaHighlightRef}
+			                aria-hidden="true"
+			                className="pointer-events-none absolute inset-0 overflow-auto px-3 py-3 pl-12 whitespace-pre-wrap break-words font-mono text-xs leading-6 [webkit-overflow-scrolling:touch] sm:px-4 sm:pl-16 sm:text-sm"
+			              >
+			                {renderHighlightedJava(java)}
+			              </pre>
+			              <textarea
+			                ref={javaEditorRef}
 	                value={java}
 	                onChange={(e) => handleJavaChange(e.target.value)}
 	                onKeyDown={handleJavaKeyDown}
-	                onScroll={syncJavaScroll}
-		                rows={18}
-		                spellCheck={false}
-		                autoCapitalize="off"
-		                autoCorrect="off"
-		                className="relative z-10 w-full resize-y overflow-auto bg-transparent px-4 py-3 pl-16 font-mono text-sm leading-6 text-transparent caret-slate-100 focus:outline-none selection:bg-cyan-500/30"
-		              />
-		            </div>
+		                onScroll={syncJavaScroll}
+			                rows={18}
+			                spellCheck={false}
+			                autoCapitalize="off"
+			                autoCorrect="off"
+                            enterKeyHint="done"
+			                className="relative z-10 min-h-[20rem] w-full resize-y overflow-auto bg-transparent px-3 py-3 pl-12 font-mono text-xs leading-6 text-transparent caret-slate-100 focus:outline-none selection:bg-cyan-500/30 [webkit-overflow-scrolling:touch] sm:px-4 sm:pl-16 sm:text-sm"
+			              />
+			            </div>
 	            <p className="mt-2 text-xs text-slate-400">
 	              Java keywords, strings, comments, and common class names are color-coded. `Tab` adds spaces for formatting.
 	            </p>
@@ -2844,11 +2853,11 @@ function HandsOnQuestionCard({
 	        </>
       ) : (
         <>
-          <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <p className="text-sm font-semibold text-slate-200">Live Preview</p>
-              <p className="text-xs text-slate-400">Rendered in an isolated frame</p>
-            </div>
+	          <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
+	            <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+	              <p className="text-sm font-semibold text-slate-200">Live Preview</p>
+	              <p className="text-xs text-slate-400">Rendered in an isolated frame</p>
+	            </div>
             <iframe
               title={`Hands-on preview ${question.id}`}
               srcDoc={preview}
@@ -2858,47 +2867,53 @@ function HandsOnQuestionCard({
               onPointerDown={() => {
                 ignoreAutoSubmitUntil = Date.now() + 750;
               }}
-              className="pointer-events-none w-full min-h-[20rem] rounded-lg border border-slate-600/50 bg-white"
-            />
-          </div>
+	              className="pointer-events-none w-full min-h-[16rem] rounded-lg border border-slate-600/50 bg-white sm:min-h-[20rem]"
+	            />
+	          </div>
 
-	          <div className="grid gap-4 xl:grid-cols-2">
-	            <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
-	              <label className="block text-sm font-semibold text-slate-200 mb-2">HTML</label>
-	              <div className="relative rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-cyan-500">
-                <pre
-                  ref={htmlHighlightRef}
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 overflow-auto px-4 py-3 whitespace-pre-wrap break-words font-mono text-sm leading-6"
-                >
-                  {renderHighlightedHtml(html)}
-                </pre>
-	                <textarea
+		          <div className="grid gap-4 xl:grid-cols-2">
+		            <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
+		              <label className="block text-sm font-semibold text-slate-200 mb-2">HTML</label>
+		              <div className="relative overflow-hidden rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-cyan-500">
+	                <pre
+	                  ref={htmlHighlightRef}
+	                  aria-hidden="true"
+	                  className="pointer-events-none absolute inset-0 overflow-auto px-3 py-3 whitespace-pre-wrap break-words font-mono text-xs leading-6 [webkit-overflow-scrolling:touch] sm:px-4 sm:text-sm"
+	                >
+	                  {renderHighlightedHtml(html)}
+	                </pre>
+		                <textarea
 	                  ref={htmlEditorRef}
 	                  value={html}
 	                  onChange={(e) => handleHtmlChange(e.target.value)}
 	                  onKeyDown={handleHtmlKeyDown}
-	                  onScroll={syncHtmlScroll}
-	                  rows={22}
-	                  spellCheck={false}
-	                  className="relative z-10 w-full resize-y overflow-auto bg-transparent px-4 py-3 font-mono text-sm leading-6 text-transparent caret-slate-100 focus:outline-none selection:bg-cyan-500/30"
-	                />
-	              </div>
+		                  onScroll={syncHtmlScroll}
+		                  rows={22}
+		                  spellCheck={false}
+                          autoCapitalize="off"
+                          autoCorrect="off"
+                          enterKeyHint="done"
+		                  className="relative z-10 min-h-[20rem] w-full resize-y overflow-auto bg-transparent px-3 py-3 font-mono text-xs leading-6 text-transparent caret-slate-100 focus:outline-none selection:bg-cyan-500/30 [webkit-overflow-scrolling:touch] sm:px-4 sm:text-sm"
+		                />
+		              </div>
               <p className="mt-2 text-xs text-slate-400">
                 Tags are color-coded, mismatched tags are highlighted, and typing helpers still work. `Tab` adds spaces, `Enter` indents, and opening tags auto-close.
               </p>
             </div>
-            <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
-              <label className="block text-sm font-semibold text-slate-200 mb-2">CSS</label>
-              <textarea
-                value={css}
-                onChange={(e) => handleCssChange(e.target.value)}
-                rows={14}
-                spellCheck={false}
-                className="w-full px-4 py-3 rounded-lg bg-slate-950 border border-slate-700 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 resize-y font-mono text-sm"
-              />
-            </div>
-          </div>
+	            <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
+	              <label className="block text-sm font-semibold text-slate-200 mb-2">CSS</label>
+	              <textarea
+	                value={css}
+	                onChange={(e) => handleCssChange(e.target.value)}
+	                rows={14}
+	                spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    enterKeyHint="done"
+	                className="min-h-[14rem] w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-3 font-mono text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500 resize-y [webkit-overflow-scrolling:touch] sm:px-4 sm:text-sm"
+	              />
+	            </div>
+	          </div>
         </>
       )}
     </div>

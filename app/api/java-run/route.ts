@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -134,6 +135,20 @@ function serializeSession(session: JavaSession) {
   };
 }
 
+function getJavaTempRoot(): string {
+  const candidates = [
+    process.env.TMPDIR,
+    process.env.TEMP,
+    process.env.TMP,
+    tmpdir(),
+    path.join(process.cwd(), ".tmp"),
+  ]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+
+  return candidates[0]!;
+}
+
 async function waitForInitialOutput() {
   await new Promise((resolve) => setTimeout(resolve, 150));
 }
@@ -182,7 +197,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Java code is required." }, { status: 400 });
     }
 
-    const tempRoot = path.join(process.cwd(), ".tmp");
+    const tempRoot = path.join(getJavaTempRoot(), "java-run");
     await mkdir(tempRoot, { recursive: true });
     const workdir = await mkdtemp(path.join(tempRoot, "java-run-"));
 
