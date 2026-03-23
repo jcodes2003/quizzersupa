@@ -2724,10 +2724,10 @@ function HandsOnQuestionCard({
             />
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
-            <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
-              <label className="block text-sm font-semibold text-slate-200 mb-2">HTML</label>
-              <div className="relative rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-cyan-500">
+	          <div className="grid gap-4 xl:grid-cols-2">
+	            <div className="rounded-xl bg-slate-700/30 border border-slate-600/30 p-4">
+	              <label className="block text-sm font-semibold text-slate-200 mb-2">HTML</label>
+	              <div className="relative rounded-lg border border-slate-700 bg-slate-950 focus-within:ring-2 focus-within:ring-cyan-500">
                 <pre
                   ref={htmlHighlightRef}
                   aria-hidden="true"
@@ -2735,17 +2735,17 @@ function HandsOnQuestionCard({
                 >
                   {renderHighlightedHtml(html)}
                 </pre>
-                <textarea
-                  ref={htmlEditorRef}
-                  value={html}
-                  onChange={(e) => handleHtmlChange(e.target.value)}
-                  onKeyDown={handleHtmlKeyDown}
-                  onScroll={syncHtmlScroll}
-                  rows={14}
-                  spellCheck={false}
-                  className="relative z-10 w-full resize-y overflow-auto bg-transparent px-4 py-3 font-mono text-sm leading-6 text-transparent caret-slate-100 focus:outline-none selection:bg-cyan-500/30"
-                />
-              </div>
+	                <textarea
+	                  ref={htmlEditorRef}
+	                  value={html}
+	                  onChange={(e) => handleHtmlChange(e.target.value)}
+	                  onKeyDown={handleHtmlKeyDown}
+	                  onScroll={syncHtmlScroll}
+	                  rows={22}
+	                  spellCheck={false}
+	                  className="relative z-10 w-full resize-y overflow-auto bg-transparent px-4 py-3 font-mono text-sm leading-6 text-transparent caret-slate-100 focus:outline-none selection:bg-cyan-500/30"
+	                />
+	              </div>
               <p className="mt-2 text-xs text-slate-400">
                 Tags are color-coded, mismatched tags are highlighted, and typing helpers still work. `Tab` adds spaces, `Enter` indents, and opening tags auto-close.
               </p>

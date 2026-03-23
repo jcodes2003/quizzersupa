@@ -149,6 +149,7 @@ export async function GET(request: NextRequest) {
   const studentId = sanitizeStudentId(session.student.studentId ?? "");
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
+  const hasManualSubmitByQuizId = new Map<string, boolean>();
   const bestByQuizId = new Map<
     string,
     { submittedAt: string | null; score: number | null; maxScore: number | null; percentage: number | null }
@@ -156,6 +157,9 @@ export async function GET(request: NextRequest) {
 
   const mergeAttemptIntoBest = (qid: string, attempt: Record<string, unknown>) => {
     attemptsUsedByQuizId.set(qid, (attemptsUsedByQuizId.get(qid) ?? 0) + 1);
+    if (String(attempt.submission_source ?? "").trim() === "manual_submit") {
+      hasManualSubmitByQuizId.set(qid, true);
+    }
 
     const submittedAtRaw = safeIso(attempt.submitted_at ?? attempt.created_at);
     const scoreNum = Number(attempt.score);
@@ -255,16 +259,17 @@ export async function GET(request: NextRequest) {
       // Fresh start: only show quizzes tagged with the current subject semester.
       return quizSem === currentSem;
     })
-    .map((q) => {
+          .map((q) => {
       const attemptsUsed = attemptsUsedByQuizId.get(q.id) ?? 0;
       const attemptsRemaining = Math.max(0, (q.max_attempts ?? 1) - attemptsUsed);
       const best = bestByQuizId.get(q.id) ?? null;
       const submitted = attemptsUsed > 0;
-      const canStillAttempt = q._open && attemptsRemaining > 0;
-      const status: "open" | "closed" | "missing" | "completed" = submitted
-        ? "completed"
-        : canStillAttempt
-          ? "open"
+      const hasManualSubmit = hasManualSubmitByQuizId.get(q.id) === true;
+      const canStillAttempt = q._open && attemptsRemaining > 0 && !hasManualSubmit;
+      const status: "open" | "closed" | "missing" | "completed" = canStillAttempt
+        ? "open"
+        : submitted
+          ? "completed"
           : "missing";
       const submittedAt = best?.submittedAt ?? null;
       const score = best?.score ?? null;
