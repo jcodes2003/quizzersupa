@@ -17,6 +17,21 @@ type ProcessResult = {
   timedOut: boolean;
 };
 
+function isMissingCommandError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    String((error as NodeJS.ErrnoException).code ?? "").toUpperCase() === "ENOENT"
+  );
+}
+
+function getMissingJavaToolMessage(tool: "javac" | "java"): string {
+  if (tool === "javac") {
+    return "Java compiler is not available on this server. Install a JDK or run the Java executor on a server that has javac.";
+  }
+  return "Java runtime is not available on this server. Install Java or run the Java executor on a server that has the java command.";
+}
+
 type JavaSession = {
   id: string;
   child: ChildProcessWithoutNullStreams;
@@ -204,7 +219,20 @@ export async function POST(request: NextRequest) {
     try {
       await writeFile(path.join(workdir, "Main.java"), code, "utf8");
 
-      const compileResult = await runProcess("javac", ["Main.java"], workdir);
+      let compileResult: ProcessResult;
+      try {
+        compileResult = await runProcess("javac", ["Main.java"], workdir);
+      } catch (error) {
+        if (isMissingCommandError(error)) {
+          await rm(workdir, { recursive: true, force: true });
+          return NextResponse.json({
+            ok: false,
+            output: formatCompileError(getMissingJavaToolMessage("javac")),
+            exited: true,
+          });
+        }
+        throw error;
+      }
       if (compileResult.timedOut) {
         await rm(workdir, { recursive: true, force: true });
         return NextResponse.json({
@@ -223,11 +251,24 @@ export async function POST(request: NextRequest) {
         });
       }
 
-      const child = spawn("java", ["Main"], {
-        cwd: workdir,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      let child: ChildProcessWithoutNullStreams;
+      try {
+        child = spawn("java", ["Main"], {
+          cwd: workdir,
+          stdio: ["pipe", "pipe", "pipe"],
+          windowsHide: true,
+        });
+      } catch (error) {
+        if (isMissingCommandError(error)) {
+          await rm(workdir, { recursive: true, force: true });
+          return NextResponse.json({
+            ok: false,
+            output: formatCompileError(getMissingJavaToolMessage("java")),
+            exited: true,
+          });
+        }
+        throw error;
+      }
 
       const session: JavaSession = {
         id: randomUUID(),
@@ -258,7 +299,11 @@ export async function POST(request: NextRequest) {
       });
 
       child.on("error", (error) => {
-        appendSessionOutput(session, String(error instanceof Error ? error.message : error), true);
+        appendSessionOutput(
+          session,
+          isMissingCommandError(error) ? getMissingJavaToolMessage("java") : String(error instanceof Error ? error.message : error),
+          true
+        );
         session.exited = true;
       });
 
