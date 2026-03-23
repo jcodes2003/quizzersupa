@@ -10,6 +10,8 @@ export default function StudentRegisterPage() {
   const [studentId, setStudentId] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
@@ -97,20 +99,64 @@ export default function StudentRegisterPage() {
             placeholder="Student ID (optional)"
             className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password (min 6 characters)"
-            className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-          />
-          <input
-            type="password"
-            value={confirmPassword}
-            onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder="Confirm password"
-            className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-          />
+          <div className="relative">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Password (min 6 characters)"
+              className="w-full rounded-lg bg-slate-800 border border-slate-600 px-4 py-3 pr-12 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword((prev) => !prev)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-200"
+            >
+              {showPassword ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.58 10.58A2 2 0 0012 16a2 2 0 001.42-.58" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.88 5.09A9.77 9.77 0 0112 4.8c5.4 0 9.27 4.66 9.43 4.86a.55.55 0 010 .68 17.6 17.6 0 01-4.09 3.77" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.61 6.61A17.37 17.37 0 002.57 10a.55.55 0 000 .68C2.73 10.89 6.6 15.55 12 15.55c1.5 0 2.88-.29 4.12-.8" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.57 12.68a.55.55 0 010-.68C2.73 11.8 6.6 7.14 12 7.14s9.27 4.66 9.43 4.86a.55.55 0 010 .68c-.16.2-4.03 4.86-9.43 4.86s-9.27-4.66-9.43-4.86z" />
+                  <circle cx="12" cy="12.34" r="2.75" />
+                </svg>
+              )}
+            </button>
+          </div>
+          <div className="relative">
+            <input
+              type={showConfirmPassword ? "text" : "password"}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              placeholder="Confirm password"
+              className="w-full rounded-lg bg-slate-800 border border-slate-600 px-4 py-3 pr-12 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <button
+              type="button"
+              onClick={() => setShowConfirmPassword((prev) => !prev)}
+              aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+              className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-200"
+            >
+              {showConfirmPassword ? (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M10.58 10.58A2 2 0 0012 16a2 2 0 001.42-.58" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.88 5.09A9.77 9.77 0 0112 4.8c5.4 0 9.27 4.66 9.43 4.86a.55.55 0 010 .68 17.6 17.6 0 01-4.09 3.77" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6.61 6.61A17.37 17.37 0 002.57 10a.55.55 0 000 .68C2.73 10.89 6.6 15.55 12 15.55c1.5 0 2.88-.29 4.12-.8" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className="h-5 w-5">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M2.57 12.68a.55.55 0 010-.68C2.73 11.8 6.6 7.14 12 7.14s9.27 4.66 9.43 4.86a.55.55 0 010 .68c-.16.2-4.03 4.86-9.43 4.86s-9.27-4.66-9.43-4.86z" />
+                  <circle cx="12" cy="12.34" r="2.75" />
+                </svg>
+              )}
+            </button>
+          </div>
           {error && <p className="text-red-400 text-sm text-center">{error}</p>}
           {success && <p className="text-emerald-400 text-sm text-center">{success}</p>}
           <button
