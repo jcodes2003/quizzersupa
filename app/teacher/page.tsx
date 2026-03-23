@@ -27,6 +27,24 @@ type QuizResponseRow = {
   subjectname?: string;
 };
 
+type RecoveryRequestRow = {
+  id: string;
+  attempt_log_id: string;
+  quizid: string;
+  quizcode: string;
+  quizname?: string;
+  student_id?: string;
+  studentname?: string;
+  sectionid?: string;
+  subjectid?: string;
+  sectionname?: string;
+  subjectname?: string;
+  submission_source?: string;
+  status: string;
+  created_at?: string;
+  reviewed_at?: string;
+};
+
 type Subject = { id: string; name: string; slug: string };
 type Section = { id: string; name: string; joinCode?: string };
 
@@ -1148,6 +1166,9 @@ export default function TeacherPage() {
   const [teacherName, setTeacherName] = useState("");
   const [rows, setRows] = useState<QuizResponseRow[]>([]);
   const [scoresLoading, setScoresLoading] = useState(false);
+  const [recoveryRequests, setRecoveryRequests] = useState<RecoveryRequestRow[]>([]);
+  const [recoveryRequestsLoading, setRecoveryRequestsLoading] = useState(false);
+  const [processingRecoveryRequestId, setProcessingRecoveryRequestId] = useState<string | null>(null);
   const [recheckLoading, setRecheckLoading] = useState(false);
   const [recheckMessage, setRecheckMessage] = useState<string | null>(null);
   const [recheckError, setRecheckError] = useState<string | null>(null);
@@ -1865,6 +1886,62 @@ export default function TeacherPage() {
     }
   }, []);
 
+  const fetchRecoveryRequests = useCallback(async () => {
+    setRecoveryRequestsLoading(true);
+    try {
+      const res = await fetch("/api/teacher-attempt-recovery-requests", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      if (res.status === 401) {
+        setAuthenticated(false);
+        setRecoveryRequests([]);
+        return false;
+      }
+      if (!res.ok) {
+        return false;
+      }
+      const data = await res.json();
+      setRecoveryRequests(Array.isArray(data.rows) ? data.rows : []);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setRecoveryRequestsLoading(false);
+    }
+  }, []);
+
+  const handleRecoveryRequestAction = useCallback(
+    async (requestId: string, action: "approve" | "reject") => {
+      setProcessingRecoveryRequestId(requestId);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempt-recovery-requests/${encodeURIComponent(requestId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ action }),
+        });
+        const data = await readJsonSafe(res);
+        if (res.status === 401) {
+          setAuthenticated(false);
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        if (!res.ok) {
+          setError(readStringField(data, "error") ?? `Failed to ${action} recovery request.`);
+          return;
+        }
+        await Promise.all([fetchRecoveryRequests(), fetchScores()]);
+      } catch {
+        setError(`Failed to ${action} recovery request.`);
+      } finally {
+        setProcessingRecoveryRequestId(null);
+      }
+    },
+    [fetchRecoveryRequests, fetchScores]
+  );
+
   const handleRecheckSubject = useCallback(async () => {
     if (!recheckSubject || !recheckSection) {
       setRecheckError("Select a subject and section first.");
@@ -2345,11 +2422,12 @@ export default function TeacherPage() {
     (async () => {
       const res = await fetch("/api/teacher-attempts", { credentials: "include", cache: "no-store" });
       if (cancelled) return;
-      if (res.ok) {
-        const data = await res.json();
-        setRows(data.rows ?? []);
-        setAuthenticated(true);
-        const qRes = await fetch("/api/teacher/quizzes", { credentials: "include", cache: "no-store" });
+	        if (res.ok) {
+	          const data = await res.json();
+	          setRows(data.rows ?? []);
+	          setAuthenticated(true);
+          void fetchRecoveryRequests();
+	          const qRes = await fetch("/api/teacher/quizzes", { credentials: "include", cache: "no-store" });
         if (qRes.ok) {
           setQuizzes(await qRes.json());
           setCanCreateQuestions(true);
@@ -2361,7 +2439,7 @@ export default function TeacherPage() {
       } else setAuthenticated(false);
     })();
     return () => { cancelled = true; };
-  }, []);
+	  }, [fetchRecoveryRequests]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4295,16 +4373,78 @@ export default function TeacherPage() {
                 placeholder="Search student, quiz, ID, section..."
                 className="min-w-[220px] px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
               />
-              <button
-                onClick={() => fetchScores()}
-                disabled={scoresLoading}
-                className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-50 text-white font-semibold"
-              >
-                {scoresLoading ? "Loading..." : "Refresh"}
-              </button>
-            </div>
+	              <button
+	                onClick={() => fetchScores()}
+	                disabled={scoresLoading}
+	                className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-50 text-white font-semibold"
+	              >
+	                {scoresLoading ? "Loading..." : "Refresh"}
+	              </button>
+	            </div>
+	            <div className="mb-6 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
+	              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+	                <div>
+	                  <h3 className="text-sm font-semibold text-amber-200">Attempt Recovery Requests</h3>
+	                  <p className="text-xs text-slate-400">
+	                    Approve an auto-submitted attempt so the student can reopen it with saved answers restored.
+	                  </p>
+	                </div>
+	                <button
+	                  type="button"
+	                  onClick={() => void fetchRecoveryRequests()}
+	                  disabled={recoveryRequestsLoading}
+	                  className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+	                >
+	                  {recoveryRequestsLoading ? "Loading..." : "Refresh Requests"}
+	                </button>
+	              </div>
+	              {recoveryRequests.filter((r) => r.status === "pending").length === 0 ? (
+	                <p className="text-sm text-slate-400">No pending recovery requests.</p>
+	              ) : (
+	                <div className="space-y-3">
+	                  {recoveryRequests
+	                    .filter((r) => r.status === "pending")
+	                    .map((request) => (
+	                      <div
+	                        key={request.id}
+	                        className="flex flex-col gap-3 rounded-xl border border-amber-500/20 bg-slate-900/60 p-4 md:flex-row md:items-start md:justify-between"
+	                      >
+	                        <div className="min-w-0 text-sm text-slate-300">
+	                          <div className="font-semibold text-slate-100">
+	                            {formatNameLastFirst(request.studentname) || "Student"} requested recovery for {request.quizname || request.quizcode || "Untitled quiz"}
+	                          </div>
+	                          <div className="mt-1 text-xs text-slate-400">
+	                            Student ID: {sanitizeStudentId(request.student_id) || "?"} • Section: {request.sectionname || request.sectionid || "?"} • Subject: {request.subjectname || request.subjectid || "?"}
+	                          </div>
+	                          <div className="mt-1 text-xs text-slate-400">
+	                            Source: {formatSubmissionSource(request.submission_source)} • Requested: {request.created_at ? new Date(request.created_at).toLocaleString() : "—"}
+	                          </div>
+	                        </div>
+	                        <div className="flex flex-wrap gap-2 md:justify-end">
+	                          <button
+	                            type="button"
+	                            onClick={() => void handleRecoveryRequestAction(request.id, "approve")}
+	                            disabled={processingRecoveryRequestId === request.id}
+	                            className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
+	                          >
+	                            {processingRecoveryRequestId === request.id ? "Processing..." : "Approve"}
+	                          </button>
+	                          <button
+	                            type="button"
+	                            onClick={() => void handleRecoveryRequestAction(request.id, "reject")}
+	                            disabled={processingRecoveryRequestId === request.id}
+	                            className="rounded-lg bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600 disabled:opacity-50"
+	                          >
+	                            Reject
+	                          </button>
+	                        </div>
+	                      </div>
+	                    ))}
+	                </div>
+	              )}
+	            </div>
 
-            {scoresLoading && rows.length === 0 ? (
+	            {scoresLoading && rows.length === 0 ? (
               <p className="text-slate-400 text-center py-12">Loading responses...</p>
             ) : rows.length === 0 ? (
               <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-12 text-center text-slate-400">

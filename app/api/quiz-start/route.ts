@@ -179,15 +179,22 @@ export async function POST(request: NextRequest) {
 
 	  const existingOpenRes = await supabase
 	    .from("student_attempts_log")
-	    .select("id, attempt_number, started_at, quizid, student_id")
+	    .select("id, attempt_number, started_at, quizid, student_id, answers")
 	    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
 	    .eq("is_submitted", false)
 	    .order("created_at", { ascending: false })
 	    .limit(200);
 
-	  let existingOpen = (((existingOpenRes.data ?? []) as Array<
-	    { id?: string; attempt_number?: number; started_at?: string; quizid?: string | null; student_id?: string | null }
-	  >).find((row) => sameStudentId(row.student_id, studentId)) ?? null);
+		  let existingOpen = (((existingOpenRes.data ?? []) as Array<
+		    {
+		      id?: string;
+		      attempt_number?: number;
+		      started_at?: string;
+		      quizid?: string | null;
+		      student_id?: string | null;
+		      answers?: Record<string, unknown> | null;
+		    }
+		  >).find((row) => sameStudentId(row.student_id, studentId)) ?? null);
 	  const existingOpenError = existingOpenRes.error as { message?: string } | null;
 
   if (existingOpenError?.message && existingOpenError.message.toLowerCase().includes("student_attempts_log")) {
@@ -220,6 +227,20 @@ export async function POST(request: NextRequest) {
     const attemptsRemaining =
       typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
     const noAttemptsLeft = typeof attemptsUsed === "number" && attemptsUsed >= maxAttempts;
+    let hasApprovedRecoveredAttempt = false;
+    if (existingOpen.id && noAttemptsLeft) {
+      const requestRes = await supabase
+        .from("student_attempt_recovery_requests")
+        .select("status")
+        .eq("attempt_log_id", String(existingOpen.id))
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const latest = ((requestRes.data ?? []) as Array<{ status?: string | null }>)[0] ?? null;
+      hasApprovedRecoveredAttempt = String(latest?.status ?? "").trim().toLowerCase() === "approved";
+    }
+    if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt) {
+      return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
+    }
     const allowRetake = hasManualSubmit || noAttemptsLeft ? false : baseAllowRetake;
 
     let timeLimitMinutes = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;
@@ -241,14 +262,15 @@ export async function POST(request: NextRequest) {
     const attemptNumberOut =
       expectedAttemptNumber ?? (existingOpen.attempt_number ?? 1);
 
-    return NextResponse.json({
-      attemptId: existingOpen.id,
-      attemptNumber: attemptNumberOut,
-      expiresAt,
+	    return NextResponse.json({
+	      attemptId: existingOpen.id,
+	      attemptNumber: attemptNumberOut,
+	      expiresAt,
       maxAttempts,
       allowRetake,
       attemptsUsed,
-      attemptsRemaining: hasManualSubmit || noAttemptsLeft ? 0 : attemptsRemaining,
+      attemptsRemaining: hasApprovedRecoveredAttempt ? -1 : hasManualSubmit || noAttemptsLeft ? 0 : attemptsRemaining,
+      restoredAnswers: existingOpen.answers ?? null,
     });
   }
 
@@ -317,15 +339,16 @@ export async function POST(request: NextRequest) {
     ? new Date(new Date(attemptRow.started_at).getTime() + ((quizSettings as { time_limit_minutes?: number }).time_limit_minutes ?? 0) * 60 * 1000).toISOString()
     : null;
 
-  return NextResponse.json({
-    attemptId: attemptRow?.id || null,
-    attemptNumber: attemptRow?.attempt_number ?? attemptNumber,
-    expiresAt,
-    maxAttempts,
-    allowRetake,
-    attemptsUsed: attemptCount,
-    attemptsRemaining: hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - attemptCount),
-  });
+	  return NextResponse.json({
+	    attemptId: attemptRow?.id || null,
+	    attemptNumber: attemptRow?.attempt_number ?? attemptNumber,
+	    expiresAt,
+	    maxAttempts,
+	    allowRetake,
+	    attemptsUsed: attemptCount,
+	    attemptsRemaining: hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - attemptCount),
+	    restoredAnswers: null,
+	  });
   } catch {
     return NextResponse.json({ ok: true, attemptId: null, attemptNumber: 1, expiresAt: null, maxAttempts: 1, allowRetake: false });
   }

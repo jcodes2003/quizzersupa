@@ -150,6 +150,12 @@ export async function GET(request: NextRequest) {
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
   const hasManualSubmitByQuizId = new Map<string, boolean>();
+  const openAttemptByQuizId = new Map<string, { attemptId: string }>();
+  const approvedRecoveryAttemptIds = new Set<string>();
+  const latestAttemptByQuizId = new Map<
+    string,
+    { attemptId: string; submittedAt: string | null; submissionSource: string | null }
+  >();
   const bestByQuizId = new Map<
     string,
     { submittedAt: string | null; score: number | null; maxScore: number | null; percentage: number | null }
@@ -162,6 +168,17 @@ export async function GET(request: NextRequest) {
     }
 
     const submittedAtRaw = safeIso(attempt.submitted_at ?? attempt.created_at);
+    const attemptId = String(attempt.id ?? "").trim();
+    const submissionSource =
+      typeof attempt.submission_source === "string" && attempt.submission_source.trim()
+        ? attempt.submission_source.trim()
+        : null;
+    const prevLatest = latestAttemptByQuizId.get(qid);
+    const prevLatestTime = prevLatest?.submittedAt ? new Date(prevLatest.submittedAt).getTime() : 0;
+    const nextLatestTime = submittedAtRaw ? new Date(submittedAtRaw).getTime() : 0;
+    if (attemptId && (!prevLatest || nextLatestTime >= prevLatestTime)) {
+      latestAttemptByQuizId.set(qid, { attemptId, submittedAt: submittedAtRaw, submissionSource });
+    }
     const scoreNum = Number(attempt.score);
     const maxNum = Number(attempt.max_score);
     const score = Number.isFinite(scoreNum) ? scoreNum : null;
@@ -192,24 +209,54 @@ export async function GET(request: NextRequest) {
   };
 
   if (studentId && quizIds.length > 0) {
+    const requestRes = await supabase
+      .from("student_attempt_recovery_requests")
+      .select("attempt_log_id, status");
+    const requestErr = (requestRes.error as { message?: string } | null)?.message ?? "";
+    if (!requestErr || !requestErr.toLowerCase().includes("student_attempt_recovery_requests")) {
+      for (const row of (requestRes.data ?? []) as Array<{ attempt_log_id?: string | null; status?: string | null }>) {
+        const attemptId = String(row.attempt_log_id ?? "").trim();
+        const status = String(row.status ?? "").trim().toLowerCase();
+        if (attemptId && status === "approved") approvedRecoveryAttemptIds.add(attemptId);
+      }
+    }
+
+    const openAttemptsRes = await supabase
+      .from("student_attempts_log")
+      .select("id, quizid, student_id")
+      .in("quizid", quizIds)
+      .eq("is_submitted", false);
+    const openAttemptsErr = (openAttemptsRes.error as { message?: string } | null)?.message ?? "";
+    if (!openAttemptsErr || !openAttemptsErr.toLowerCase().includes("student_attempts_log")) {
+      for (const row of (openAttemptsRes.data ?? []) as Array<{ id?: string | null; quizid?: string | null; student_id?: string | null }>) {
+        const qid = String(row.quizid ?? "").trim();
+        const attemptId = String(row.id ?? "").trim();
+        if (!qid || !attemptId || !sameStudentId(row.student_id, studentId)) continue;
+        if (!openAttemptByQuizId.has(qid)) {
+          openAttemptByQuizId.set(qid, { attemptId });
+        }
+      }
+    }
+
     const fullAttempts = await supabase
       .from("student_attempts_log")
-      .select("quizid, student_id, score, max_score, submitted_at, created_at, submission_source")
+      .select("id, quizid, student_id, score, max_score, submitted_at, created_at, submission_source")
       .in("quizid", quizIds)
       .eq("is_submitted", true);
 
     // Backward compatibility if some columns don't exist yet.
     const errMsg = (fullAttempts.error as { message?: string } | null)?.message ?? "";
     const attemptsRes =
-      errMsg &&
+          errMsg &&
       (errMsg.toLowerCase().includes("submitted_at") ||
+        errMsg.toLowerCase().includes("id") ||
         errMsg.toLowerCase().includes("max_score") ||
         errMsg.toLowerCase().includes("max_score") ||
         errMsg.toLowerCase().includes("score") ||
         errMsg.toLowerCase().includes("submission_source"))
         ? await supabase
             .from("student_attempts_log")
-            .select("quizid, student_id, created_at")
+            .select("id, quizid, student_id, created_at")
             .in("quizid", quizIds)
             .eq("is_submitted", true)
         : fullAttempts;
@@ -258,17 +305,24 @@ export async function GET(request: NextRequest) {
       const quizSem = q.subject_semester || null;
       // Fresh start: only show quizzes tagged with the current subject semester.
       return quizSem === currentSem;
-    })
-          .map((q) => {
-      const attemptsUsed = attemptsUsedByQuizId.get(q.id) ?? 0;
-      const attemptsRemaining = Math.max(0, (q.max_attempts ?? 1) - attemptsUsed);
-      const best = bestByQuizId.get(q.id) ?? null;
-      const submitted = attemptsUsed > 0;
-      const hasManualSubmit = hasManualSubmitByQuizId.get(q.id) === true;
-      const canStillAttempt = q._open && attemptsRemaining > 0 && !hasManualSubmit;
-      const status: "open" | "closed" | "missing" | "completed" = canStillAttempt
-        ? "open"
-        : submitted
+	    })
+	          .map((q) => {
+	      const attemptsUsed = attemptsUsedByQuizId.get(q.id) ?? 0;
+	      const baseAttemptsRemaining = Math.max(0, (q.max_attempts ?? 1) - attemptsUsed);
+	      const existingOpenAttempt = openAttemptByQuizId.get(q.id) ?? null;
+	      const best = bestByQuizId.get(q.id) ?? null;
+	      const latestAttempt = latestAttemptByQuizId.get(q.id) ?? null;
+	      const latestSubmissionSource = latestAttempt?.submissionSource ?? null;
+	      const submitted = attemptsUsed > 0;
+	      const hasManualSubmit = hasManualSubmitByQuizId.get(q.id) === true;
+      const hasApprovedRecoveredAttempt =
+        Boolean(existingOpenAttempt?.attemptId) && approvedRecoveryAttemptIds.has(String(existingOpenAttempt?.attemptId ?? ""));
+      const hasReopenedAttempt = Boolean(existingOpenAttempt?.attemptId) && hasApprovedRecoveredAttempt;
+      const attemptsRemaining = hasReopenedAttempt ? -1 : baseAttemptsRemaining;
+      const canStillAttempt = (q._open && attemptsRemaining > 0 && !hasManualSubmit) || hasReopenedAttempt;
+	      const status: "open" | "closed" | "missing" | "completed" = canStillAttempt
+	        ? "open"
+	        : submitted
           ? "completed"
           : "missing";
       const submittedAt = best?.submittedAt ?? null;
@@ -296,10 +350,12 @@ export async function GET(request: NextRequest) {
         score,
         maxScore,
         percentage,
-        attemptsUsed,
-        attemptsRemaining,
-      };
-    })
+	        attemptsUsed,
+	        attemptsRemaining,
+	        latestAttemptId: existingOpenAttempt?.attemptId ?? latestAttempt?.attemptId ?? null,
+	        latestSubmissionSource,
+	      };
+	    })
     .sort((a, b) => {
       // Open first, then missing, then completed, then closed; within group, closest deadline first, else by code.
       const rank = (s: string) => (s === "open" ? 0 : s === "missing" ? 1 : s === "completed" ? 2 : 3);
@@ -311,5 +367,49 @@ export async function GET(request: NextRequest) {
       return a.quizcode.localeCompare(b.quizcode);
     });
 
-  return noStoreJson({ ok: true, quizzes });
+  const latestAttemptIds = quizzes
+    .map((q) => String((q as { latestAttemptId?: unknown }).latestAttemptId ?? "").trim())
+    .filter(Boolean);
+
+  let requestRows: Array<{ attempt_log_id?: string | null; status?: string | null }> = [];
+  if (latestAttemptIds.length > 0) {
+    const requestRes = await supabase
+      .from("student_attempt_recovery_requests")
+      .select("attempt_log_id, status")
+      .in("attempt_log_id", latestAttemptIds)
+      .order("created_at", { ascending: false });
+    const requestErr = (requestRes.error as { message?: string } | null)?.message ?? "";
+    if (!requestErr || !requestErr.toLowerCase().includes("student_attempt_recovery_requests")) {
+      requestRows = (requestRes.data ?? []) as Array<{ attempt_log_id?: string | null; status?: string | null }>;
+    }
+  }
+
+  const requestStatusByAttemptId = new Map<string, string>();
+  for (const row of requestRows) {
+    const attemptId = String(row.attempt_log_id ?? "").trim();
+    if (!attemptId || requestStatusByAttemptId.has(attemptId)) continue;
+    requestStatusByAttemptId.set(attemptId, String(row.status ?? "").trim().toLowerCase());
+  }
+
+  const quizzesWithRequests = quizzes.map((q) => {
+    const latestAttemptId = String((q as { latestAttemptId?: unknown }).latestAttemptId ?? "").trim();
+    const latestSubmissionSource = String((q as { latestSubmissionSource?: unknown }).latestSubmissionSource ?? "").trim().toLowerCase();
+    const recoveryRequestStatus = latestAttemptId ? requestStatusByAttemptId.get(latestAttemptId) ?? null : null;
+    const isAutoSubmitted =
+      latestSubmissionSource === "auto_tab_switch" ||
+      latestSubmissionSource === "auto_close_tab" ||
+      latestSubmissionSource === "auto_time_expired";
+    const canRequestRecovery =
+      Boolean(latestAttemptId) &&
+      isAutoSubmitted &&
+      q.status !== "open" &&
+      recoveryRequestStatus !== "pending";
+    return {
+      ...q,
+      recoveryRequestStatus,
+      canRequestRecovery,
+    };
+  });
+
+  return noStoreJson({ ok: true, quizzes: quizzesWithRequests });
 }

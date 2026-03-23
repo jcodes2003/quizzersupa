@@ -108,6 +108,18 @@ export async function GET(request: NextRequest) {
       .map((q) => String((q as { id?: string }).id ?? ""))
       .filter(Boolean);
 
+    const openAttemptRes = await supabase
+      .from("student_attempts_log")
+      .select("id, student_id")
+      .in("quizid", quizIds.length > 0 ? quizIds : [String(quizRow.id ?? "")])
+      .eq("is_submitted", false);
+    const openAttemptErr = (openAttemptRes.error as { message?: string } | null)?.message ?? "";
+    const matchingOpenAttempt =
+      !openAttemptErr || !openAttemptErr.toLowerCase().includes("student_attempts_log")
+        ? (((openAttemptRes.data ?? []) as Array<{ id?: string | null; student_id?: string | null }>)
+            .find((row) => sameStudentId(row.student_id, studentId)) ?? null)
+        : null;
+
     const countRes = await supabase
       .from("student_attempts_log")
       .select("student_id, submission_source")
@@ -124,8 +136,20 @@ export async function GET(request: NextRequest) {
       const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
       const noAttemptsLeft = used >= maxAttempts;
       attemptsUsed = used;
-      attemptsRemaining = hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
-      if (hasManualSubmit || noAttemptsLeft) {
+      let hasApprovedRecoveredAttempt = false;
+      if (matchingOpenAttempt?.id && noAttemptsLeft) {
+        const requestRes = await supabase
+          .from("student_attempt_recovery_requests")
+          .select("status")
+          .eq("attempt_log_id", String(matchingOpenAttempt.id))
+          .order("created_at", { ascending: false })
+          .limit(1);
+        const latest = ((requestRes.data ?? []) as Array<{ status?: string | null }>)[0] ?? null;
+        hasApprovedRecoveredAttempt = String(latest?.status ?? "").trim().toLowerCase() === "approved";
+      }
+      attemptsRemaining =
+        hasApprovedRecoveredAttempt ? -1 : hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
+      if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt) {
         return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
       }
     }

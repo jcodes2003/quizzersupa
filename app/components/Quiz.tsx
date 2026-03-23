@@ -192,6 +192,44 @@ type HandsOnAnswer = {
 
 let ignoreAutoSubmitUntil = 0;
 
+function isAutoSubmissionSource(source: SubmissionSource): boolean {
+  return source === "auto_tab_switch" || source === "auto_close_tab" || source === "auto_time_expired";
+}
+
+function extractSavedAnswerMap(value: unknown): Record<string, string> {
+  if (!Array.isArray(value)) return {};
+  const entries: Array<[string, string]> = [];
+  for (const item of value) {
+    const row = item as { questionId?: unknown; answer?: unknown };
+    const questionId = String(row.questionId ?? "").trim();
+    if (!questionId) continue;
+    entries.push([questionId, typeof row.answer === "string" ? row.answer : String(row.answer ?? "")]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function extractSavedHandsOnMap(value: unknown): Record<string, HandsOnAnswer> {
+  if (!Array.isArray(value)) return {};
+  const entries: Array<[string, HandsOnAnswer]> = [];
+  for (const item of value) {
+    const row = item as Record<string, unknown>;
+    const questionId = String(row.questionId ?? "").trim();
+    if (!questionId) continue;
+    entries.push([
+      questionId,
+      {
+        mode: row.mode === "java_console" ? "java_console" : "html_css",
+        html: typeof row.html === "string" ? row.html : "",
+        css: typeof row.css === "string" ? row.css : "",
+        java: typeof row.java === "string" ? row.java : "",
+        javaInput: typeof row.javaInput === "string" ? row.javaInput : "",
+        consoleOutput: typeof row.consoleOutput === "string" ? row.consoleOutput : "",
+      },
+    ]);
+  }
+  return Object.fromEntries(entries);
+}
+
 const DEFAULT_HANDS_ON_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -853,9 +891,13 @@ export default function Quiz({
   const [tabLeft, setTabLeft] = useState(false);
   const [submissionSource, setSubmissionSource] = useState<SubmissionSource>("manual_submit");
   const [currentPage, setCurrentPage] = useState(0);
-	  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
-	  const [submitError, setSubmitError] = useState<string | null>(null);
-	  const [restrictionNotice, setRestrictionNotice] = useState<string | null>(null);
+  const [showSubmitConfirm, setShowSubmitConfirm] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [recoveryRequestLoading, setRecoveryRequestLoading] = useState(false);
+  const [recoveryRequestStatus, setRecoveryRequestStatus] = useState<"idle" | "pending" | "approved">("idle");
+  const [recoveryRequestMessage, setRecoveryRequestMessage] = useState<string>("");
+  const [attemptSaveReady, setAttemptSaveReady] = useState(false);
+  const [restrictionNotice, setRestrictionNotice] = useState<string | null>(null);
 	  const restrictionTimerRef = useRef<number | null>(null);
 	  const [showDeadlineSubmitModal, setShowDeadlineSubmitModal] = useState(false);
 	  const [deadlineSubmitLoading, setDeadlineSubmitLoading] = useState(false);
@@ -1309,13 +1351,20 @@ export default function Quiz({
 	      } else {
 	        setExpiresAt(null);
 	      }
-	      const used = Number((data as { attemptsUsed?: unknown }).attemptsUsed);
-	      const remaining = Number((data as { attemptsRemaining?: unknown }).attemptsRemaining);
-	      if (Number.isFinite(used) && used >= 0) setAttemptsUsedInfo(Math.trunc(used));
-	      if (Number.isFinite(remaining) && remaining >= 0) setAttemptsRemainingInfo(Math.trunc(remaining));
-	      setIdentityLocked(true);
-	      autoSubmitRef.current = false;
-	      await enterFocusMode();
+		      const used = Number((data as { attemptsUsed?: unknown }).attemptsUsed);
+		      const remaining = Number((data as { attemptsRemaining?: unknown }).attemptsRemaining);
+		      if (Number.isFinite(used) && used >= 0) setAttemptsUsedInfo(Math.trunc(used));
+		      if (Number.isFinite(remaining) && remaining >= 0) setAttemptsRemainingInfo(Math.trunc(remaining));
+	      const restoredAnswers = (data as { restoredAnswers?: Record<string, unknown> | null }).restoredAnswers;
+	      if (restoredAnswers && typeof restoredAnswers === "object") {
+	        setMcAnswers(extractSavedAnswerMap(restoredAnswers.multiple_choice));
+	        setIdAnswers(extractSavedAnswerMap(restoredAnswers.identification));
+	        setEnumAnswers(extractSavedAnswerMap(restoredAnswers.enumeration));
+	        setHandsOnAnswers(extractSavedHandsOnMap(restoredAnswers.hands_on));
+	      }
+		      setIdentityLocked(true);
+		      autoSubmitRef.current = false;
+		      await enterFocusMode();
 	      setStarted(true);
 	    } catch {
 	      setSubmitError("Unable to start quiz");
@@ -1490,11 +1539,12 @@ export default function Quiz({
 	      maxScore,
 	      percentage,
     });
-    setSubmissionSource(source);
-    setSubmitted(true);
+	    setSubmissionSource(source);
+	    setSubmitted(true);
+      setAttemptSaveReady(false);
 
-    // Save attempt and update score if this is the best attempt for this student
-    if (quizId) {
+	    // Save attempt and update score if this is the best attempt for this student
+	    if (quizId) {
       if (!supabase) {
         // Supabase client isn't available (e.g. during static prerender); skip saving.
         console.warn("Supabase client not available; skipping score save.");
@@ -1513,22 +1563,26 @@ export default function Quiz({
               answers: answersPayload,
               submissionSource: source,
             };
-	            const result = await saveAttempt(payload);
-	            if (!result.ok) {
-	              if (result.deadlinePassed) {
-	                setSubmitError("Quiz deadline has passed. Submission is closed.");
-	                return;
-	              }
-	              console.error("Failed to save attempt:", result.errorMessage);
-	            } else {
-	              void refreshAttemptsInfo();
-	            }
-	          } catch (err) {
-	            console.error("Error saving attempt:", err);
-	          }
-	        })();
-	      }
-	    }
+		            const result = await saveAttempt(payload);
+		            if (!result.ok) {
+                  setAttemptSaveReady(false);
+		              if (result.deadlinePassed) {
+		                setSubmitError("Quiz deadline has passed. Submission is closed.");
+		                return;
+		              }
+		              console.error("Failed to save attempt:", result.errorMessage);
+                  setRecoveryRequestMessage(result.errorMessage);
+		            } else {
+                  setAttemptSaveReady(true);
+		              void refreshAttemptsInfo();
+		            }
+		          } catch (err) {
+		            console.error("Error saving attempt:", err);
+                setAttemptSaveReady(false);
+		          }
+		        })();
+		      }
+		    }
 	  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, handsOnAnswers, questionFlow, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, quizId, attemptId, attemptNumber, started, saveAttempt, refreshAttemptsInfo]);
 
   useEffect(() => {
@@ -1662,7 +1716,45 @@ export default function Quiz({
     } finally {
       setDeadlineSubmitLoading(false);
     }
-  };
+	  };
+
+  const handleRequestRecovery = useCallback(async () => {
+    if (!quizId || !attemptId) {
+      setRecoveryRequestMessage("This attempt cannot be recovered because its saved attempt ID is missing.");
+      return;
+    }
+    if (!attemptSaveReady) {
+      setRecoveryRequestMessage("Please wait a moment. Your auto-submitted attempt is still being saved.");
+      return;
+    }
+    setRecoveryRequestLoading(true);
+    setRecoveryRequestMessage("");
+    try {
+      const res = await fetch("/api/student-attempt-recovery-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ attemptId, submissionSource }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string };
+      if (!res.ok) {
+        setRecoveryRequestMessage(data.error ?? "Failed to send recovery request.");
+        return;
+      }
+      const status = String(data.status ?? "pending").trim().toLowerCase();
+      if (status === "approved") {
+        setRecoveryRequestStatus("approved");
+        setRecoveryRequestMessage("Recovery already approved. Open the quiz from the dashboard to continue with your saved answers.");
+      } else {
+        setRecoveryRequestStatus("pending");
+        setRecoveryRequestMessage("Recovery request sent. Wait for your teacher to approve it, then reopen the quiz to continue.");
+      }
+    } catch {
+      setRecoveryRequestMessage("Failed to send recovery request.");
+    } finally {
+      setRecoveryRequestLoading(false);
+    }
+  }, [quizId, attemptId, attemptSaveReady, submissionSource]);
 
   if (submitted && results) {
 	  return (
@@ -1727,23 +1819,50 @@ export default function Quiz({
               <p className="text-2xl font-semibold mt-2 text-cyan-300">{results.percentage}%</p>
             </div>
 
-            <div className="mt-8 space-y-4">
-              {tabLeft && results.attempts >= attemptsLimit && (
-                <div className="p-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-center">
-	                  <p className="font-semibold">You&apos;ve used all {attemptsLimit} attempts. You cannot retake this quiz.</p>
-                </div>
-              )}
-              <div className="flex gap-4">
-	                <Link
-	                  href={backHref}
-	                  className="flex-1 py-3 px-6 rounded-xl bg-slate-600 hover:bg-slate-500 text-white font-semibold text-center transition-colors"
-	                >
+	            <div className="mt-8 space-y-4">
+	              {tabLeft && results.attempts >= attemptsLimit && (
+	                <div className="p-4 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-center">
+		                  <p className="font-semibold">You&apos;ve used all {attemptsLimit} attempts. You cannot retake this quiz.</p>
+	                </div>
+	              )}
+                {tabLeft && quizId && isAutoSubmissionSource(submissionSource) && (
+                  <div className="rounded-xl border border-cyan-500/30 bg-cyan-500/10 p-4 text-center">
+                    <p className="text-sm font-semibold text-cyan-100">
+                      Need to continue from your recent saved answers?
+                    </p>
+                    <p className="mt-1 text-xs text-slate-300">
+                      Request recovery so your teacher can reopen this exact attempt with your saved answers and remaining time.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => void handleRequestRecovery()}
+                      disabled={recoveryRequestLoading || recoveryRequestStatus === "pending" || !attemptSaveReady}
+                      className="mt-3 rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                    >
+                      {recoveryRequestLoading
+                        ? "Requesting..."
+                        : !attemptSaveReady
+                          ? "Finalizing Auto Submit..."
+                        : recoveryRequestStatus === "pending"
+                          ? "Recovery Requested"
+                          : "Request Recovery"}
+                    </button>
+                    {recoveryRequestMessage ? (
+                      <p className="mt-3 text-xs text-cyan-100">{recoveryRequestMessage}</p>
+                    ) : null}
+                  </div>
+                )}
+	              <div className="flex gap-4">
+		                <Link
+		                  href={backHref}
+		                  className="flex-1 py-3 px-6 rounded-xl bg-slate-600 hover:bg-slate-500 text-white font-semibold text-center transition-colors"
+		                >
                   ← Back to Home
                 </Link>
-	                {tabLeft && results.attempts < attemptsLimit && (
-	                  <button
-	                    onClick={() => {
-	                      autoSubmitRef.current = false;
+		                {tabLeft && results.attempts < attemptsLimit && !quizId && (
+		                  <button
+		                    onClick={() => {
+		                      autoSubmitRef.current = false;
 	                      closeIntentRef.current = false;
 	                      setSubmitted(false);
 	                      setShowSubmitConfirm(false);
@@ -1764,10 +1883,10 @@ export default function Quiz({
 	                      setCurrentPage(0);
 	                    }}
 	                    className="flex-1 py-3 px-6 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold transition-colors"
-	                  >
-	                    Retake Quiz
-                  </button>
-                )}
+		                  >
+		                    Retake Quiz
+	                  </button>
+	                )}
               </div>
             </div>
           </div>

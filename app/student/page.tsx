@@ -32,6 +32,10 @@ type QuizRow = {
   percentage?: number | null;
   attemptsUsed?: number;
   attemptsRemaining?: number;
+  latestAttemptId?: string | null;
+  latestSubmissionSource?: string | null;
+  recoveryRequestStatus?: string | null;
+  canRequestRecovery?: boolean;
 };
 
 export default function StudentDashboardPage() {
@@ -43,6 +47,7 @@ export default function StudentDashboardPage() {
   const [joinLoading, setJoinLoading] = useState(false);
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
   const [quizLoading, setQuizLoading] = useState(false);
+  const [requestingRecoveryFor, setRequestingRecoveryFor] = useState<string | null>(null);
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
 
@@ -142,6 +147,29 @@ export default function StudentDashboardPage() {
   const handleLogout = async () => {
     await fetch("/api/student-logout", { method: "POST", credentials: "include" });
     router.push("/student/login");
+  };
+
+  const handleRecoveryRequest = async (quiz: QuizRow) => {
+    const attemptId = String(quiz.latestAttemptId ?? "").trim();
+    if (!attemptId) return;
+    setError(null);
+    setRequestingRecoveryFor(quiz.id);
+    try {
+      const res = await fetch("/api/student-attempt-recovery-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ attemptId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed to send recovery request.");
+        return;
+      }
+      await loadQuizzes(selectedSectionId);
+    } finally {
+      setRequestingRecoveryFor(null);
+    }
   };
 
   const joinedSections = me?.sections ?? [];
@@ -746,25 +774,47 @@ export default function StudentDashboardPage() {
 	                                  <span className="text-cyan-300 font-semibold">({q.percentage}%)</span>
 	                                </div>
 	                              ) : null}
-	                              {submittedLabel ? (
-	                                <div className="text-slate-400 text-xs mt-1">{submittedLabel}</div>
-	                              ) : null}
-	                              <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
-	                            </div>
-		                            <button
-		                              type="button"
-		                              onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
-		                              disabled={!canOpen}
-		                              className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
-		                                canOpen
-		                                  ? "bg-emerald-600 hover:bg-emerald-500"
-	                                  : "bg-slate-700/70 opacity-60 cursor-not-allowed"
-	                              }`}
-	                            >
-	                              {canOpen ? "Open" : "Closed"}
-	                            </button>
-	                          </li>
-	                        );
+		                              {submittedLabel ? (
+		                                <div className="text-slate-400 text-xs mt-1">{submittedLabel}</div>
+		                              ) : null}
+		                              {q.recoveryRequestStatus === "pending" ? (
+		                                <div className="mt-1 text-[11px] font-medium text-amber-300">
+		                                  Attempt recovery request pending teacher approval.
+		                                </div>
+		                              ) : null}
+		                              {q.recoveryRequestStatus === "approved" ? (
+		                                <div className="mt-1 text-[11px] font-medium text-emerald-300">
+		                                  Recovery approved. Open the quiz to continue with your saved answers.
+		                                </div>
+		                              ) : null}
+		                              <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
+		                            </div>
+			                            <div className="flex w-full flex-col gap-2 sm:w-auto">
+			                              <button
+			                                type="button"
+			                                onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
+			                                disabled={!canOpen}
+			                                className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
+			                                  canOpen
+			                                    ? "bg-emerald-600 hover:bg-emerald-500"
+		                                    : "bg-slate-700/70 opacity-60 cursor-not-allowed"
+		                                }`}
+		                              >
+		                                {canOpen ? "Open" : "Closed"}
+		                              </button>
+		                              {q.canRequestRecovery ? (
+		                                <button
+		                                  type="button"
+		                                  onClick={() => void handleRecoveryRequest(q)}
+		                                  disabled={requestingRecoveryFor === q.id}
+		                                  className="w-full sm:w-auto rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/15 disabled:opacity-50"
+		                                >
+		                                  {requestingRecoveryFor === q.id ? "Requesting..." : "Request Attempt"}
+		                                </button>
+		                              ) : null}
+			                            </div>
+		                          </li>
+		                        );
 		                      })}
 		                    </ul>
 		                  )}
