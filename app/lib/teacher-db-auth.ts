@@ -93,3 +93,45 @@ export async function verifyTeacherCredentials(
   const approved = Boolean(teacherWithPass.approved);
   return { id: teacherWithPass.id, name: teacherWithPass.teachername, approved };
 }
+
+export async function findTeacherByUsername(
+  username: string
+): Promise<{ id: string; name: string; approved: boolean } | null> {
+  const supabase = getSupabase();
+  const normalized = username.trim().toLowerCase();
+  if (!normalized) return null;
+
+  type TeacherLookupRow = { id: string; teachername: string; approved?: boolean };
+  let teacher:
+    | TeacherLookupRow
+    | null = null;
+  let error: { message?: string } | null = null;
+
+  const first = await supabase
+    .from("teachertbl")
+    .select("id, teachername, approved")
+    .eq("username", normalized)
+    .single();
+  teacher = (first.data ?? null) as TeacherLookupRow | null;
+  error = (first.error ?? null) as { message?: string } | null;
+
+  if (error?.message && String(error.message).toLowerCase().includes("approved")) {
+    const fallback = await supabase
+      .from("teachertbl")
+      .select("id, teachername")
+      .eq("username", normalized)
+      .single();
+    teacher = (fallback.data ?? null) as TeacherLookupRow | null;
+    error = (fallback.error ?? null) as { message?: string } | null;
+    if (teacher) {
+      (teacher as { approved?: boolean }).approved = true;
+    }
+  }
+
+  if (error || !teacher) return null;
+  return {
+    id: teacher.id,
+    name: teacher.teachername,
+    approved: Boolean(teacher.approved),
+  };
+}

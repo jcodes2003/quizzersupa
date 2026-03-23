@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   createStudentSession,
+  findStudentByUsername,
   getStudentCookieName,
   verifyStudentCredentials,
 } from "../../lib/student-auth";
@@ -16,7 +17,11 @@ export async function POST(request: NextRequest) {
 
     const student = await verifyStudentCredentials(username, password);
     if (!student) {
-      return NextResponse.json({ ok: false, error: "Invalid username or password" }, { status: 401 });
+      const studentAccount = await findStudentByUsername(username);
+      if (studentAccount) {
+        return NextResponse.json({ ok: false, error: "Password does not match this email" }, { status: 401 });
+      }
+      return NextResponse.json({ ok: false, error: "Email not found" }, { status: 401 });
     }
 
     const token = createStudentSession({
@@ -46,4 +51,3 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Server error" }, { status: 500 });
   }
 }
-

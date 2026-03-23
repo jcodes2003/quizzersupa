@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
   createTeacherDBSession,
+  findTeacherByUsername,
   getTeacherDBCookieName,
   verifyTeacherCredentials,
 } from "../../lib/teacher-db-auth";
 import {
   createStudentSession,
+  findStudentByUsername,
   getStudentCookieName,
   verifyStudentCredentials,
 } from "../../lib/student-auth";
@@ -36,11 +38,22 @@ export async function POST(request: NextRequest) {
       });
       return res;
     }
+    const teacherAccount = await findTeacherByUsername(email);
+    if (teacherAccount) {
+      if (!teacherAccount.approved) {
+        return NextResponse.json({ ok: false, error: "Teacher account pending admin approval" }, { status: 403 });
+      }
+      return NextResponse.json({ ok: false, error: "Password does not match this email" }, { status: 401 });
+    }
 
     // 2) Try student.
     const student = await verifyStudentCredentials(email, password);
     if (!student) {
-      return NextResponse.json({ ok: false, error: "Invalid email or password" }, { status: 401 });
+      const studentAccount = await findStudentByUsername(email);
+      if (studentAccount) {
+        return NextResponse.json({ ok: false, error: "Password does not match this email" }, { status: 401 });
+      }
+      return NextResponse.json({ ok: false, error: "Email not found" }, { status: 401 });
     }
     const token = createStudentSession({
       student: {

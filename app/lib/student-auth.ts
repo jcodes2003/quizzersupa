@@ -118,6 +118,34 @@ async function findStudentRow(
   return null;
 }
 
+export async function findStudentByUsername(
+  username: string
+): Promise<{ id: string; name: string; studentId?: string; username?: string } | null> {
+  const normalized = username.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const tables = ["studenttbl", "students", "student"];
+  let row: Record<string, unknown> | null = null;
+  for (const t of tables) {
+    try {
+      row = await findStudentRow(t, normalized);
+      if (row) break;
+    } catch {
+      // Try next table.
+    }
+  }
+  if (!row) return null;
+
+  const id = getRowString(row, ["id", "student_id", "studentId"]);
+  const name = getRowString(row, ["studentname", "name", "fullname", "full_name"]);
+  const studentIdRaw = getRowString(row, ["studentid", "studentId", "student_id"]);
+  const studentId = sanitizeStudentId(studentIdRaw) || undefined;
+  const uname =
+    getRowString(row, ["stud_username", "username", "email"]).toLowerCase().trim() || undefined;
+  if (!id || !name) return null;
+  return { id, name, studentId, username: uname };
+}
+
 export async function verifyStudentCredentials(
   username: string,
   password: string
