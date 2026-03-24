@@ -47,7 +47,7 @@ export default function LoginPage() {
           Login
         </h1>
         <p className="text-slate-400 text-sm text-center mb-6">
-          One login for students and teachers. Admin login stays separate.
+          One login for students and teachers.
         </p>
 
         <form onSubmit={handleLogin} className="space-y-4">
@@ -91,11 +91,6 @@ export default function LoginPage() {
             Create Student Account
           </Link>
         </div>
-
-        <p className="mt-4 text-center text-slate-500 text-sm">
-          <Link href="/admin" className="hover:text-amber-400">Admin</Link>
-        </p>
-
         <div className="mt-6 border-t border-slate-700/50 pt-4 text-center">
           <p className="text-xs uppercase tracking-[0.2em] text-slate-500">System Created By</p>
           <p className="mt-2 text-sm font-semibold text-slate-200">Joshua A. Calma</p>

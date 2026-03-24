@@ -56,12 +56,6 @@ export default function HomePage() {
             >
               Login
             </button>
-            <button
-              onClick={() => router.push("/admin")}
-              className="w-full py-3 rounded-xl bg-amber-700/70 hover:bg-amber-700 text-white font-semibold transition-colors"
-            >
-              Admin
-            </button>
           </div>
         </div>
         <p className="mt-6 text-center text-slate-500 text-sm">
