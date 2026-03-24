@@ -287,6 +287,11 @@ export default function StudentDashboardPage() {
     return `Submitted: ${d.toLocaleString()}`;
   };
 
+  const isAutoSubmittedQuiz = (q: QuizRow) => {
+    const source = String(q.latestSubmissionSource ?? "").trim().toLowerCase();
+    return source === "auto_tab_switch" || source === "auto_close_tab" || source === "auto_time_expired";
+  };
+
   const subjectPerformance = useMemo(() => {
     const bySubject = new Map<
       string,
@@ -777,16 +782,21 @@ export default function StudentDashboardPage() {
 		                              {submittedLabel ? (
 		                                <div className="text-slate-400 text-xs mt-1">{submittedLabel}</div>
 		                              ) : null}
+		                              {q.canRequestRecovery && isAutoSubmittedQuiz(q) ? (
+		                                <div className="mt-1 text-[11px] font-medium text-amber-200">
+		                                  This attempt was auto-submitted. You can request recovery here so your teacher can reopen it with your saved answers.
+		                                </div>
+		                              ) : null}
 		                              {q.recoveryRequestStatus === "pending" ? (
-		                                <div className="mt-1 text-[11px] font-medium text-amber-300">
-		                                  Attempt recovery request pending teacher approval.
-		                                </div>
-		                              ) : null}
-		                              {q.recoveryRequestStatus === "approved" ? (
-		                                <div className="mt-1 text-[11px] font-medium text-emerald-300">
-		                                  Recovery approved. Open the quiz to continue with your saved answers.
-		                                </div>
-		                              ) : null}
+			                                <div className="mt-1 text-[11px] font-medium text-amber-300">
+			                                  Recovery request sent. Wait for your teacher to approve it, then reopen the quiz.
+			                                </div>
+			                              ) : null}
+			                              {q.recoveryRequestStatus === "approved" ? (
+			                                <div className="mt-1 text-[11px] font-medium text-emerald-300">
+			                                  Recovery approved. You can now retake the quiz from your saved attempt.
+			                                </div>
+			                              ) : null}
 		                              <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 		                            </div>
 			                            <div className="flex w-full flex-col gap-2 sm:w-auto">
@@ -800,18 +810,18 @@ export default function StudentDashboardPage() {
 		                                    : "bg-slate-700/70 opacity-60 cursor-not-allowed"
 		                                }`}
 		                              >
-		                                {canOpen ? "Open" : "Closed"}
-		                              </button>
-		                              {q.canRequestRecovery ? (
-		                                <button
+			                                {canOpen && q.recoveryRequestStatus === "approved" ? "Retake Quiz" : canOpen ? "Open" : "Closed"}
+			                              </button>
+			                              {q.canRequestRecovery ? (
+			                                <button
 		                                  type="button"
 		                                  onClick={() => void handleRecoveryRequest(q)}
 		                                  disabled={requestingRecoveryFor === q.id}
 		                                  className="w-full sm:w-auto rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/15 disabled:opacity-50"
 		                                >
-		                                  {requestingRecoveryFor === q.id ? "Requesting..." : "Request Attempt"}
-		                                </button>
-		                              ) : null}
+			                                  {requestingRecoveryFor === q.id ? "Requesting..." : "Request Recovery"}
+			                                </button>
+			                              ) : null}
 			                            </div>
 		                          </li>
 		                        );

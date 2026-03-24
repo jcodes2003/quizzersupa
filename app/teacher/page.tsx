@@ -242,6 +242,418 @@ function getTempReportScoreKey(studentKey: string, quizId: string): string {
   return `${studentKey}::${quizId}`;
 }
 
+function escapePdfText(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/\(/g, "\\(")
+    .replace(/\)/g, "\\)")
+    .replace(/\r/g, "");
+}
+
+function normalizePdfText(value: string): string {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[^\x09\x0A\x20-\x7E]/g, "?");
+}
+
+function wrapPdfText(text: string, maxChars: number): string[] {
+  const normalized = normalizePdfText(text);
+  const paragraphs = normalized.split("\n");
+  const lines: string[] = [];
+
+  for (const paragraph of paragraphs) {
+    const trimmed = paragraph.trim();
+    if (!trimmed) {
+      lines.push("");
+      continue;
+    }
+
+    const words = trimmed.split(/\s+/);
+    let current = "";
+
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (candidate.length <= maxChars) {
+        current = candidate;
+        continue;
+      }
+
+      if (current) lines.push(current);
+
+      if (word.length <= maxChars) {
+        current = word;
+        continue;
+      }
+
+      let remainder = word;
+      while (remainder.length > maxChars) {
+        lines.push(remainder.slice(0, maxChars - 1) + "-");
+        remainder = remainder.slice(maxChars - 1);
+      }
+      current = remainder;
+    }
+
+    if (current) lines.push(current);
+  }
+
+  return lines.length > 0 ? lines : [""];
+}
+
+function slugifyPdfFilePart(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return "generated-quiz";
+  const slug = trimmed.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || "generated-quiz";
+}
+
+function buildSimplePdfFromLines(pages: string[][]): Uint8Array {
+  const pageWidth = 612;
+  const pageHeight = 792;
+  const objects: string[] = [];
+  const allocateObject = () => {
+    objects.push("");
+    return objects.length;
+  };
+  const setObject = (id: number, value: string) => {
+    objects[id - 1] = value;
+  };
+
+  const catalogId = allocateObject();
+  const pagesId = allocateObject();
+  const fontId = allocateObject();
+  const pageObjectIds: number[] = [];
+
+  setObject(fontId, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+
+  pages.forEach((operations) => {
+    const pageId = allocateObject();
+    const contentId = allocateObject();
+    pageObjectIds.push(pageId);
+
+    const stream = operations.join("\n");
+    setObject(contentId, `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`);
+    setObject(
+      pageId,
+      `<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontId} 0 R >> >> /Contents ${contentId} 0 R >>`
+    );
+  });
+
+  setObject(
+    pagesId,
+    `<< /Type /Pages /Count ${pageObjectIds.length} /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(" ")}] >>`
+  );
+  setObject(catalogId, `<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
+
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (let index = 0; index < objects.length; index += 1) {
+    offsets.push(pdf.length);
+    pdf += `${index + 1} 0 obj\n${objects[index]}\nendobj\n`;
+  }
+
+  const xrefStart = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n`;
+  pdf += "0000000000 65535 f \n";
+  for (let index = 1; index < offsets.length; index += 1) {
+    pdf += `${String(offsets[index]).padStart(10, "0")} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+
+  return new TextEncoder().encode(pdf);
+}
+
+function buildGeneratedQuestionsPdf(questions: GeneratedDraftQuestion[], details: { title: string; subtitle?: string }): Uint8Array {
+  const pageWidth = 612;
+  const pageHeight = 792;
+  const marginX = 54;
+  const topY = 744;
+  const bottomY = 54;
+  const columnGap = 24;
+  const columnWidth = (pageWidth - marginX * 2 - columnGap) / 2;
+  const groupedQuestions = {
+    multiple_choice: questions.filter((question) => question.quizType === "multiple_choice"),
+    identification: questions.filter((question) => question.quizType === "identification"),
+    enumeration: questions.filter((question) => question.quizType === "enumeration"),
+  };
+  const pages: string[][] = [[], []];
+  const subtitle = details.subtitle?.trim() ?? "";
+
+  const lineCount = (text: string, fontSize: number, maxWidth: number) =>
+    wrapPdfText(text, Math.max(12, Math.floor(maxWidth / Math.max(fontSize * 0.52, 5)))).length;
+
+  const addWrappedText = (
+    operations: string[],
+    text: string,
+    fontSize: number,
+    x: number,
+    startY: number,
+    maxWidth: number
+  ) => {
+    const lines = wrapPdfText(text, Math.max(12, Math.floor(maxWidth / Math.max(fontSize * 0.52, 5))));
+    const lineHeight = Math.max(fontSize + 2, 9);
+    let currentY = startY;
+    for (const line of lines) {
+      if (line) {
+        operations.push(`BT /F1 ${fontSize} Tf ${x} ${currentY} Td (${escapePdfText(line)}) Tj ET`);
+      }
+      currentY -= lineHeight;
+    }
+    return currentY;
+  };
+
+  const measureMcBlockHeight = (
+    question: GeneratedDraftQuestion,
+    index: number,
+    questionSize: number,
+    optionSize: number,
+    imageSize: number,
+    gap: number
+  ) => {
+    const options = question.options.map((option) => option.trim()).filter(Boolean);
+    const questionLines = lineCount(`${index + 1}. ${question.question.trim() || "Untitled question"}`, questionSize, columnWidth);
+    const optionLines = options.reduce((count, option, optionIndex) => {
+      return count + lineCount(`${String.fromCharCode(65 + (optionIndex % 26))}. ${option}`, optionSize, columnWidth - 14);
+    }, 0);
+    const imageLines = question.imageUrl?.trim() ? lineCount(`Image: ${question.imageUrl.trim()}`, imageSize, columnWidth - 14) : 0;
+    return questionLines * Math.max(questionSize + 2, 9) + optionLines * Math.max(optionSize + 2, 9) + imageLines * Math.max(imageSize + 2, 9) + gap;
+  };
+
+  const measureTextBlockHeight = (text: string, fontSize: number, width: number) => {
+    return lineCount(text, fontSize, width) * Math.max(fontSize + 2, 9);
+  };
+
+  let selectedScale = 1;
+  for (const scale of [1, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]) {
+    const titleSize = Math.max(10, Math.round(16 * scale));
+    const subtitleSize = Math.max(7, Math.round(9 * scale));
+    const sectionSize = Math.max(8, Math.round(12 * scale));
+    const mcQuestionSize = Math.max(7, Math.round(9 * scale));
+    const mcOptionSize = Math.max(6, Math.round(8 * scale));
+    const textQuestionSize = Math.max(7, Math.round(10 * scale));
+    const imageSize = Math.max(6, Math.round(7 * scale));
+    const spacer = Math.max(4, Math.round(8 * scale));
+    const smallSpacer = Math.max(3, Math.round(6 * scale));
+
+    let firstPageTop = topY;
+    if (details.title.trim()) {
+      firstPageTop -= measureTextBlockHeight(details.title, titleSize, pageWidth - marginX * 2);
+    }
+    if (subtitle) firstPageTop -= measureTextBlockHeight(subtitle, subtitleSize, pageWidth - marginX * 2);
+    firstPageTop -= spacer;
+
+    let leftY = firstPageTop;
+    let rightY = firstPageTop;
+    groupedQuestions.multiple_choice.forEach((question, index) => {
+      const blockHeight = measureMcBlockHeight(question, index, mcQuestionSize, mcOptionSize, imageSize, spacer);
+      if (index % 2 === 0) {
+        leftY -= blockHeight;
+      } else {
+        rightY -= blockHeight;
+        const rowFloor = Math.min(leftY, rightY);
+        leftY = rowFloor;
+        rightY = rowFloor;
+      }
+    });
+    const mcFits = Math.min(leftY, rightY) >= bottomY;
+
+    let secondPageY = topY;
+    if (details.title.trim()) {
+      secondPageY -= measureTextBlockHeight(details.title, titleSize, pageWidth - marginX * 2);
+    }
+    if (subtitle) secondPageY -= measureTextBlockHeight(subtitle, subtitleSize, pageWidth - marginX * 2);
+    secondPageY -= spacer;
+
+    const textSections = [
+      { title: "Identification", items: groupedQuestions.identification },
+      { title: "Enumeration", items: groupedQuestions.enumeration },
+    ];
+    textSections.forEach((section) => {
+      if (section.items.length === 0) return;
+      secondPageY -= measureTextBlockHeight(section.title, sectionSize, pageWidth - marginX * 2);
+      secondPageY -= spacer;
+      section.items.forEach((question, index) => {
+        secondPageY -= measureTextBlockHeight(`${index + 1}. ${question.question.trim() || "Untitled question"}`, textQuestionSize, pageWidth - marginX * 2);
+        if (question.imageUrl?.trim()) {
+          secondPageY -= measureTextBlockHeight(`Image: ${question.imageUrl.trim()}`, imageSize, pageWidth - marginX * 2 - 16);
+        }
+        secondPageY -= smallSpacer;
+      });
+    });
+    const textFits = secondPageY >= bottomY;
+
+    if (mcFits && textFits) {
+      selectedScale = scale;
+      break;
+    }
+    selectedScale = scale;
+  }
+
+  const titleSize = Math.max(10, Math.round(16 * selectedScale));
+  const subtitleSize = Math.max(7, Math.round(9 * selectedScale));
+  const sectionSize = Math.max(8, Math.round(12 * selectedScale));
+  const mcQuestionSize = Math.max(7, Math.round(9 * selectedScale));
+  const mcOptionSize = Math.max(6, Math.round(8 * selectedScale));
+  const textQuestionSize = Math.max(7, Math.round(10 * selectedScale));
+  const imageSize = Math.max(6, Math.round(7 * selectedScale));
+  const spacer = Math.max(4, Math.round(8 * selectedScale));
+  const smallSpacer = Math.max(3, Math.round(6 * selectedScale));
+
+  let firstPageY = topY;
+  if (details.title.trim()) {
+    firstPageY = addWrappedText(pages[0], details.title, titleSize, marginX, firstPageY, pageWidth - marginX * 2);
+  }
+  if (subtitle) {
+    firstPageY = addWrappedText(pages[0], subtitle, subtitleSize, marginX, firstPageY, pageWidth - marginX * 2);
+  }
+  firstPageY -= spacer;
+
+  let leftY = firstPageY;
+  let rightY = firstPageY;
+  groupedQuestions.multiple_choice.forEach((question, index) => {
+    const x = index % 2 === 0 ? marginX : marginX + columnWidth + columnGap;
+    let cursorY = index % 2 === 0 ? leftY : rightY;
+    cursorY = addWrappedText(
+      pages[0],
+      `${index + 1}. ${question.question.trim() || "Untitled question"}`,
+      mcQuestionSize,
+      x,
+      cursorY,
+      columnWidth
+    );
+    question.options
+      .map((option) => option.trim())
+      .filter(Boolean)
+      .forEach((option, optionIndex) => {
+        cursorY = addWrappedText(
+          pages[0],
+          `${String.fromCharCode(65 + (optionIndex % 26))}. ${option}`,
+          mcOptionSize,
+          x + 14,
+          cursorY,
+          columnWidth - 14
+        );
+      });
+    if (question.imageUrl?.trim()) {
+      cursorY = addWrappedText(pages[0], `Image: ${question.imageUrl.trim()}`, imageSize, x + 14, cursorY, columnWidth - 14);
+    }
+    cursorY -= spacer;
+
+    if (index % 2 === 0) {
+      leftY = cursorY;
+    } else {
+      rightY = cursorY;
+      const rowFloor = Math.min(leftY, rightY);
+      leftY = rowFloor;
+      rightY = rowFloor;
+    }
+  });
+
+  let secondPageY = topY;
+  if (details.title.trim()) {
+    secondPageY = addWrappedText(pages[1], details.title, titleSize, marginX, secondPageY, pageWidth - marginX * 2);
+  }
+  if (subtitle) {
+    secondPageY = addWrappedText(pages[1], subtitle, subtitleSize, marginX, secondPageY, pageWidth - marginX * 2);
+  }
+  secondPageY -= spacer;
+
+  [
+    { title: "Identification", items: groupedQuestions.identification },
+    { title: "Enumeration", items: groupedQuestions.enumeration },
+  ].forEach((section) => {
+    if (section.items.length === 0) return;
+    secondPageY = addWrappedText(pages[1], section.title, sectionSize, marginX, secondPageY, pageWidth - marginX * 2);
+    secondPageY -= spacer;
+    section.items.forEach((question, index) => {
+      secondPageY = addWrappedText(
+        pages[1],
+        `${index + 1}. ${question.question.trim() || "Untitled question"}`,
+        textQuestionSize,
+        marginX,
+        secondPageY,
+        pageWidth - marginX * 2
+      );
+      if (question.imageUrl?.trim()) {
+        secondPageY = addWrappedText(pages[1], `Image: ${question.imageUrl.trim()}`, imageSize, marginX + 16, secondPageY, pageWidth - marginX * 2 - 16);
+      }
+      secondPageY -= smallSpacer;
+    });
+  });
+
+  return buildSimplePdfFromLines(pages);
+}
+
+function buildGeneratedAnswerKeyPdf(questions: GeneratedDraftQuestion[], details: { title: string; subtitle?: string }): Uint8Array {
+  const pageWidth = 612;
+  const marginX = 54;
+  const topY = 744;
+  const bottomY = 54;
+  const pages: string[][] = [[]];
+  let pageIndex = 0;
+  let y = topY;
+  const groupedQuestions = [
+    { title: "Multiple Choice", items: questions.filter((question) => question.quizType === "multiple_choice") },
+    { title: "Identification", items: questions.filter((question) => question.quizType === "identification") },
+    { title: "Enumeration", items: questions.filter((question) => question.quizType === "enumeration") },
+  ];
+
+  const writeText = (text: string, size: number, indent = 0) => {
+    const width = pageWidth - marginX * 2 - indent;
+    const lines = wrapPdfText(text, Math.max(12, Math.floor(width / Math.max(size * 0.52, 5))));
+    const lineHeight = Math.max(size + 3, 11);
+
+    for (const line of lines) {
+      if (y - lineHeight < bottomY) {
+        pages.push([]);
+        pageIndex += 1;
+        y = topY;
+      }
+      if (line) {
+        pages[pageIndex].push(`BT /F1 ${size} Tf ${marginX + indent} ${y} Td (${escapePdfText(line)}) Tj ET`);
+      }
+      y -= lineHeight;
+    }
+  };
+
+  const addSpace = (amount: number) => {
+    if (y - amount < bottomY) {
+      pages.push([]);
+      pageIndex += 1;
+      y = topY;
+      return;
+    }
+    y -= amount;
+  };
+
+  writeText(details.title, 16);
+  if (details.subtitle?.trim()) writeText(details.subtitle.trim(), 9);
+  addSpace(10);
+  writeText("Answer Key", 13);
+  addSpace(10);
+
+  groupedQuestions.forEach((group) => {
+    if (group.items.length === 0) return;
+    writeText(group.title, 12);
+    addSpace(6);
+    group.items.forEach((question, index) => {
+      const answer =
+        question.quizType === "enumeration"
+          ? question.answerkey
+              .split(/\r?\n|,/)
+              .map((part) => part.trim())
+              .filter(Boolean)
+              .join(", ")
+          : question.answerkey.trim();
+      writeText(`${index + 1}. ${answer || "No answer key"}`, 10, 12);
+      addSpace(4);
+    });
+    addSpace(8);
+  });
+
+  return buildSimplePdfFromLines(pages);
+}
+
 function parseCsv(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -3083,6 +3495,72 @@ export default function TeacherPage() {
     } finally {
       setGenUploadLoading(false);
     }
+  };
+
+  const handleDownloadGeneratedQuestionsPdf = () => {
+    if (genDraftQuestions.length === 0) {
+      setGenUploadError("No questions to download.");
+      return;
+    }
+
+    const subjectLabel = subjects.find((subject) => subject.id === genSubjectId)?.name ?? "";
+    const sectionLabel = sections.find((section) => section.id === genSectionId)?.name ?? "";
+    const subtitleParts = [
+      genQuizName.trim() || "Generated Quiz",
+      subjectLabel,
+      sectionLabel,
+      genPeriod.trim() ? `Period: ${genPeriod.trim()}` : "",
+    ].filter(Boolean);
+
+    const pdfBytes = buildGeneratedQuestionsPdf(genDraftQuestions, {
+      title: "",
+      subtitle: subtitleParts.join(" | "),
+    });
+    const fileName = `${slugifyPdfFilePart(genQuizName || "generated-quiz")}-questions.pdf`;
+    const blob = new Blob([pdfBytes as unknown as BlobPart], {
+      type: "application/pdf",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadGeneratedAnswerKeyPdf = () => {
+    if (genDraftQuestions.length === 0) {
+      setGenUploadError("No answer key to download.");
+      return;
+    }
+
+    const subjectLabel = subjects.find((subject) => subject.id === genSubjectId)?.name ?? "";
+    const sectionLabel = sections.find((section) => section.id === genSectionId)?.name ?? "";
+    const subtitleParts = [
+      genQuizName.trim() || "Generated Quiz",
+      subjectLabel,
+      sectionLabel,
+      genPeriod.trim() ? `Period: ${genPeriod.trim()}` : "",
+    ].filter(Boolean);
+
+    const pdfBytes = buildGeneratedAnswerKeyPdf(genDraftQuestions, {
+      title: "Generated Quiz Questions",
+      subtitle: subtitleParts.join(" | "),
+    });
+    const fileName = `${slugifyPdfFilePart(genQuizName || "generated-quiz")}-answer-key.pdf`;
+    const blob = new Blob([pdfBytes as unknown as BlobPart], {
+      type: "application/pdf",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
   };
 
   const handleAddQuestionToBatch = (e: React.FormEvent) => {
@@ -6647,31 +7125,49 @@ export default function TeacherPage() {
               </button>
             </div>
 
-            <div className="p-5 max-h-[75vh] overflow-auto">
-              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-                <div className="text-sm text-slate-300">
-                  Total: <span className="font-semibold text-slate-100">{genDraftQuestions.length}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setGenDraftQuestions((prev) => [
-                      ...prev,
-                      {
-                        clientId: makeClientId(),
-                        question: "",
-                        quizType: "multiple_choice",
-                        options: ["", ""],
-                        answerkey: "",
-                        score: 1,
-                      },
-                    ])
-                  }
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm"
-                >
-                  Add Question
-                </button>
-              </div>
+	            <div className="p-5 max-h-[75vh] overflow-auto">
+	              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+	                <div className="text-sm text-slate-300">
+	                  Total: <span className="font-semibold text-slate-100">{genDraftQuestions.length}</span>
+	                </div>
+	                <div className="flex flex-wrap items-center gap-2">
+	                  <button
+	                    type="button"
+	                    onClick={handleDownloadGeneratedQuestionsPdf}
+	                    disabled={genDraftQuestions.length === 0}
+	                    className="px-4 py-2 rounded-xl bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-white font-semibold text-sm"
+	                  >
+	                    Download Questions PDF
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={handleDownloadGeneratedAnswerKeyPdf}
+	                    disabled={genDraftQuestions.length === 0}
+	                    className="px-4 py-2 rounded-xl bg-violet-700 hover:bg-violet-600 disabled:opacity-50 text-white font-semibold text-sm"
+	                  >
+	                    Download Answer Key PDF
+	                  </button>
+	                  <button
+	                    type="button"
+	                    onClick={() =>
+	                      setGenDraftQuestions((prev) => [
+	                        ...prev,
+	                        {
+	                          clientId: makeClientId(),
+	                          question: "",
+	                          quizType: "multiple_choice",
+	                          options: ["", ""],
+	                          answerkey: "",
+	                          score: 1,
+	                        },
+	                      ])
+	                    }
+	                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-sm"
+	                  >
+	                    Add Question
+	                  </button>
+	                </div>
+	              </div>
 
               {genUploadError && (
                 <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
