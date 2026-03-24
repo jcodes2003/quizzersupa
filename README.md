@@ -1,37 +1,49 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## quizzersupa
 
-## Getting Started
+### Web app
 
-First, run the development server:
+Run the Next.js app:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Separate Java runner
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+This project supports a separate Java execution backend for Java hands-on quizzes.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+If `JAVA_RUNNER_BASE_URL` is set, [app/api/java-run/route.ts](/c:/Users/APPLE%20BYTES/quizzersupa/app/api/java-run/route.ts) will proxy Java run requests to that external service instead of trying to use `javac` inside the Next.js server.
 
-## Learn More
+### Next.js env
 
-To learn more about Next.js, take a look at the following resources:
+```env
+JAVA_RUNNER_BASE_URL=http://localhost:8080
+JAVA_RUNNER_TOKEN=change-me
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Runner service
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+The standalone backend is in:
 
-## Deploy on Vercel
+```text
+java-runner-service/
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Run it locally:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# quizzersupa
+```bash
+cd java-runner-service
+npm start
+```
+
+That service needs Java installed on the host, or you can deploy it with Docker using:
+
+```text
+java-runner-service/Dockerfile
+```
+
+More details are in:
+
+```text
+java-runner-service/README.md
+```

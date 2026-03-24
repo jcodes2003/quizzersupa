@@ -15,6 +15,17 @@ type Subject = {
 };
 type Teacher = { id: string; name: string; email: string; approved?: boolean; created_at?: string };
 type Student = { id: string; name: string; studentId: string; username: string };
+type AdminTab = "sections" | "subjects" | "teachers" | "students" | "storage";
+
+const ADMIN_NAV_ITEMS: Array<{ id: AdminTab; label: string; caption: string }> = [
+  { id: "sections", label: "Sections", caption: "Manage join groups and section codes." },
+  { id: "subjects", label: "Subjects", caption: "Create, archive, and maintain subject records." },
+  { id: "teachers", label: "Teachers", caption: "Approve accounts and maintain teacher access." },
+  { id: "students", label: "Students", caption: "Reset passwords and review learner accounts." },
+  { id: "storage", label: "Storage", caption: "Clean up uploaded quiz image assets." },
+];
+
+const PAGE_SIZE = 8;
 
 export default function AdminPage() {
   const [password, setPassword] = useState("");
@@ -25,7 +36,15 @@ export default function AdminPage() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
-  const [tab, setTab] = useState<"sections" | "subjects" | "teachers" | "students" | "storage">("sections");
+  const [tab, setTab] = useState<AdminTab>("sections");
+  const [navOpen, setNavOpen] = useState(false);
+  const [pages, setPages] = useState<Record<AdminTab, number>>({
+    sections: 1,
+    subjects: 1,
+    teachers: 1,
+    students: 1,
+    storage: 1,
+  });
   const [sectionName, setSectionName] = useState("");
   const [sectionCode, setSectionCode] = useState("");
   const [subjectName, setSubjectName] = useState("");
@@ -51,6 +70,7 @@ export default function AdminPage() {
   const [storageLoading, setStorageLoading] = useState(false);
   const [resettingStudentId, setResettingStudentId] = useState<string | null>(null);
   const [studentResetStatus, setStudentResetStatus] = useState("");
+  const [studentSearch, setStudentSearch] = useState("");
 
   const fetchData = useCallback(async () => {
     const base = "/api/admin";
@@ -410,6 +430,78 @@ export default function AdminPage() {
     await loadStorageImages();
   };
 
+  const selectTab = (nextTab: AdminTab) => {
+    setTab(nextTab);
+    setNavOpen(false);
+  };
+
+  const setPageFor = (target: AdminTab, nextPage: number) => {
+    setPages((prev) => ({ ...prev, [target]: nextPage }));
+  };
+
+  const paginateItems = <T,>(items: T[], target: AdminTab) => {
+    const totalPages = Math.max(1, Math.ceil(items.length / PAGE_SIZE));
+    const currentPage = Math.min(pages[target], totalPages);
+    const start = (currentPage - 1) * PAGE_SIZE;
+    return {
+      currentPage,
+      totalPages,
+      items: items.slice(start, start + PAGE_SIZE),
+      totalItems: items.length,
+      startItem: items.length === 0 ? 0 : start + 1,
+      endItem: Math.min(start + PAGE_SIZE, items.length),
+    };
+  };
+
+  const normalizedStudentSearch = studentSearch.trim().toLowerCase();
+  const filteredStudents = normalizedStudentSearch
+    ? students.filter((student) =>
+        [student.name, student.studentId, student.username]
+          .map((value) => String(value ?? "").toLowerCase())
+          .some((value) => value.includes(normalizedStudentSearch))
+      )
+    : students;
+
+  const sectionsPage = paginateItems(sections, "sections");
+  const subjectsPage = paginateItems(subjects, "subjects");
+  const teachersPage = paginateItems(teachers, "teachers");
+  const studentsPage = paginateItems(filteredStudents, "students");
+  const storagePage = paginateItems(storageImages, "storage");
+  const activeNavItem = ADMIN_NAV_ITEMS.find((item) => item.id === tab) ?? ADMIN_NAV_ITEMS[0];
+
+  const renderPagination = (target: AdminTab, currentPage: number, totalPages: number, totalItems: number, startItem: number, endItem: number) => {
+    if (totalItems === 0) return null;
+    return (
+      <div className="mt-4 flex flex-col gap-3 border-t border-slate-700/70 pt-4 text-sm text-slate-400 sm:flex-row sm:items-center sm:justify-between">
+        <p>
+          Showing <span className="text-slate-200">{startItem}</span> to <span className="text-slate-200">{endItem}</span> of{" "}
+          <span className="text-slate-200">{totalItems}</span>
+        </p>
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <button
+            type="button"
+            onClick={() => setPageFor(target, Math.max(1, currentPage - 1))}
+            disabled={currentPage === 1}
+            className="inline-flex min-h-[40px] items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Previous
+          </button>
+          <span className="min-w-[72px] text-center text-slate-300">
+            {currentPage} / {totalPages}
+          </span>
+          <button
+            type="button"
+            onClick={() => setPageFor(target, Math.min(totalPages, currentPage + 1))}
+            disabled={currentPage === totalPages}
+            className="inline-flex min-h-[40px] items-center justify-center rounded-lg border border-slate-700 bg-slate-800/70 px-3 text-slate-200 transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   if (authenticated === null) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 flex items-center justify-center">
@@ -450,40 +542,114 @@ export default function AdminPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
-      <div className="max-w-3xl mx-auto">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-4">
-            <Link href="/" className="text-slate-500 hover:text-cyan-400 text-sm">← Home</Link>
-            <h1 className="text-2xl font-bold text-amber-400">Admin</h1>
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-900 p-6 text-slate-100 md:p-10">
+      {navOpen && (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          className="fixed inset-0 z-30 bg-slate-950/70 backdrop-blur-sm"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-[18rem] transform border-r border-slate-800 bg-slate-950/95 px-4 py-5 shadow-2xl shadow-amber-950/20 backdrop-blur transition-transform duration-300 ${
+          navOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex h-full flex-col">
+          <div className="border-b border-slate-800/80 pb-4">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-amber-300/75">Admin Workspace</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">System Control</h2>
+            <p className="mt-2 text-sm text-slate-400">{activeNavItem.caption}</p>
           </div>
-          <button
-            onClick={handleLogout}
-            className="px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium"
-          >
-            Logout
-          </button>
+          <nav className="mt-5 flex-1 space-y-2 overflow-y-auto pr-1">
+            {ADMIN_NAV_ITEMS.map((item, index) => {
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => selectTab(item.id)}
+                  className={`group w-full rounded-2xl border px-4 py-3 text-left transition ${
+                    active
+                      ? "border-amber-500/60 bg-amber-500/15 text-white shadow-lg shadow-amber-950/20"
+                      : "border-slate-800 bg-slate-900/55 text-slate-300 hover:border-slate-700 hover:bg-slate-900/85"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <span
+                      className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                        active ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-400 group-hover:bg-slate-700"
+                      }`}
+                    >
+                      {index + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className={`font-semibold ${active ? "text-white" : "text-slate-200"}`}>{item.label}</div>
+                      <div className="mt-1 text-xs leading-5 text-slate-400">{item.caption}</div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="mt-5 border-t border-slate-800/80 pt-4">
+            {/* <Link href="/" className="text-sm font-medium text-amber-300 hover:text-amber-200">
+              â† Back Home
+            </Link> */}
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="mt-4 inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700"
+            >
+              Logout
+            </button>
+          </div>
         </div>
-
-        {error && (
+      </aside>
+      <div className="mx-auto max-w-[96rem]">
+	        <div className="mb-6 px-1 py-1 sm:px-2">
+	          <div className="flex items-start justify-between gap-3">
+	            <div className="flex min-w-0 items-start gap-3">
+	              <button
+	                type="button"
+	                onClick={() => setNavOpen((open) => !open)}
+	                className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl border border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-amber-500"
+	                aria-label="Toggle navigation"
+	              >
+	                <svg className="h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+	                  <path
+	                    strokeLinecap="round"
+	                    strokeLinejoin="round"
+	                    strokeWidth={2}
+	                    d={navOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"}
+	                  />
+	                </svg>
+	              </button>
+	              <div className="min-w-0">
+	                <h1 className="break-words text-2xl font-bold text-amber-300">Admin</h1>
+	                <p className="mt-1 text-sm text-slate-400">{activeNavItem.caption}</p>
+	              </div>
+	            </div>
+	          </div>
+	          <div className="hidden">
+            <Link href="/" className="text-slate-500 hover:text-cyan-400 text-sm">← Home</Link>
+            <h1 className="text-2xl font-bold text-amber-300">Admin</h1>
+          </div>
+		          <button
+		            onClick={handleLogout}
+		            className="hidden px-4 py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-slate-300 font-medium"
+		          >
+	            Logout
+	          </button>
+	          </div>
+	        {error && (
           <div className="mb-4 p-3 rounded-xl bg-red-500/20 border border-red-500/50 text-red-200 text-sm">
             {error}
           </div>
         )}
 
-        <div className="flex gap-2 mb-6">
-          {(["sections", "subjects", "teachers", "students", "storage"] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`px-4 py-2 rounded-xl font-medium capitalize ${tab === t ? "bg-amber-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
-            >
-              {t}
-            </button>
-          ))}
-        </div>
-
-        <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-6 shadow-2xl">
+	        <div className="rounded-3xl border border-slate-800/80 bg-slate-900/70 p-4 shadow-2xl shadow-slate-950/20 sm:p-6">
 	          {tab === "sections" && (
 	            <>
 	              <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
@@ -514,7 +680,7 @@ export default function AdminPage() {
 	                </button>
 	              </div>
 	              <ul className="space-y-2">
-	                {sections.map((s) => (
+		                {sectionsPage.items.map((s) => (
 	                  <li key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
 	                    {editingId === s.id ? (
 	                      <>
@@ -550,9 +716,10 @@ export default function AdminPage() {
 	                    )}
                   </li>
                 ))}
-              </ul>
-            </>
-          )}
+	              </ul>
+	              {renderPagination("sections", sectionsPage.currentPage, sectionsPage.totalPages, sectionsPage.totalItems, sectionsPage.startItem, sectionsPage.endItem)}
+	            </>
+	          )}
 
 	          {tab === "subjects" && (
 	            <>
@@ -642,7 +809,7 @@ export default function AdminPage() {
 	                </button>
 	              </div>
 	              <ul className="space-y-2">
-	                {subjects.map((s) => (
+		                {subjectsPage.items.map((s) => (
 	                  <li key={s.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
 	                    {editingId === s.id ? (
 	                      <>
@@ -733,7 +900,8 @@ export default function AdminPage() {
 	                    )}
 	                  </li>
 	                ))}
-	              </ul>
+		              </ul>
+		              {renderPagination("subjects", subjectsPage.currentPage, subjectsPage.totalPages, subjectsPage.totalItems, subjectsPage.startItem, subjectsPage.endItem)}
 	            </>
 	          )}
 
@@ -766,7 +934,7 @@ export default function AdminPage() {
                 </button>
               </div>
               <ul className="space-y-2">
-                {teachers.map((t) => (
+	                {teachersPage.items.map((t) => (
                   <li key={t.id} className="flex items-center justify-between p-3 rounded-lg bg-slate-700/50">
                     {editingId === t.id ? (
                       <>
@@ -838,7 +1006,8 @@ export default function AdminPage() {
                     )}
                   </li>
                 ))}
-              </ul>
+	              </ul>
+	              {renderPagination("teachers", teachersPage.currentPage, teachersPage.totalPages, teachersPage.totalItems, teachersPage.startItem, teachersPage.endItem)}
             </>
 	          )}
           {tab === "students" && (
@@ -855,13 +1024,25 @@ export default function AdminPage() {
                   Refresh
                 </button>
               </div>
-              {studentResetStatus && (
-                <div className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
-                  {studentResetStatus}
-                </div>
-              )}
-              <ul className="space-y-2">
-                {students.map((student) => (
+	              {studentResetStatus && (
+	                <div className="mb-4 rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">
+	                  {studentResetStatus}
+	                </div>
+	              )}
+	              <div className="mb-4">
+	                <input
+	                  type="search"
+	                  value={studentSearch}
+	                  onChange={(e) => {
+	                    setStudentSearch(e.target.value);
+	                    setPageFor("students", 1);
+	                  }}
+	                  placeholder="Search by student name, ID, or username"
+	                  className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-amber-500"
+	                />
+	              </div>
+	              <ul className="space-y-2">
+		                {studentsPage.items.map((student) => (
                   <li key={student.id} className="flex items-center justify-between gap-3 p-3 rounded-lg bg-slate-700/50">
                     <div className="min-w-0">
                       <div className="font-medium text-slate-200 truncate">
@@ -882,10 +1063,13 @@ export default function AdminPage() {
                     </button>
                   </li>
                 ))}
-              </ul>
-              {students.length === 0 && (
-                <p className="text-slate-400 text-sm">No students found.</p>
-              )}
+	              </ul>
+	              {renderPagination("students", studentsPage.currentPage, studentsPage.totalPages, studentsPage.totalItems, studentsPage.startItem, studentsPage.endItem)}
+	              {filteredStudents.length === 0 && (
+	                <p className="text-slate-400 text-sm">
+	                  {studentSearch.trim() ? "No students match your search." : "No students found."}
+	                </p>
+	              )}
             </>
           )}
           {tab === "storage" && (
@@ -926,7 +1110,7 @@ export default function AdminPage() {
                     </span>
                   </div>
                   <ul className="space-y-2">
-                    {storageImages.map((url) => (
+	                    {storagePage.items.map((url) => (
                       <li key={url} className="flex items-start gap-2 text-sm text-slate-200">
                         <input
                           type="checkbox"
@@ -942,7 +1126,8 @@ export default function AdminPage() {
                         <span className="break-all">{url}</span>
                       </li>
                     ))}
-                  </ul>
+	                  </ul>
+	                  {renderPagination("storage", storagePage.currentPage, storagePage.totalPages, storagePage.totalItems, storagePage.startItem, storagePage.endItem)}
                 </div>
               )}
               <div className="mt-4 flex flex-wrap items-center gap-2">

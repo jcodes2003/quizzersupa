@@ -318,7 +318,7 @@ export async function GET(request: NextRequest) {
       const hasApprovedRecoveredAttempt =
         Boolean(existingOpenAttempt?.attemptId) && approvedRecoveryAttemptIds.has(String(existingOpenAttempt?.attemptId ?? ""));
       const hasReopenedAttempt = Boolean(existingOpenAttempt?.attemptId) && hasApprovedRecoveredAttempt;
-      const attemptsRemaining = hasReopenedAttempt ? -1 : baseAttemptsRemaining;
+      const attemptsRemaining = hasReopenedAttempt ? 0 : baseAttemptsRemaining;
       const canStillAttempt = (q._open && attemptsRemaining > 0 && !hasManualSubmit) || hasReopenedAttempt;
 	      const status: "open" | "closed" | "missing" | "completed" = canStillAttempt
 	        ? "open"

@@ -38,6 +38,11 @@ type QuizRow = {
   canRequestRecovery?: boolean;
 };
 
+function clampRemainingAttempts(value?: number | null): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
+}
+
 export default function StudentDashboardPage() {
   const [loading, setLoading] = useState(true);
   const [me, setMe] = useState<MeResponse | null>(null);
@@ -621,11 +626,11 @@ export default function StudentDashboardPage() {
 	                            Code: <span className="font-mono">{q.quizcode}</span>
 	                            {q.period ? <span> · Period {q.period}</span> : null}
 	                          </div>
-	                          {typeof q.attemptsRemaining === "number" && typeof q.attemptsUsed === "number" ? (
-	                            <div className="text-slate-400 text-xs mt-1">
-	                              Attempts: {q.attemptsUsed}/{q.max_attempts} (left {q.attemptsRemaining})
-	                            </div>
-	                          ) : null}
+		                          {typeof clampRemainingAttempts(q.attemptsRemaining) === "number" && typeof q.attemptsUsed === "number" ? (
+		                            <div className="text-slate-400 text-xs mt-1">
+		                              Attempts: {q.attemptsUsed}/{q.max_attempts} (left {clampRemainingAttempts(q.attemptsRemaining)})
+		                            </div>
+		                          ) : null}
 	                          <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 	                        </div>
 			                        <button
@@ -765,11 +770,11 @@ export default function StudentDashboardPage() {
 	                                Code: <span className="font-mono">{q.quizcode}</span>
 	                                {q.period ? <span> · Period {q.period}</span> : null}
 	                              </div>
-	                              {typeof q.attemptsRemaining === "number" && typeof q.attemptsUsed === "number" ? (
-	                                <div className="text-slate-400 text-xs mt-1">
-	                                  Attempts: {q.attemptsUsed}/{q.max_attempts} (left {q.attemptsRemaining})
-	                                </div>
-	                              ) : null}
+		                              {typeof clampRemainingAttempts(q.attemptsRemaining) === "number" && typeof q.attemptsUsed === "number" ? (
+		                                <div className="text-slate-400 text-xs mt-1">
+		                                  Attempts: {q.attemptsUsed}/{q.max_attempts} (left {clampRemainingAttempts(q.attemptsRemaining)})
+		                                </div>
+		                              ) : null}
 	                              {typeof q.percentage === "number" ? (
 	                                <div className="text-slate-300 text-xs mt-1">
 	                                  Best:{" "}

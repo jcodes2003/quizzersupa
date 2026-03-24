@@ -269,7 +269,7 @@ export async function POST(request: NextRequest) {
       maxAttempts,
       allowRetake,
       attemptsUsed,
-      attemptsRemaining: hasApprovedRecoveredAttempt ? -1 : hasManualSubmit || noAttemptsLeft ? 0 : attemptsRemaining,
+      attemptsRemaining: hasManualSubmit || noAttemptsLeft ? 0 : attemptsRemaining,
       restoredAnswers: existingOpen.answers ?? null,
     });
   }

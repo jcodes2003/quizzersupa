@@ -146,6 +146,11 @@ function sanitizeStudentId(value: string): string {
   return value.replace(/[^A-Za-z0-9]/g, "");
 }
 
+function clampRemainingAttempts(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || !Number.isFinite(value)) return null;
+  return Math.max(0, Math.trunc(value));
+}
+
 function hashStringToSeed(input: string): number {
   // FNV-1a 32-bit
   let hash = 0x811c9dc5;
@@ -1014,9 +1019,9 @@ export default function Quiz({
 	        | { quiz?: { attemptsUsed?: number | null; attemptsRemaining?: number | null; max_attempts?: number | null } }
 	        | null;
 	      const used = data?.quiz?.attemptsUsed;
-	      const remaining = data?.quiz?.attemptsRemaining;
-	      if (typeof used === "number") setAttemptsUsedInfo(used);
-	      if (typeof remaining === "number") setAttemptsRemainingInfo(remaining);
+		      const remaining = data?.quiz?.attemptsRemaining;
+		      if (typeof used === "number") setAttemptsUsedInfo(used);
+		      if (typeof remaining === "number") setAttemptsRemainingInfo(clampRemainingAttempts(remaining));
 	      const nextMax = Number(data?.quiz?.max_attempts);
 	      if (Number.isFinite(nextMax) && nextMax > 0) setMaxAttemptsState(nextMax);
 	    } catch {
@@ -1354,7 +1359,7 @@ export default function Quiz({
 		      const used = Number((data as { attemptsUsed?: unknown }).attemptsUsed);
 		      const remaining = Number((data as { attemptsRemaining?: unknown }).attemptsRemaining);
 		      if (Number.isFinite(used) && used >= 0) setAttemptsUsedInfo(Math.trunc(used));
-		      if (Number.isFinite(remaining) && remaining >= 0) setAttemptsRemainingInfo(Math.trunc(remaining));
+		      if (Number.isFinite(remaining)) setAttemptsRemainingInfo(clampRemainingAttempts(remaining));
 	      const restoredAnswers = (data as { restoredAnswers?: Record<string, unknown> | null }).restoredAnswers;
 	      if (restoredAnswers && typeof restoredAnswers === "object") {
 	        setMcAnswers(extractSavedAnswerMap(restoredAnswers.multiple_choice));
@@ -1938,18 +1943,18 @@ export default function Quiz({
           {restrictionNotice && (
             <p className="mt-2 text-sm text-amber-300">{restrictionNotice}</p>
           )}
-          {quizId && (
-            <p className="text-slate-400 text-sm mt-2">
-              {typeof attemptsRemainingInfo === "number" && typeof attemptsUsedInfo === "number" ? (
-                <>
-                  Attempts: <span className="text-slate-100 font-semibold">{attemptsUsedInfo}</span>/
-                  <span className="text-slate-100 font-semibold">{attemptsLimit}</span>{" "}
-                  <span className="text-slate-500">
-                    (remaining{" "}
-                    <span className="text-slate-200 font-semibold">{attemptsRemainingInfo}</span>
-                    )
-                  </span>
-                </>
+	          {quizId && (
+	            <p className="text-slate-400 text-sm mt-2">
+	              {typeof clampRemainingAttempts(attemptsRemainingInfo) === "number" && typeof attemptsUsedInfo === "number" ? (
+	                <>
+	                  Attempts: <span className="text-slate-100 font-semibold">{attemptsUsedInfo}</span>/
+	                  <span className="text-slate-100 font-semibold">{attemptsLimit}</span>{" "}
+	                  <span className="text-slate-500">
+	                    (remaining{" "}
+	                    <span className="text-slate-200 font-semibold">{clampRemainingAttempts(attemptsRemainingInfo)}</span>
+	                    )
+	                  </span>
+	                </>
               ) : (
                 <>
                   Attempts allowed: <span className="text-slate-100 font-semibold">{attemptsLimit}</span>

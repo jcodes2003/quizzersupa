@@ -9,6 +9,8 @@ export const runtime = "nodejs";
 
 const JAVA_TIMEOUT_MS = 5000;
 const SESSION_IDLE_MS = 10 * 60 * 1000;
+const EXTERNAL_JAVA_RUNNER_URL = String(process.env.JAVA_RUNNER_BASE_URL ?? "").trim();
+const EXTERNAL_JAVA_RUNNER_TOKEN = String(process.env.JAVA_RUNNER_TOKEN ?? "").trim();
 
 type ProcessResult = {
   code: number | null;
@@ -168,11 +170,40 @@ async function waitForInitialOutput() {
   await new Promise((resolve) => setTimeout(resolve, 150));
 }
 
+async function proxyToExternalRunner(body: StartBody) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+
+  if (EXTERNAL_JAVA_RUNNER_TOKEN) {
+    headers.Authorization = `Bearer ${EXTERNAL_JAVA_RUNNER_TOKEN}`;
+  }
+
+  const response = await fetch(`${EXTERNAL_JAVA_RUNNER_URL.replace(/\/$/, "")}/java-run`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+
+  const text = await response.text();
+
+  return new NextResponse(text, {
+    status: response.status,
+    headers: {
+      "Content-Type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
+    },
+  });
+}
+
 export async function POST(request: NextRequest) {
   await pruneSessions();
 
   try {
     const body = (await request.json()) as StartBody;
+    if (EXTERNAL_JAVA_RUNNER_URL) {
+      return await proxyToExternalRunner(body);
+    }
     const action = body.action ?? "start";
 
     if (action === "poll") {

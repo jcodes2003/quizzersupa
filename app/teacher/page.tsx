@@ -1377,10 +1377,10 @@ function renderAnswerBlock(
               );
             })()}
           </div>
-        ))}
-      </div>
-    </div>
-  );
+	        ))}
+	      </div>
+	    </div>
+	  );
 }
 
 function renderHandsOnAnswerBlock(
@@ -1568,6 +1568,16 @@ const QUESTION_TYPES = [
 
 const QUIZ_FORM_DRAFT_KEY = "quiz_form_draft_v1";
 
+type TeacherTab = "responses" | "questions" | "reports" | "recheck" | "generator";
+
+const TEACHER_NAV_ITEMS: Array<{ id: TeacherTab; label: string; caption: string }> = [
+  { id: "responses", label: "Responses", caption: "Review submissions and recovery requests" },
+  { id: "reports", label: "Reports", caption: "Track scores and export summaries" },
+  { id: "recheck", label: "Recheck", caption: "Recalculate scores by subject" },
+  { id: "questions", label: "Question Bank", caption: "Create quizzes and manage questions" },
+  { id: "generator", label: "Generator", caption: "Build quizzes from existing question sets" },
+];
+
 export default function TeacherPage() {
   const [password, setPassword] = useState("");
   const [email, setEmail] = useState("");
@@ -1599,7 +1609,7 @@ export default function TeacherPage() {
   const [nameImportEntries, setNameImportEntries] = useState<NameImportEntry[]>([]);
   const [nameImportFileName, setNameImportFileName] = useState("");
   const [nameImportError, setNameImportError] = useState("");
-  const [tab, setTab] = useState<"responses" | "questions" | "reports" | "recheck" | "generator">("responses");
+  const [tab, setTab] = useState<TeacherTab>("responses");
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [sections, setSections] = useState<Section[]>([]);
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
@@ -1738,6 +1748,11 @@ export default function TeacherPage() {
   const [editQuestionImageError, setEditQuestionImageError] = useState<string>("");
   const [savingEdit, setSavingEdit] = useState(false);
   const dragQuestionIdRef = useRef<string | null>(null);
+  const activeNavItem = TEACHER_NAV_ITEMS.find((item) => item.id === tab) ?? TEACHER_NAV_ITEMS[0];
+  const selectTab = useCallback((nextTab: TeacherTab) => {
+    setTab(nextTab);
+    setNavOpen(false);
+  }, []);
   const PAGE_SIZE = 10;
   const QUIZ_PAGE_SIZE = 6;
   const combineReportsByStudent =
@@ -4635,39 +4650,128 @@ export default function TeacherPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
-      <div className="max-w-5xl mx-auto">
-        <div className="flex flex-wrap items-center justify-between gap-4 mb-6">
-          <div className="flex items-center gap-4">
-            <Link href="/" className="text-slate-500 hover:text-cyan-400 text-sm">← Home</Link>
-            <h1 className="text-2xl font-bold text-cyan-300">
-              {teacherName ? `Teacher: ${teacherName}` : "Quiz Responses"}
-            </h1>
+      {navOpen && (
+        <button
+          type="button"
+          aria-label="Close sidebar"
+          className="fixed inset-0 z-30 bg-slate-950/60 backdrop-blur-sm"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-40 w-[18rem] transform border-r border-slate-800 bg-slate-950/95 px-4 py-5 shadow-2xl shadow-cyan-950/20 backdrop-blur transition-transform duration-300 ${
+          navOpen ? "translate-x-0" : "-translate-x-full"
+        }`}
+      >
+        <div className="flex h-full flex-col">
+          <div className="border-b border-slate-800/80 pb-4">
+            <p className="text-[11px] uppercase tracking-[0.24em] text-cyan-300/75">Teacher Workspace</p>
+            <h2 className="mt-2 text-2xl font-semibold text-white">{teacherName || "Teacher Dashboard"}</h2>
+            <p className="mt-2 text-sm text-slate-400">{activeNavItem.caption}</p>
           </div>
-          <div className="flex items-center gap-2">
-            {/* Mobile hamburger */}
+          <nav className="mt-5 flex-1 space-y-2 overflow-y-auto pr-1">
+            {TEACHER_NAV_ITEMS.map((item, index) => {
+              const active = tab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => selectTab(item.id)}
+                  className={`group w-full rounded-2xl border px-4 py-3 text-left transition ${
+                    active
+                      ? "border-cyan-500/60 bg-cyan-500/15 text-white shadow-lg shadow-cyan-950/30"
+                      : "border-slate-800 bg-slate-900/55 text-slate-300 hover:border-slate-700 hover:bg-slate-900/85"
+                  }`}
+                >
+                  <div className="flex items-start gap-3">
+                    <span
+                      className={`mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                        active ? "bg-cyan-400 text-slate-950" : "bg-slate-800 text-slate-400 group-hover:bg-slate-700"
+                      }`}
+                    >
+                      {index + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className={`font-semibold ${active ? "text-white" : "text-slate-200"}`}>{item.label}</div>
+                      <div className="mt-1 text-xs leading-5 text-slate-400">{item.caption}</div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </nav>
+          <div className="mt-5 border-t border-slate-800/80 pt-4">
+            {/* <Link href="/" className="text-sm font-medium text-cyan-300 hover:text-cyan-200">
+              ← Back Home
+            </Link> */}
             <button
               type="button"
-              onClick={() => setNavOpen((open) => !open)}
-              className="md:hidden inline-flex items-center justify-center p-2 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              aria-label="Toggle navigation"
+              onClick={handleLogout}
+              className="mt-4 inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700"
             >
-              <svg
-                className="h-5 w-5"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d={navOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"}
-                />
-              </svg>
+              Logout
             </button>
+          </div>
+        </div>
+      </aside>
+      <div className="mx-auto max-w-[96rem]">
+        <div className="mb-6 px-1 py-1 sm:px-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 items-start gap-3">
+              <button
+                type="button"
+                onClick={() => setNavOpen((open) => !open)}
+                className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-xl bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                aria-label="Toggle navigation"
+              >
+                <svg
+                  className="h-5 w-5"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d={navOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"}
+                  />
+                </svg>
+              </button>
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+                  <h1 className="break-words text-2xl font-bold text-cyan-300">
+                    {teacherName ? `Teacher: ${teacherName}` : "Quiz Responses"}
+                  </h1>
+                </div>
+                <p className="mt-1 text-sm text-slate-400">{activeNavItem.caption}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setNavOpen((open) => !open)}
+                className="hidden min-h-[44px] min-w-[44px] items-center justify-center rounded-xl bg-slate-800 border border-slate-600 text-slate-200 hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                aria-label="Toggle navigation"
+              >
+                <svg
+                  className="h-5 w-5"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d={navOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"}
+                  />
+                </svg>
+              </button>
             {/* Desktop nav */}
-            <div className="hidden md:flex items-center gap-2">
+            <div className="hidden items-center gap-2">
               <button
                 onClick={() => setTab("responses")}
                 className={`px-4 py-2 rounded-xl font-medium ${tab === "responses" ? "bg-cyan-600 text-white" : "bg-slate-700 text-slate-300 hover:bg-slate-600"}`}
@@ -4709,7 +4813,7 @@ export default function TeacherPage() {
         </div>
 
         {/* Mobile nav menu */}
-        {navOpen && (
+        {false && navOpen && (
           <div className="mb-4 flex flex-col gap-2 md:hidden">
             <button
               onClick={() => {
@@ -4790,72 +4894,72 @@ export default function TeacherPage() {
 
         {tab === "responses" && (
           <>
-            <div className="flex flex-wrap items-center gap-3 mb-6">
-              <select
-                value={filterSubject}
-                onChange={(e) => setFilterSubject(e.target.value)}
-                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              >
+	            <div className="mb-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,0.95fr)_minmax(0,0.85fr)_minmax(0,1.2fr)_auto]">
+	              <select
+	                value={filterSubject}
+	                onChange={(e) => setFilterSubject(e.target.value)}
+	                className="w-full min-w-0 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	              >
                 <option value="">All subjects</option>
                 {subjectOptionsFromRows.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
-              <select
-                value={filterSection}
-                onChange={(e) => setFilterSection(e.target.value)}
-                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              >
+	              <select
+	                value={filterSection}
+	                onChange={(e) => setFilterSection(e.target.value)}
+	                className="w-full min-w-0 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	              >
                 <option value="">All sections</option>
                 {sectionOptionsFromRows.map((s) => (
                   <option key={s.id} value={s.id}>{s.name}</option>
                 ))}
               </select>
-              <select
-                value={filterQuizName}
-                onChange={(e) => setFilterQuizName(e.target.value)}
-                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              >
+	              <select
+	                value={filterQuizName}
+	                onChange={(e) => setFilterQuizName(e.target.value)}
+	                className="w-full min-w-0 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	              >
                 <option value="">All quizzes</option>
                 {quizNameOptionsFromRows.map((q) => (
                   <option key={q.id} value={q.name}>{q.name}</option>
                 ))}
               </select>
-              <select
-                value={responsesViewMode}
-                onChange={(e) => {
-                  setResponsesViewMode(e.target.value as "all" | "best");
-                  setResponsesPage(1);
-                }}
-                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              >
+	              <select
+	                value={responsesViewMode}
+	                onChange={(e) => {
+	                  setResponsesViewMode(e.target.value as "all" | "best");
+	                  setResponsesPage(1);
+	                }}
+	                className="w-full min-w-0 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	              >
                 <option value="all">All attempts</option>
                 <option value="best">Best attempt per student</option>
               </select>
-              <select
-                value={responsesNameSort}
-                onChange={(e) => setResponsesNameSort(e.target.value as "latest" | "az" | "za")}
-                className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              >
+	              <select
+	                value={responsesNameSort}
+	                onChange={(e) => setResponsesNameSort(e.target.value as "latest" | "az" | "za")}
+	                className="w-full min-w-0 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	              >
                 <option value="latest">Sort: Latest</option>
                 <option value="az">Sort: Name A-Z</option>
                 <option value="za">Sort: Name Z-A</option>
               </select>
-              <input
-                type="text"
-                value={responsesSearch}
+	              <input
+	                type="text"
+	                value={responsesSearch}
                 onChange={(e) => {
                   setResponsesSearch(e.target.value);
                   setResponsesPage(1);
-                }}
-                placeholder="Search student, quiz, ID, section..."
-                className="min-w-[220px] px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              />
-	              <button
-	                onClick={() => fetchScores()}
-	                disabled={scoresLoading}
-	                className="px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-50 text-white font-semibold"
-	              >
+	                }}
+	                placeholder="Search student, quiz, ID, section..."
+	                className="w-full min-w-0 px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+	              />
+		              <button
+		                onClick={() => fetchScores()}
+		                disabled={scoresLoading}
+		                className="min-h-[44px] w-full sm:w-auto px-4 py-2 rounded-xl bg-slate-600 hover:bg-slate-500 disabled:opacity-50 text-white font-semibold"
+		              >
 	                {scoresLoading ? "Loading..." : "Refresh"}
 	              </button>
 	            </div>
@@ -7672,15 +7776,22 @@ export default function TeacherPage() {
 		                  {renderAnswerBlock("Identification", idItems, answerQuestions)}
 		                  {renderAnswerBlock("Enumeration", enItems, answerQuestions)}
 		                  {renderAnswerBlock("Long Answer", laItems, answerQuestions)}
-		                  {renderHandsOnAnswerBlock("Hands on", hsItems, answerQuestions, manualHandsOnScores, (questionId, value) =>
-		                    setManualHandsOnScores((prev) => ({ ...prev, [questionId]: value }))
-		                  , invalidHandsOnQuestionIds)}
+		                  {renderHandsOnAnswerBlock(
+		                    "Hands on",
+		                    hsItems,
+		                    answerQuestions,
+		                    manualHandsOnScores,
+		                    (questionId, value) =>
+		                      setManualHandsOnScores((prev) => ({ ...prev, [questionId]: value })),
+		                    invalidHandsOnQuestionIds
+		                  )}
 		                </div>
 		              );
 		            })()}
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
