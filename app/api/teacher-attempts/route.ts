@@ -123,7 +123,7 @@ export async function GET() {
   // Get quiz metadata for quiz codes and backup subject/section data
   const { data: quizMetadata } = await supabase
     .from("quiztbl")
-    .select("id, quizcode, subjectid, sectionid")
+    .select("id, quizcode, subjectid, sectionid, source_quiz_id")
     .in("id", quizIds);
 
   const quizMap = new Map(quizMetadata?.map((q) => [q.id, q]) ?? []);
@@ -161,6 +161,7 @@ export async function GET() {
     return {
       id: uniqueId,
       quizid: a.quizid,
+      source_quiz_id: quiz?.source_quiz_id ?? null,
       quizcode: quiz?.quizcode ?? "",
       period: periodName?.period ?? "",
       quizname: periodName?.quizname ?? "",

@@ -48,11 +48,22 @@ function normalizeQuizName(value: unknown): string {
     .toLowerCase();
 }
 
-async function isTeacherQuizNameTaken(teacherId: string, quizName: string, excludeQuizId?: string): Promise<boolean> {
+async function isTeacherQuizNameTakenInSection(
+  teacherId: string,
+  sectionId: string,
+  quizName: string,
+  excludeQuizId?: string
+): Promise<boolean> {
   const normalized = normalizeQuizName(quizName);
   if (!normalized) return false;
   const supabase = getSupabase();
-  const res = await supabase.from("quiztbl").select("id, quizname").eq("teacherid", teacherId);
+  const sectionIdTrimmed = String(sectionId ?? "").trim();
+  if (!sectionIdTrimmed) return false;
+  const res = await supabase
+    .from("quiztbl")
+    .select("id, quizname")
+    .eq("teacherid", teacherId)
+    .eq("sectionid", sectionIdTrimmed);
   if (res.error) throw res.error;
   return ((res.data ?? []) as Array<{ id?: string | null; quizname?: string | null }>).some((row) => {
     const rowId = String(row.id ?? "").trim();
@@ -82,6 +93,16 @@ export async function PUT(
 
   const ok = await ensureQuizBelongsToTeacher(quizId, teacherId);
   if (!ok) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  const supabase = getSupabase();
+  const currentQuizRes = await supabase
+    .from("quiztbl")
+    .select("id, sectionid")
+    .eq("id", quizId)
+    .maybeSingle();
+  if (currentQuizRes.error) {
+    return NextResponse.json({ error: currentQuizRes.error.message }, { status: 500 });
+  }
+  const currentSectionId = String((currentQuizRes.data as { sectionid?: string | null } | null)?.sectionid ?? "").trim();
 
   const body = (await request.json()) as {
     subjectId?: string;
@@ -108,7 +129,9 @@ export async function PUT(
     if (!nextQuizName) {
       return NextResponse.json({ error: "Quiz name required" }, { status: 400 });
     }
-    if (await isTeacherQuizNameTaken(teacherId, nextQuizName, quizId)) {
+    const targetSectionId =
+      typeof body.sectionId === "string" && body.sectionId.trim() ? body.sectionId.trim() : currentSectionId;
+    if (await isTeacherQuizNameTakenInSection(teacherId, targetSectionId, nextQuizName, quizId)) {
       return NextResponse.json({ error: "Quiz name already taken. Please rename the quiz." }, { status: 409 });
     }
     update.quizname = nextQuizName;
@@ -149,7 +172,6 @@ export async function PUT(
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
   }
 
-  const supabase = getSupabase();
   let updateRes = await supabase
     .from("quiztbl")
     .update(update)
@@ -223,7 +245,7 @@ export async function POST(
     if (!quizname) {
       return NextResponse.json({ error: "Quiz name required" }, { status: 400 });
     }
-    if (await isTeacherQuizNameTaken(teacherId, quizname, quizId)) {
+    if (await isTeacherQuizNameTakenInSection(teacherId, sectionId, quizname, quizId)) {
       return NextResponse.json({ error: "Quiz name already taken. Please rename the quiz." }, { status: 409 });
     }
 

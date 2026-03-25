@@ -6,6 +6,7 @@ import Link from "next/link";
 type QuizResponseRow = {
   id: string;
   quizid?: string;
+  source_quiz_id?: string | null;
   quizcode: string;
   period?: string;
   quizname?: string;
@@ -169,9 +170,11 @@ type ConsolidatedRow = {
   quizzes: Map<
     string,
     {
+      actualQuizId?: string;
       score: number;
       max_score: number;
       assessment_type: "quiz" | "exam";
+      submission_source?: string;
       attemptId?: string;
       isTemporary?: boolean;
     }
@@ -885,6 +888,25 @@ function normalizeReportQuizName(value?: string | null): string {
     .toLowerCase();
 }
 
+function getReportQuizGroupKey(row: Pick<QuizResponseRow, "source_quiz_id" | "quizid" | "quizcode">): string {
+  const sourceId = String(row.source_quiz_id ?? "").trim();
+  if (sourceId) return `source:${sourceId}`;
+  const quizId = String(row.quizid ?? "").trim();
+  if (quizId) return `quiz:${quizId}`;
+  const quizCode = String(row.quizcode ?? "").trim().toLowerCase();
+  if (quizCode) return `code:${quizCode}`;
+  return "";
+}
+
+function getQuizRowGroupKeys(quiz: Pick<QuizRow, "id" | "source_quiz_id">): string[] {
+  const keys: string[] = [];
+  const quizId = String(quiz.id ?? "").trim();
+  const sourceId = String(quiz.source_quiz_id ?? "").trim();
+  if (quizId) keys.push(`quiz:${quizId}`);
+  if (sourceId) keys.push(`source:${sourceId}`);
+  return Array.from(new Set(keys));
+}
+
 function makeClientId(): string {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();
   return `${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -969,6 +991,7 @@ function formatSubmissionSource(source?: string | null): string {
   if (v === "auto_tab_switch") return "Auto: Tab/window changed";
   if (v === "auto_close_tab") return "Auto: Closed tab/browser";
   if (v === "auto_time_expired") return "Auto: Time expired";
+  if (v === "manual_done_button") return "Manual: Done button";
   return "Manual submit";
 }
 
@@ -1065,14 +1088,32 @@ function calculateWeightedGrade(
 function getBestQuizCellValue(
   row: ConsolidatedRow,
   quizIds: string[]
-): { score: number; max_score: number; assessment_type: "quiz" | "exam"; attemptId?: string; isTemporary?: boolean } | undefined {
+): {
+  quizid: string;
+  actualQuizId?: string;
+  score: number;
+  max_score: number;
+  assessment_type: "quiz" | "exam";
+  submission_source?: string;
+  attemptId?: string;
+  isTemporary?: boolean;
+} | undefined {
   let best:
-    | { score: number; max_score: number; assessment_type: "quiz" | "exam"; attemptId?: string; isTemporary?: boolean }
+    | {
+        quizid: string;
+        actualQuizId?: string;
+        score: number;
+        max_score: number;
+        assessment_type: "quiz" | "exam";
+        submission_source?: string;
+        attemptId?: string;
+        isTemporary?: boolean;
+      }
     | undefined;
   for (const quizId of quizIds) {
     const next = row.quizzes.get(quizId);
     if (!next) continue;
-    if (!best || next.score > best.score) best = next;
+    if (!best || next.score > best.score) best = { quizid: quizId, ...next };
   }
   return best;
 }
@@ -1590,6 +1631,9 @@ export default function TeacherPage() {
   const [scoresLoading, setScoresLoading] = useState(false);
   const [recoveryRequests, setRecoveryRequests] = useState<RecoveryRequestRow[]>([]);
   const [recoveryRequestsLoading, setRecoveryRequestsLoading] = useState(false);
+  const [autoApproveRecoveryRequests, setAutoApproveRecoveryRequests] = useState(false);
+  const [autoApproveRecoveryBusy, setAutoApproveRecoveryBusy] = useState(false);
+  const autoApproveRecoveryInFlightRef = useRef(false);
   const [processingRecoveryRequestId, setProcessingRecoveryRequestId] = useState<string | null>(null);
   const [recheckLoading, setRecheckLoading] = useState(false);
   const [recheckMessage, setRecheckMessage] = useState<string | null>(null);
@@ -1706,6 +1750,8 @@ export default function TeacherPage() {
 	  const [answersLoading, setAnswersLoading] = useState(false);
 	  const [manualHandsOnScores, setManualHandsOnScores] = useState<Record<string, string>>({});
 	  const [savingAttemptId, setSavingAttemptId] = useState<string | null>(null);
+  const [movingToHeaderQuizId, setMovingToHeaderQuizId] = useState<string | null>(null);
+  const [reportMoveStatus, setReportMoveStatus] = useState<string | null>(null);
   const [tempReportScores, setTempReportScores] = useState<
     Record<string, { score: number; max_score: number; assessment_type: "quiz" | "exam" }>
   >({});
@@ -1714,6 +1760,9 @@ export default function TeacherPage() {
   const [genSelectedQuizIds, setGenSelectedQuizIds] = useState<string[]>([]);
   const [quizListSubjectFilter, setQuizListSubjectFilter] = useState("");
   const [quizListPeriodFilter, setQuizListPeriodFilter] = useState("");
+  const [bulkPeriodDeadline, setBulkPeriodDeadline] = useState("");
+  const [bulkPeriodApplying, setBulkPeriodApplying] = useState(false);
+  const [bulkPeriodMessage, setBulkPeriodMessage] = useState<string | null>(null);
   const [genQuizSubjectFilter, setGenQuizSubjectFilter] = useState("");
   const [genQuizPeriodFilter, setGenQuizPeriodFilter] = useState("");
   const [genSubjectId, setGenSubjectId] = useState("");
@@ -2369,6 +2418,82 @@ export default function TeacherPage() {
     [fetchRecoveryRequests, fetchScores]
   );
 
+  useEffect(() => {
+    if (!autoApproveRecoveryRequests) {
+      autoApproveRecoveryInFlightRef.current = false;
+      setAutoApproveRecoveryBusy(false);
+      return;
+    }
+    let cancelled = false;
+
+    const runAutoApprove = async () => {
+      if (cancelled || autoApproveRecoveryInFlightRef.current) return;
+      autoApproveRecoveryInFlightRef.current = true;
+      setAutoApproveRecoveryBusy(true);
+      try {
+        const listRes = await fetch("/api/teacher-attempt-recovery-requests", {
+          credentials: "include",
+          cache: "no-store",
+        });
+        if (listRes.status === 401) {
+          setAuthenticated(false);
+          return;
+        }
+        if (!listRes.ok) return;
+        const listData = await readJsonSafe(listRes);
+        const listRows = Array.isArray(listData.rows) ? (listData.rows as RecoveryRequestRow[]) : [];
+        if (!cancelled) setRecoveryRequests(listRows);
+        const pendingRequestIds = listRows
+          .filter((row) => String(row.status ?? "").toLowerCase() === "pending")
+          .map((row) => String(row.id ?? "").trim())
+          .filter(Boolean);
+        if (pendingRequestIds.length === 0) return;
+
+        for (const requestId of pendingRequestIds) {
+          if (cancelled) return;
+          const approveRes = await fetch(
+            `/api/teacher-attempt-recovery-requests/${encodeURIComponent(requestId)}`,
+            {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({ action: "approve" }),
+            }
+          );
+          if (approveRes.status === 401) {
+            setAuthenticated(false);
+            return;
+          }
+          if (!approveRes.ok) {
+            const approveData = await readJsonSafe(approveRes);
+            setError(readStringField(approveData, "error") ?? "Failed to auto-approve a recovery request.");
+            break;
+          }
+        }
+
+        if (!cancelled) {
+          await Promise.all([fetchRecoveryRequests(), fetchScores()]);
+        }
+      } catch {
+        if (!cancelled) setError("Failed to auto-approve recovery requests.");
+      } finally {
+        autoApproveRecoveryInFlightRef.current = false;
+        if (!cancelled) setAutoApproveRecoveryBusy(false);
+      }
+    };
+
+    void runAutoApprove();
+    const timer = window.setInterval(() => {
+      void runAutoApprove();
+    }, 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      autoApproveRecoveryInFlightRef.current = false;
+    };
+  }, [autoApproveRecoveryRequests, fetchRecoveryRequests, fetchScores]);
+
   const handleRecheckSubject = useCallback(async () => {
     if (!recheckSubject || !recheckSection) {
       setRecheckError("Select a subject and section first.");
@@ -2412,7 +2537,7 @@ export default function TeacherPage() {
     }
   }, [recheckSubject, recheckSection, fetchScores, subjects, sections]);
 
-	  const handleEditReportScore = useCallback(
+  const handleEditReportScore = useCallback(
     async (
       student: { studentname: string; student_id: string },
       quiz: { quizname: string; quizcode: string },
@@ -2466,13 +2591,303 @@ export default function TeacherPage() {
       } finally {
         setSavingAttemptId(null);
       }
-    },
-	    [fetchScores]
-	  );
+	    },
+		    [fetchScores]
+		  );
 
-	  const handleSaveHandsOnScore = useCallback(async () => {
-	    if (!answerModal?.id) {
-	      setError("This attempt cannot be graded because the saved attempt ID is missing.");
+  const resolveHeaderQuizIdForColumn = useCallback(
+    (params: {
+      targetQuizId?: string;
+      candidateQuizIds?: string[];
+      assessment_type: "quiz" | "exam";
+      quizname: string;
+      quizcode: string;
+    }): string | null => {
+      const explicit = String(params.targetQuizId ?? "").trim();
+      if (explicit) return explicit;
+
+      const candidateGroupIds = (params.candidateQuizIds ?? []).filter(Boolean);
+      const groupMatches = quizzes
+        .filter((quiz) => normalizeAssessmentType(quiz.assessment_type) === params.assessment_type)
+        .filter((quiz) => {
+          if (reportFilterSection && quiz.sectionid !== reportFilterSection) return false;
+          if (reportFilterSubject && quiz.subjectid !== reportFilterSubject) return false;
+          if (reportFilterPeriod && String(quiz.period ?? "") !== reportFilterPeriod) return false;
+          const keys = getQuizRowGroupKeys(quiz);
+          return candidateGroupIds.length > 0 && keys.some((k) => candidateGroupIds.includes(k));
+        })
+        .sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true, sensitivity: "base" }));
+      if (groupMatches.length > 0) return String(groupMatches[0]?.id ?? "").trim() || null;
+
+      const nameKey = normalizeReportQuizName(params.quizname || params.quizcode);
+      const nameMatches = quizzes
+        .filter((quiz) => normalizeAssessmentType(quiz.assessment_type) === params.assessment_type)
+        .filter((quiz) => {
+          if (reportFilterSection && quiz.sectionid !== reportFilterSection) return false;
+          if (reportFilterSubject && quiz.subjectid !== reportFilterSubject) return false;
+          if (reportFilterPeriod && String(quiz.period ?? "") !== reportFilterPeriod) return false;
+          return normalizeReportQuizName(quiz.quizname || quiz.quizcode) === nameKey;
+        })
+        .sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true, sensitivity: "base" }));
+      return String(nameMatches[0]?.id ?? "").trim() || null;
+    },
+    [quizzes, reportFilterPeriod, reportFilterSection, reportFilterSubject]
+  );
+
+  const handleMoveReportAttempt = useCallback(
+    async (
+      student: { studentname: string; student_id: string },
+      currentQuiz: {
+        quizid: string;
+        quizcode: string;
+        quizname: string;
+        assessment_type: "quiz" | "exam";
+      },
+      attempt: { attemptId: string },
+      targetQuizId?: string,
+      candidateQuizIds?: string[]
+    ) => {
+      if (savingAttemptId) {
+        const msg = "Another score update is still in progress. Please wait a moment and try again.";
+        setReportMoveStatus(msg);
+        setError(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      const resolvedTargetQuizId = resolveHeaderQuizIdForColumn({
+        targetQuizId,
+        candidateQuizIds,
+        assessment_type: currentQuiz.assessment_type,
+        quizname: currentQuiz.quizname,
+        quizcode: currentQuiz.quizcode,
+      });
+      setReportMoveStatus(
+        `Move requested for ${formatNameLastFirst(student.studentname) || student.studentname || "student"} to header quiz ID ${
+          String(resolvedTargetQuizId ?? "").trim() || "unresolved"
+        }.`
+      );
+      if (!attempt.attemptId) {
+        const msg = "This score cannot be moved because the saved attempt ID is missing.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      const normalizedTargetQuizId = String(resolvedTargetQuizId ?? "").trim();
+      if (!normalizedTargetQuizId) {
+        const msg = "No header quiz ID is configured for this column.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      if (String(currentQuiz.quizid ?? "").trim() === normalizedTargetQuizId) {
+        const msg = "This score is already using the same quiz ID as the table header.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+
+      setSavingAttemptId(attempt.attemptId);
+      setMovingToHeaderQuizId(normalizedTargetQuizId);
+      setReportMoveStatus(`Updating attempt to header quiz ID ${normalizedTargetQuizId}...`);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(attempt.attemptId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ quizId: normalizedTargetQuizId }),
+        });
+        if (res.status === 401) {
+          setAuthenticated(false);
+          const msg = "Session expired. Please log in again.";
+          setError(msg);
+          setReportMoveStatus(msg);
+          if (typeof window !== "undefined") window.alert(msg);
+          return;
+        }
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          const msg = readStringField(data, "error") ?? "Failed to move attempt.";
+          setError(msg);
+          setReportMoveStatus(msg);
+          if (typeof window !== "undefined") window.alert(msg);
+          return;
+        }
+        const success = `Updated ${formatNameLastFirst(student.studentname) || student.studentname || "student"} to header quiz ID ${normalizedTargetQuizId}.`;
+        setReportMoveStatus(success);
+        if (typeof window !== "undefined") window.alert(success);
+        await fetchScores();
+      } catch {
+        const msg = "Failed to move attempt.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+      } finally {
+        setSavingAttemptId(null);
+        setMovingToHeaderQuizId(null);
+      }
+    },
+    [fetchScores, resolveHeaderQuizIdForColumn, savingAttemptId]
+  );
+
+  const handleMoveReportAttemptFromBlank = useCallback(
+    async (
+      student: { studentname: string; student_id: string; sectionid: string; subjectid: string },
+      targetQuiz: { quizname: string; quizcode: string; assessment_type: "quiz" | "exam" },
+      targetQuizId?: string,
+      candidateQuizIds?: string[]
+    ) => {
+      if (savingAttemptId) {
+        const msg = "Another score update is still in progress. Please wait a moment and try again.";
+        setReportMoveStatus(msg);
+        setError(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      const resolvedTargetQuizId = resolveHeaderQuizIdForColumn({
+        targetQuizId,
+        candidateQuizIds,
+        assessment_type: targetQuiz.assessment_type,
+        quizname: targetQuiz.quizname,
+        quizcode: targetQuiz.quizcode,
+      });
+      setReportMoveStatus(
+        `Move requested for blank score of ${formatNameLastFirst(student.studentname) || student.studentname || "student"} to header quiz ID ${
+          String(resolvedTargetQuizId ?? "").trim() || "unresolved"
+        }.`
+      );
+      const normalizedTargetQuizId = String(resolvedTargetQuizId ?? "").trim();
+      if (!normalizedTargetQuizId) {
+        const msg = "No header quiz ID is configured for this column.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      const studentIdentityKey = getStudentIdentityKey({
+        student_id: student.student_id,
+        studentname: student.studentname,
+      });
+      if (!studentIdentityKey) {
+        const msg = "This row is missing a student identifier, so the quiz ID cannot be moved.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      if (rows.length === 0) {
+        const msg = "No response rows are loaded yet.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+      if (quizzes.length === 0) {
+        const msg = "No quizzes are loaded yet.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+
+      const allowedGroupIds = new Set((candidateQuizIds ?? []).filter(Boolean));
+      const studentAttempts = rows
+        .filter((row) =>
+          getStudentIdentityKey({
+            student_id: row.student_id,
+            studentname: row.studentname,
+          }) === studentIdentityKey
+        )
+        .filter((row) => !!String(row.id ?? "").trim())
+        .filter((row) => typeof row.score === "number")
+        .filter((row) => normalizeAssessmentType(row.assessment_type) === targetQuiz.assessment_type)
+        .filter((row) => !reportFilterSubject || row.subjectid === reportFilterSubject)
+        .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+
+      const sourceAttemptsInSection = studentAttempts
+        .filter((row) => !reportFilterSection || row.sectionid === reportFilterSection)
+        .filter((row) => {
+          if (String(row.quizid ?? "").trim() === normalizedTargetQuizId) return false;
+          return true;
+        })
+        .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+
+      const sourceAttemptsByGroup = studentAttempts
+        .filter((row) => {
+          if (String(row.quizid ?? "").trim() === normalizedTargetQuizId) return false;
+          if (allowedGroupIds.size === 0) return true;
+          const groupKey = getReportQuizGroupKey(row);
+          return !!groupKey && allowedGroupIds.has(groupKey);
+        })
+        .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+
+      const sourceAttempts =
+        sourceAttemptsInSection.length > 0
+          ? sourceAttemptsInSection
+          : sourceAttemptsByGroup.length > 0
+            ? sourceAttemptsByGroup
+            : studentAttempts;
+
+      if (sourceAttempts.length === 0) {
+        const msg = "No submitted attempts were found for this student to move.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+        return;
+      }
+
+      const sourceMatch = sourceAttempts[0];
+
+      setSavingAttemptId(String(sourceMatch.id));
+      setMovingToHeaderQuizId(normalizedTargetQuizId);
+      setReportMoveStatus(`Updating blank score to header quiz ID ${normalizedTargetQuizId}...`);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(String(sourceMatch.id))}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ quizId: normalizedTargetQuizId }),
+        });
+        if (res.status === 401) {
+          setAuthenticated(false);
+          const msg = "Session expired. Please log in again.";
+          setError(msg);
+          setReportMoveStatus(msg);
+          if (typeof window !== "undefined") window.alert(msg);
+          return;
+        }
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          const msg = readStringField(data, "error") ?? "Failed to move attempt.";
+          setError(msg);
+          setReportMoveStatus(msg);
+          if (typeof window !== "undefined") window.alert(msg);
+          return;
+        }
+        const success = `Blank score linked to header quiz ID ${normalizedTargetQuizId} for ${formatNameLastFirst(student.studentname) || student.studentname || "student"}.`;
+        setReportMoveStatus(success);
+        if (typeof window !== "undefined") window.alert(success);
+        await fetchScores();
+      } catch {
+        const msg = "Failed to move attempt.";
+        setError(msg);
+        setReportMoveStatus(msg);
+        if (typeof window !== "undefined") window.alert(msg);
+      } finally {
+        setSavingAttemptId(null);
+        setMovingToHeaderQuizId(null);
+      }
+    },
+    [fetchScores, resolveHeaderQuizIdForColumn, rows, savingAttemptId, quizzes.length, reportFilterSection, reportFilterSubject]
+  );
+
+		  const handleSaveHandsOnScore = useCallback(async () => {
+		    if (!answerModal?.id) {
+		      setError("This attempt cannot be graded because the saved attempt ID is missing.");
 	      return;
 	    }
 
@@ -2612,6 +3027,44 @@ export default function TeacherPage() {
       }
     },
     [fetchScores, sections]
+  );
+
+  const handleForceReopenAttempt = useCallback(
+    async (row: Pick<QuizResponseRow, "id" | "studentname" | "quizname" | "quizcode">) => {
+      const studentLabel = formatNameLastFirst(row.studentname) || row.studentname || "this student";
+      const quizLabel = row.quizname || row.quizcode || "this quiz";
+      const ok = window.confirm(
+        `Force reopen ${quizLabel} for ${studentLabel}?\n\nThis will return the submitted attempt to open status so the student can retake/resume it.`
+      );
+      if (!ok) return;
+
+      setSavingAttemptId(row.id);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(row.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ forceReopen: true }),
+        });
+        if (res.status === 401) {
+          setAuthenticated(false);
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          setError(readStringField(data, "error") ?? "Failed to force reopen this attempt.");
+          return;
+        }
+        await fetchScores();
+      } catch {
+        setError("Failed to force reopen this attempt.");
+      } finally {
+        setSavingAttemptId(null);
+      }
+    },
+    [fetchScores]
   );
 
   const handleSetTemporaryReportScore = useCallback(
@@ -3253,6 +3706,74 @@ export default function TeacherPage() {
     },
     [fetchQuizzes]
   );
+
+  const handleApplyPeriodDeadline = useCallback(async () => {
+    if (!quizListPeriodFilter) {
+      setError("Select a period first before applying a bulk update.");
+      return;
+    }
+    const deadlineIso = toIsoOrNull(bulkPeriodDeadline);
+    if (!deadlineIso) {
+      setError("Set a valid deadline date/time first.");
+      return;
+    }
+    const targets = quizListFilteredQuizzes;
+    if (targets.length === 0) {
+      setError("No quizzes match the selected period filter.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Apply this deadline and open submissions for ${targets.length} quizzes in period ${quizListPeriodFilter}? Students who already submitted will not be able to retake.`
+    );
+    if (!confirmed) return;
+
+    setBulkPeriodApplying(true);
+    setBulkPeriodMessage(null);
+    setError("");
+    try {
+      const results = await Promise.all(
+        targets.map(async (quiz) => {
+          const res = await fetch(`/api/teacher/quizzes/${quiz.id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              submissionDeadline: deadlineIso,
+              submissionsOpen: true,
+              allowRetake: false,
+              maxAttempts: 1,
+            }),
+          });
+          const data = await readJsonSafe(res);
+          return {
+            ok: res.ok,
+            id: quiz.id,
+            name: quiz.quizname || quiz.quizcode,
+            error: readStringField(data, "error") ?? "",
+          };
+        })
+      );
+
+      const failed = results.filter((r) => !r.ok);
+      if (failed.length > 0) {
+        const summary = failed
+          .slice(0, 5)
+          .map((f) => `${f.name}: ${f.error || "Failed"}`)
+          .join(" | ");
+        setError(`Updated ${results.length - failed.length}/${results.length}. Failed: ${summary}`);
+      } else {
+        setBulkPeriodMessage(
+          `Updated ${results.length} quizzes in period ${quizListPeriodFilter}. Deadline set and submissions opened for pending students only.`
+        );
+      }
+      await fetchQuizzes();
+    } catch {
+      setError("Failed to apply period-wide deadline update.");
+    } finally {
+      setBulkPeriodApplying(false);
+    }
+  }, [bulkPeriodDeadline, fetchQuizzes, quizListFilteredQuizzes, quizListPeriodFilter]);
 
   const handleReuseQuiz = async (action: "duplicate" | "assign") => {
     if (!editingQuizId) return;
@@ -4287,16 +4808,32 @@ export default function TeacherPage() {
 	      ? `draft-${String(pendingQuizDraft.subjectId || "pending").replace(/[^a-zA-Z0-9_-]/g, "")}-${String(pendingQuizDraft.period || "na").replace(/[^a-zA-Z0-9_-]/g, "")}`
 	      : "";
 
-	  // Filter for reports tab - cascade filters using IDs and period
+	  // Filter for reports tab - cascade filters using IDs and period.
+	  // If a section is selected, also include attempts from other sections when they belong
+	  // to quizzes cloned/assigned from the same source quiz for the selected section.
 	  let reportFilteredRows = rows;
-  if (reportFilterSection) {
-    reportFilteredRows = reportFilteredRows.filter((r) => r.sectionid === reportFilterSection);
-  }
   if (reportFilterSubject) {
     reportFilteredRows = reportFilteredRows.filter((r) => r.subjectid === reportFilterSubject);
   }
   if (reportFilterPeriod) {
     reportFilteredRows = reportFilteredRows.filter((r) => String(r.period ?? "") === reportFilterPeriod);
+  }
+  if (reportFilterSection) {
+    const allowedQuizGroupKeys = new Set(
+      quizzes
+        .filter((q) => q.sectionid === reportFilterSection)
+        .filter((q) => !reportFilterSubject || q.subjectid === reportFilterSubject)
+        .filter((q) => !reportFilterPeriod || String(q.period ?? "") === reportFilterPeriod)
+        .flatMap((q) => getQuizRowGroupKeys(q))
+        .filter(Boolean)
+    );
+
+    reportFilteredRows = reportFilteredRows.filter((r) => {
+      if (r.sectionid === reportFilterSection) return true;
+      const quizGroupKey = getReportQuizGroupKey(r);
+      if (!quizGroupKey) return false;
+      return allowedQuizGroupKeys.has(quizGroupKey);
+    });
   }
   if (reportFilterDate) {
     reportFilteredRows = reportFilteredRows.filter((r) => {
@@ -4312,7 +4849,9 @@ export default function TeacherPage() {
 	  for (const r of reportFilteredRows) {
 	    const identityKey = getCurrentReportStudentKey(r);
 	    if (!identityKey) continue;
-	    const key = `${identityKey}-${r.quizid ?? r.quizcode}`;
+	    const reportQuizKey = getReportQuizGroupKey(r);
+	    if (!reportQuizKey) continue;
+	    const key = `${identityKey}-${reportQuizKey}`;
 	    const existing = bestByStudentQuizForReports.get(key);
 	    const rScore = typeof r.score === "number" ? r.score : -Infinity;
 	    const eScore = typeof existing?.score === "number" ? existing.score : -Infinity;
@@ -4341,24 +4880,31 @@ export default function TeacherPage() {
 
   // Consolidated: one row per student; columns = Student ID, Name, Section, Subject, then one column per quiz (score/max or —)
   type QuizColumn = { quizid: string; quizcode: string; quizname: string; assessment_type: "quiz" | "exam" };
-  type DisplayQuizColumn = QuizColumn & { quizIds?: string[] };
+  type DisplayQuizColumn = QuizColumn & {
+    quizIds?: string[];
+    assignedTargets?: Array<
+      Pick<QuizRow, "id" | "quizcode" | "quizname" | "sectionid" | "assessment_type" | "subjectid" | "period">
+    >;
+    headerQuizId?: string;
+    headerQuizCode?: string;
+  };
 	  const quizColumns: QuizColumn[] = Array.from(
 	    new Map(
 	      latestRows
-        .filter((r) => r.quizid || r.quizcode)
-        .map((r) => [
-          r.quizid ?? r.quizcode,
-          {
-            quizid: r.quizid ?? r.quizcode,
-            quizcode: r.quizcode,
-            quizname: (r.quizname ?? r.quizcode).trim() || r.quizcode,
-            assessment_type: normalizeAssessmentType(r.assessment_type),
+	        .filter((r) => getReportQuizGroupKey(r))
+	        .map((r) => [
+	          getReportQuizGroupKey(r),
+	          {
+	            quizid: getReportQuizGroupKey(r),
+	            quizcode: r.quizcode,
+	            quizname: (r.quizname ?? r.quizcode).trim() || r.quizcode,
+	            assessment_type: normalizeAssessmentType(r.assessment_type),
           },
         ])
 	    ).values()
 	  );
 
-	  const displayQuizColumns: DisplayQuizColumn[] = Array.from(
+	  const groupedDisplayQuizColumns: DisplayQuizColumn[] = Array.from(
 	    new Map(
 	      quizColumns.map((q) => {
 	        const title = (q.quizname || q.quizcode).trim() || q.quizcode;
@@ -4377,10 +4923,47 @@ export default function TeacherPage() {
 	      })
 	    ).values()
 	  );
+	  const displayQuizColumns: DisplayQuizColumn[] = groupedDisplayQuizColumns.map((q) => {
+	    const groupIds = q.quizIds && q.quizIds.length > 0 ? q.quizIds : [q.quizid];
+	    const sectionTargets = quizzes.filter((quiz) => {
+	      if (reportFilterSection && quiz.sectionid !== reportFilterSection) return false;
+	      if (reportFilterSubject && quiz.subjectid !== reportFilterSubject) return false;
+	      if (reportFilterPeriod && String(quiz.period ?? "") !== reportFilterPeriod) return false;
+	      const quizGroupKeys = getQuizRowGroupKeys(quiz);
+	      return quizGroupKeys.some((key) => groupIds.includes(key));
+	    });
+
+	    const fallbackTargets =
+	      sectionTargets.length > 0
+	        ? sectionTargets
+	        : quizzes.filter((quiz) => {
+	            if (reportFilterSection && quiz.sectionid !== reportFilterSection) return false;
+	            if (reportFilterSubject && quiz.subjectid !== reportFilterSubject) return false;
+	            if (reportFilterPeriod && String(quiz.period ?? "") !== reportFilterPeriod) return false;
+	            if (normalizeAssessmentType(quiz.assessment_type) !== q.assessment_type) return false;
+	            return normalizeReportQuizName(quiz.quizname || quiz.quizcode) === normalizeReportQuizName(q.quizname || q.quizcode);
+	          });
+
+      const inferredByGroupId = quizzes.filter((quiz) => {
+        const quizGroupKeys = getQuizRowGroupKeys(quiz);
+        return quizGroupKeys.some((key) => groupIds.includes(key));
+      });
+      const candidateTargets = fallbackTargets.length > 0 ? fallbackTargets : inferredByGroupId;
+	    const dedupedTargets = Array.from(new Map(candidateTargets.map((quiz) => [quiz.id, quiz])).values()).sort((a, b) =>
+        String(a.id).localeCompare(String(b.id), undefined, { sensitivity: "base", numeric: true })
+      );
+      const headerTarget = dedupedTargets[0];
+	    return {
+        ...q,
+        assignedTargets: dedupedTargets,
+        headerQuizId: headerTarget?.id ?? "",
+        headerQuizCode: headerTarget?.quizcode ?? q.quizcode,
+      };
+	  });
 
 	  const quizMaxScoreById = new Map<string, number>();
 	  for (const r of latestRows) {
-	    const qid = r.quizid ?? r.quizcode;
+	    const qid = getReportQuizGroupKey(r);
 	    const maxScore = Number(r.max_score ?? 0);
 	    if (!qid || maxScore <= 0) continue;
 	    const existing = quizMaxScoreById.get(qid) ?? 0;
@@ -4418,17 +5001,19 @@ export default function TeacherPage() {
 	      if (!row.subject) row.subject = nextSubject;
 	      else if (row.subject !== nextSubject && row.subject !== "Multiple") row.subject = "Multiple";
 	    }
-	    const qid = r.quizid ?? r.quizcode;
+	    const qid = getReportQuizGroupKey(r);
 	    if (qid && r.score != null) {
 	      const existingQuizScore = row.quizzes.get(qid);
-	      if (!existingQuizScore || r.score > existingQuizScore.score) {
-	        row.quizzes.set(qid, {
-          score: r.score,
-          max_score: r.max_score ?? 0,
-          assessment_type: normalizeAssessmentType(r.assessment_type),
-          attemptId: String(r.id ?? ""),
-        });
-      }
+		      if (!existingQuizScore || r.score > existingQuizScore.score) {
+		        row.quizzes.set(qid, {
+	          actualQuizId: r.quizid ?? undefined,
+		          score: r.score,
+		          max_score: r.max_score ?? 0,
+		          assessment_type: normalizeAssessmentType(r.assessment_type),
+              submission_source: r.submission_source ?? undefined,
+	          attemptId: String(r.id ?? ""),
+	        });
+	      }
     }
 	    if (!row.student_id && r.student_id) {
 	      row.student_id = sanitizeStudentId(r.student_id);
@@ -4964,23 +5549,44 @@ export default function TeacherPage() {
 	              </button>
 	            </div>
 	            <div className="mb-6 rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4">
-	              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-	                <div>
-	                  <h3 className="text-sm font-semibold text-amber-200">Attempt Recovery Requests</h3>
-	                  <p className="text-xs text-slate-400">
-	                    Approve an auto-submitted attempt so the student can reopen it with saved answers restored.
-	                  </p>
-	                </div>
-	                <button
-	                  type="button"
-	                  onClick={() => void fetchRecoveryRequests()}
-	                  disabled={recoveryRequestsLoading}
-	                  className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
-	                >
-	                  {recoveryRequestsLoading ? "Loading..." : "Refresh Requests"}
-	                </button>
-	              </div>
-	              {recoveryRequests.filter((r) => r.status === "pending").length === 0 ? (
+		              <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+		                <div>
+		                  <h3 className="text-sm font-semibold text-amber-200">Attempt Recovery Requests</h3>
+		                  <p className="text-xs text-slate-400">
+		                    Approve an auto-submitted attempt so the student can reopen it with saved answers restored.
+		                  </p>
+                      <p className="mt-1 text-[11px] text-amber-300/90">
+                        Auto-approve checks every 10 seconds.
+                      </p>
+		                </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setAutoApproveRecoveryRequests((prev) => !prev)}
+                        className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${
+                          autoApproveRecoveryRequests
+                            ? "border-emerald-500/60 bg-emerald-500/20 text-emerald-200 hover:bg-emerald-500/25"
+                            : "border-slate-600 bg-slate-800 text-slate-200 hover:bg-slate-700"
+                        }`}
+                      >
+                        {autoApproveRecoveryRequests ? "Auto-Approve: ON" : "Auto-Approve: OFF"}
+                      </button>
+		                  <button
+		                    type="button"
+		                    onClick={() => void fetchRecoveryRequests()}
+		                    disabled={recoveryRequestsLoading}
+		                    className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
+		                  >
+		                    {recoveryRequestsLoading ? "Loading..." : "Refresh Requests"}
+		                  </button>
+                    </div>
+		              </div>
+                  {autoApproveRecoveryRequests ? (
+                    <p className="mb-2 text-[11px] text-emerald-200">
+                      Auto-approve is active {autoApproveRecoveryBusy ? "(checking now...)" : "(waiting for next 10-second check)"}.
+                    </p>
+                  ) : null}
+		              {recoveryRequests.filter((r) => r.status === "pending").length === 0 ? (
 	                <p className="text-sm text-slate-400">No pending recovery requests.</p>
 	              ) : (
 	                <div className="space-y-3">
@@ -5092,19 +5698,29 @@ export default function TeacherPage() {
                           <td className="hidden px-4 py-4 text-slate-300 lg:table-cell">
                             {r.subjectname || r.subject || getSubjectName(r.subjectid)}
                           </td>
-                          <td className="px-4 py-4 text-slate-300">
-                            {r.answers ? (
-                              <button
-                                type="button"
-                                onClick={() => setAnswerModal(r)}
-                                className="rounded-xl bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-600"
-                              >
-                                View Answers
-                              </button>
-                            ) : (
-                              "-"
-                            )}
-                          </td>
+	                          <td className="px-4 py-4 text-slate-300">
+                              <div className="flex flex-wrap items-center gap-2">
+	                              {r.answers ? (
+	                                <button
+	                                  type="button"
+	                                  onClick={() => setAnswerModal(r)}
+	                                  className="rounded-xl bg-cyan-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-cyan-600"
+	                                >
+	                                  View Answers
+	                                </button>
+	                              ) : (
+                                  <span>-</span>
+	                              )}
+                                <button
+                                  type="button"
+                                  onClick={() => void handleForceReopenAttempt(r)}
+                                  disabled={savingAttemptId === r.id}
+                                  className="rounded-xl bg-amber-700 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-600 disabled:opacity-50"
+                                >
+                                  {savingAttemptId === r.id ? "Reopening..." : "Force Reopen"}
+                                </button>
+                              </div>
+	                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -5243,9 +5859,19 @@ export default function TeacherPage() {
           </>
         )}
 
-	        {tab === "reports" && (
-	          <>
+		        {tab === "reports" && (
+			          <>
             <h2 className="text-xl font-semibold text-cyan-300 mb-6">Student Score Report</h2>
+            {reportMoveStatus && (
+              <div className="mb-4 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100">
+                {reportMoveStatus}
+              </div>
+            )}
+            {error && (
+              <div className="mb-4 rounded-xl border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                {error}
+              </div>
+            )}
             
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
               {/* Period Filter */}
@@ -5420,14 +6046,24 @@ export default function TeacherPage() {
                         {!reportFilterSubject && (
                           <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Subject</th>
                         )}
-	                        {displayQuizColumns.map((q) => (
-		                          <th key={q.quizid} className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">
-	                            {q.quizname || q.quizcode}
-                            <span className="ml-2 inline-flex rounded-full border border-slate-500/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
-                              {formatAssessmentTypeLabel(q.assessment_type)}
-                            </span>
-                          </th>
-                        ))}
+		                        {displayQuizColumns.map((q) => (
+			                          <th key={q.quizid} className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">
+		                            {q.quizname || q.quizcode}
+	                            <span className="ml-2 inline-flex rounded-full border border-slate-500/50 px-2 py-0.5 text-[10px] uppercase tracking-wide text-slate-300">
+	                              {formatAssessmentTypeLabel(q.assessment_type)}
+	                            </span>
+	                            {q.headerQuizId ? (
+	                              <div className="mt-1 text-[10px] normal-case tracking-normal text-cyan-200/90">
+	                                Assigned: {q.headerQuizCode || q.quizcode} ({q.headerQuizId})
+                                  {q.assignedTargets && q.assignedTargets.length > 1 ? ` +${q.assignedTargets.length - 1} alt` : ""}
+	                              </div>
+	                            ) : (
+	                              <div className="mt-1 text-[10px] normal-case tracking-normal text-amber-300/90">
+	                                Assigned: unresolved
+	                              </div>
+	                            )}
+	                          </th>
+	                        ))}
 	                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Quiz Avg %</th>
 	                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-slate-400 whitespace-nowrap">Exam Avg %</th>
 	                        <th className="px-4 py-3 text-xs font-semibold uppercase tracking-wide text-cyan-200 whitespace-nowrap">Final Grade %</th>
@@ -5454,10 +6090,15 @@ export default function TeacherPage() {
                               : "—";
                             return (
 	                              <td key={q.quizid} className="px-4 py-3 text-emerald-400 font-medium">
-		                                {qq ? (
-		                                  <div className="flex flex-col items-start gap-2">
-		                                    <span className={qq.isTemporary ? "text-amber-300" : undefined}>{cell}</span>
-		                                    <div className="flex items-center gap-2">
+			                                {qq ? (
+			                                  <div className="flex flex-col items-start gap-2">
+			                                    <span className={qq.isTemporary ? "text-amber-300" : undefined}>{cell}</span>
+                                      {!qq.isTemporary && String(qq.submission_source ?? "").toLowerCase() === "manual_done_button" ? (
+                                        <span className="inline-flex rounded-full border border-cyan-500/40 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-semibold text-cyan-200">
+                                          Done by student
+                                        </span>
+                                      ) : null}
+			                                    <div className="flex items-center gap-2">
 		                                      {qq.isTemporary ? (
 		                                        <>
 		                                          <button
@@ -5502,52 +6143,56 @@ export default function TeacherPage() {
 			                                            Reset Original
 		                                          </button>
 		                                        </>
-		                                      ) : (
-		                                        <button
-		                                          type="button"
-		                                          onClick={() =>
-		                                            handleEditReportScore(
-		                                              { studentname: r.studentname, student_id: r.student_id },
-		                                              { quizname: q.quizname, quizcode: q.quizcode },
-		                                              { attemptId: qq.attemptId ?? "", score: qq.score, max_score: qq.max_score }
-		                                            )
-		                                          }
-		                                          disabled={savingAttemptId === qq.attemptId}
-		                                          className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
-		                                        >
-		                                          {savingAttemptId === qq.attemptId ? "Saving..." : "Edit"}
-		                                        </button>
-		                                      )}
-		                                    </div>
-		                                  </div>
+				                                      ) : (
+				                                        <>
+				                                          <button
+				                                            type="button"
+				                                            onClick={() =>
+				                                              handleEditReportScore(
+				                                                { studentname: r.studentname, student_id: r.student_id },
+				                                                { quizname: q.quizname, quizcode: q.quizcode },
+				                                                { attemptId: qq.attemptId ?? "", score: qq.score, max_score: qq.max_score }
+				                                              )
+				                                            }
+				                                            disabled={savingAttemptId === qq.attemptId}
+				                                            className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
+				                                          >
+				                                            {savingAttemptId === qq.attemptId ? "Saving..." : "Edit"}
+				                                          </button>
+				                                        </>
+				                                      )}
+				                                    </div>
+			                                  </div>
 		                                ) : (
-		                                  <div className="flex flex-col items-start gap-2">
-		                                    <span className="text-slate-500">{cell}</span>
-		                                    <button
-		                                      type="button"
-		                                      onClick={() =>
-		                                        handleSetTemporaryReportScore(
-		                                          {
-		                                            studentname: r.studentname,
-		                                            student_id: r.student_id,
-		                                            sectionid: r.sectionid,
-		                                            subjectid: r.subjectid,
-		                                          },
-		                                          {
-		                                            quizid: q.quizid,
-		                                            quizname: q.quizname,
-		                                            quizcode: q.quizcode,
-		                                            assessment_type: q.assessment_type,
-		                                          },
-		                                          inferredMaxScore
-		                                        )
-		                                      }
-		                                      className="px-2 py-1 rounded bg-cyan-700/80 hover:bg-cyan-600 text-[11px] text-white"
-		                                    >
-		                                      Add Temp
-		                                    </button>
-		                                  </div>
-		                                )}
+			                                  <div className="flex flex-col items-start gap-2">
+			                                    <span className="text-slate-500">{cell}</span>
+			                                    <div className="flex items-center gap-2">
+			                                      <button
+			                                        type="button"
+			                                        onClick={() =>
+			                                          handleSetTemporaryReportScore(
+			                                            {
+			                                              studentname: r.studentname,
+			                                              student_id: r.student_id,
+			                                              sectionid: r.sectionid,
+			                                              subjectid: r.subjectid,
+			                                            },
+			                                            {
+			                                              quizid: q.quizid,
+			                                              quizname: q.quizname,
+			                                              quizcode: q.quizcode,
+			                                              assessment_type: q.assessment_type,
+			                                            },
+			                                            inferredMaxScore
+			                                          )
+			                                        }
+			                                        className="px-2 py-1 rounded bg-cyan-700/80 hover:bg-cyan-600 text-[11px] text-white"
+			                                      >
+			                                        Add Temp
+			                                      </button>
+			                                    </div>
+			                                  </div>
+			                                )}
 	                              </td>
                             );
                           })}
@@ -5573,10 +6218,10 @@ export default function TeacherPage() {
               </div>
             )}
 
-            <div className="mt-4 text-slate-500 text-sm">
-	              <p>One row per student. Total students: {sortedConsolidatedRows.length}</p>
-	              <p className="mt-1">Use `Add Temp` on blank score cells to add export-only scores without saving them to the database.</p>
-	              <p className="mt-1">Weighted grade formula: (Quiz Average x 70%) + (Exam Average x 30%).</p>
+		            <div className="mt-4 text-slate-500 text-sm">
+		              <p>One row per student. Total students: {sortedConsolidatedRows.length}</p>
+		              <p className="mt-1">Use `Add Temp` on blank score cells to add export-only scores without saving them to the database.</p>
+		              <p className="mt-1">Weighted grade formula: (Quiz Average x 70%) + (Exam Average x 30%).</p>
               {reportFilterPeriod && <p className="mt-1">Period: {reportFilterPeriod}</p>}
               {reportFilterSection && (
                 <p className="mt-1">Section: {getSectionLabelFromRows(reportFilterSection)}</p>

@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import Link from "next/link";
-import supabase from "../supabase-client";
 import type {
   HandsOnQuestion,
   MultipleChoiceQuestion,
@@ -752,6 +751,8 @@ function getHandsOnSubmittedText(question: HandsOnQuestion, answer: HandsOnAnswe
 }
 
 const ATTEMPT_KEY = "quiz_attempts";
+const SUBMISSION_LOCK_KEY = "quiz_submission_lock";
+const SUBMISSION_LOCK_TTL_MS = 30_000;
 
 function getAttemptKey(topic: string, section: string, studentId: string): string {
   const normalized = (studentId || "anonymous").trim().toLowerCase().replace(/\s+/g, "_");
@@ -769,6 +770,37 @@ function incrementAttemptCount(topic: string, section: string, studentId: string
   const next = getAttemptCount(topic, section, studentId) + 1;
   localStorage.setItem(key, String(next));
   return next;
+}
+
+function getSubmissionLockKey(quizId: string, studentId: string): string {
+  const normalizedQuizId = String(quizId ?? "").trim().toLowerCase();
+  const normalizedStudentId = sanitizeStudentId(studentId).trim().toLowerCase();
+  return `${SUBMISSION_LOCK_KEY}_${normalizedQuizId}_${normalizedStudentId || "anonymous"}`;
+}
+
+function hasActiveSubmissionLock(quizId: string, studentId: string): boolean {
+  if (typeof window === "undefined") return false;
+  const raw = sessionStorage.getItem(getSubmissionLockKey(quizId, studentId));
+  if (!raw) return false;
+  const expiresAt = Number(raw);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    sessionStorage.removeItem(getSubmissionLockKey(quizId, studentId));
+    return false;
+  }
+  return true;
+}
+
+function setSubmissionLock(quizId: string, studentId: string) {
+  if (typeof window === "undefined") return;
+  sessionStorage.setItem(
+    getSubmissionLockKey(quizId, studentId),
+    String(Date.now() + SUBMISSION_LOCK_TTL_MS)
+  );
+}
+
+function clearSubmissionLock(quizId: string, studentId: string) {
+  if (typeof window === "undefined") return;
+  sessionStorage.removeItem(getSubmissionLockKey(quizId, studentId));
 }
 
 interface QuizResults {
@@ -902,6 +934,7 @@ export default function Quiz({
   const [recoveryRequestStatus, setRecoveryRequestStatus] = useState<"idle" | "pending" | "approved">("idle");
   const [recoveryRequestMessage, setRecoveryRequestMessage] = useState<string>("");
   const [attemptSaveReady, setAttemptSaveReady] = useState(false);
+  const [submittingAttempt, setSubmittingAttempt] = useState(false);
   const [restrictionNotice, setRestrictionNotice] = useState<string | null>(null);
 	  const restrictionTimerRef = useRef<number | null>(null);
 	  const [showDeadlineSubmitModal, setShowDeadlineSubmitModal] = useState(false);
@@ -1003,10 +1036,12 @@ export default function Quiz({
 	          ? attemptsUsedInfo + 1
 	          : null
 	      : null;
-	  const remainingAfterSubmit =
-	    quizId && started && typeof displayCurrentAttempt === "number"
-	      ? Math.max(0, attemptsLimit - displayCurrentAttempt)
-	      : null;
+		  const remainingAfterSubmit =
+		    quizId && started && typeof displayCurrentAttempt === "number"
+		      ? Math.max(0, attemptsLimit - displayCurrentAttempt)
+		      : null;
+      const attemptsRemainingClamped = clampRemainingAttempts(attemptsRemainingInfo);
+      const noAttemptsRemaining = Boolean(quizId) && attemptsRemainingClamped === 0;
 
 	  const refreshAttemptsInfo = useCallback(async () => {
 	    if (!quizId) return;
@@ -1326,12 +1361,16 @@ export default function Quiz({
 	      setStarted(true);
 	      return;
 	    }
-	    setStartLoading(true);
-	    try {
-	      const lockedId = sanitizeStudentId(studentId.trim());
-	      if (lockedId !== studentId.trim()) setStudentId(lockedId);
-	      const res = await fetch("/api/quiz-start", {
-	        method: "POST",
+		    setStartLoading(true);
+		    try {
+		      const lockedId = sanitizeStudentId(studentId.trim());
+		      if (lockedId !== studentId.trim()) setStudentId(lockedId);
+          if (hasActiveSubmissionLock(String(quizId), lockedId)) {
+            setSubmitError("Your previous auto-submission is still being finalized. Please wait a moment before reopening the quiz.");
+            return;
+          }
+		      const res = await fetch("/api/quiz-start", {
+		        method: "POST",
 	        headers: { "Content-Type": "application/json" },
 	        body: JSON.stringify({
 	          quizId,
@@ -1378,13 +1417,17 @@ export default function Quiz({
     }
   };
 
-	  const saveAttempt = useCallback(async (payload: AttemptSavePayload) => {
-	    const res = await fetch("/api/student-attempts", {
-	      method: "POST",
-	      headers: { "Content-Type": "application/json" },
-	      body: JSON.stringify({
-	        ...payload,
-	      }),
+		  const saveAttempt = useCallback(async (payload: AttemptSavePayload) => {
+        const autoSubmission = isAutoSubmissionSource(
+          (payload.submissionSource as SubmissionSource | undefined) ?? "manual_submit"
+        );
+		    const res = await fetch("/api/student-attempts", {
+		      method: "POST",
+		      headers: { "Content-Type": "application/json" },
+          keepalive: autoSubmission,
+		      body: JSON.stringify({
+		        ...payload,
+		      }),
 	    });
 	    if (res.ok) return { ok: true as const };
 	    const errorData = await res.json().catch(() => ({}));
@@ -1528,7 +1571,7 @@ export default function Quiz({
 	        }),
 	    };
 
-    setResults({
+    const nextResults = {
       studentName: name,
       section,
       attempts,
@@ -1539,55 +1582,56 @@ export default function Quiz({
 	      enumScore: enumPoints,
 	      enumMax,
 	      handsOnScore,
-	      handsOnMax,
-	      totalScore,
-	      maxScore,
-	      percentage,
-    });
+      handsOnMax,
+      totalScore,
+      maxScore,
+      percentage,
+    };
+    setAttemptSaveReady(false);
+
+		    // Save attempt and update score if this is the best attempt for this student
+		    if (quizId) {
+      if (isAutoSubmissionSource(source)) {
+        setSubmissionLock(quizId, id);
+      }
+	      setSubmittingAttempt(true);
+	      try {
+        const payload: AttemptSavePayload = {
+          quizId,
+          studentName: name,
+          studentId: id,
+          score: totalScore,
+          maxScore,
+          attemptNumber: nextAttemptNumber,
+          attemptId: attemptId ?? undefined,
+          answers: answersPayload,
+          submissionSource: source,
+        };
+        const result = await saveAttempt(payload);
+        if (!result.ok) {
+          if (result.deadlinePassed) {
+            setSubmitError("Quiz deadline has passed. Submission is closed.");
+            return;
+          }
+          console.error("Failed to save attempt:", result.errorMessage);
+          setSubmitError(result.errorMessage);
+          setRecoveryRequestMessage(result.errorMessage);
+          return;
+	        }
+	        setAttemptSaveReady(true);
+          clearSubmissionLock(quizId, id);
+	        void refreshAttemptsInfo();
+      } catch (err) {
+        console.error("Error saving attempt:", err);
+        setSubmitError("Failed to save attempt.");
+        return;
+      } finally {
+        setSubmittingAttempt(false);
+      }
+		    }
+    setResults(nextResults);
 	    setSubmissionSource(source);
 	    setSubmitted(true);
-      setAttemptSaveReady(false);
-
-	    // Save attempt and update score if this is the best attempt for this student
-	    if (quizId) {
-      if (!supabase) {
-        // Supabase client isn't available (e.g. during static prerender); skip saving.
-        console.warn("Supabase client not available; skipping score save.");
-      } else {
-        // Save the attempt record and let the API handle the best score logic
-        (async () => {
-          try {
-            const payload: AttemptSavePayload = {
-              quizId,
-              studentName: name,
-              studentId: id,
-              score: totalScore,
-              maxScore,
-              attemptNumber: nextAttemptNumber,
-              attemptId: attemptId ?? undefined,
-              answers: answersPayload,
-              submissionSource: source,
-            };
-		            const result = await saveAttempt(payload);
-		            if (!result.ok) {
-                  setAttemptSaveReady(false);
-		              if (result.deadlinePassed) {
-		                setSubmitError("Quiz deadline has passed. Submission is closed.");
-		                return;
-		              }
-		              console.error("Failed to save attempt:", result.errorMessage);
-                  setRecoveryRequestMessage(result.errorMessage);
-		            } else {
-                  setAttemptSaveReady(true);
-		              void refreshAttemptsInfo();
-		            }
-		          } catch (err) {
-		            console.error("Error saving attempt:", err);
-                setAttemptSaveReady(false);
-		          }
-		        })();
-		      }
-		    }
 	  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, handsOnAnswers, questionFlow, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, quizId, attemptId, attemptNumber, started, saveAttempt, refreshAttemptsInfo]);
 
   useEffect(() => {
@@ -1760,6 +1804,19 @@ export default function Quiz({
       setRecoveryRequestLoading(false);
     }
   }, [quizId, attemptId, attemptSaveReady, submissionSource]);
+
+  if (submittingAttempt) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10 flex items-center justify-center">
+        <div className="max-w-md w-full rounded-2xl bg-slate-800/60 border border-slate-600/50 p-8 shadow-2xl text-center">
+          <h1 className="text-2xl font-bold text-cyan-300">Finalizing Submission</h1>
+          <p className="mt-3 text-slate-300">
+            Please wait while we save your attempt. Do not refresh or close this page yet.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (submitted && results) {
 	  return (
@@ -1945,16 +2002,17 @@ export default function Quiz({
           )}
 	          {quizId && (
 	            <p className="text-slate-400 text-sm mt-2">
-	              {typeof clampRemainingAttempts(attemptsRemainingInfo) === "number" && typeof attemptsUsedInfo === "number" ? (
-	                <>
-	                  Attempts: <span className="text-slate-100 font-semibold">{attemptsUsedInfo}</span>/
-	                  <span className="text-slate-100 font-semibold">{attemptsLimit}</span>{" "}
-	                  <span className="text-slate-500">
-	                    (remaining{" "}
-	                    <span className="text-slate-200 font-semibold">{clampRemainingAttempts(attemptsRemainingInfo)}</span>
-	                    )
-	                  </span>
-	                </>
+		              {typeof attemptsRemainingClamped === "number" && typeof attemptsUsedInfo === "number" ? (
+		                <>
+		                  Attempts used: <span className="text-slate-100 font-semibold">{attemptsUsedInfo}</span>
+		                  {" "}<span className="text-slate-500">of limit</span>{" "}
+		                  <span className="text-slate-100 font-semibold">{attemptsLimit}</span>{" "}
+		                  <span className="text-slate-500">
+		                    (remaining{" "}
+		                    <span className="text-slate-200 font-semibold">{attemptsRemainingClamped}</span>
+		                    )
+		                  </span>
+		                </>
               ) : (
                 <>
                   Attempts allowed: <span className="text-slate-100 font-semibold">{attemptsLimit}</span>
@@ -2020,17 +2078,22 @@ export default function Quiz({
 		                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
 		              />
 	            </div>
-	            {studentLocked && (
-	              <p className="text-slate-500 text-xs">Using your student profile details.</p>
-	            )}
-	            {quizId && (
-              <div className="flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={handleStart}
-                  disabled={startLoading || started}
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
-                >
+		            {studentLocked && (
+		              <p className="text-slate-500 text-xs">Using your student profile details.</p>
+		            )}
+                {noAttemptsRemaining && (
+                  <p className="text-amber-300 text-sm">
+                    No attempts remaining. Request recovery from the results page or ask your teacher to reopen your attempt.
+                  </p>
+                )}
+		            {quizId && (
+	              <div className="flex flex-wrap items-center gap-3">
+	                <button
+	                  type="button"
+	                  onClick={handleStart}
+	                  disabled={startLoading || started || noAttemptsRemaining}
+	                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
+	                >
                   {started ? "Quiz Started" : startLoading ? "Starting..." : "Start Quiz"}
                 </button>
                 <button

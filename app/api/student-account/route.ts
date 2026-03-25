@@ -39,20 +39,15 @@ export async function PATCH(request: NextRequest) {
   }
 
   const body = (await request.json().catch(() => ({}))) as {
-    fullName?: string;
     username?: string;
     currentPassword?: string;
     newPassword?: string;
   };
 
-  const fullName = normalizeString(body.fullName);
   const username = normalizeEmail(body.username);
   const currentPassword = typeof body.currentPassword === "string" ? body.currentPassword : "";
   const newPassword = typeof body.newPassword === "string" ? body.newPassword : "";
 
-  if (!fullName) {
-    return NextResponse.json({ ok: false, error: "Full name is required" }, { status: 400 });
-  }
   if (!username) {
     return NextResponse.json({ ok: false, error: "Username is required" }, { status: 400 });
   }
@@ -109,7 +104,6 @@ export async function PATCH(request: NextRequest) {
   }
 
   const updatePayload: Record<string, unknown> = {
-    studentname: fullName,
     stud_username: username,
   };
   if (newPassword) {
@@ -132,7 +126,7 @@ export async function PATCH(request: NextRequest) {
   const nextSession = {
     student: {
       id: String(updated.id ?? session.student.id),
-      name: String(updated.studentname ?? fullName).trim() || fullName,
+      name: String(updated.studentname ?? session.student.name ?? "").trim(),
       studentId: String(updated.studentid ?? session.student.studentId ?? "").trim() || undefined,
       username: String(updated.stud_username ?? username).trim().toLowerCase() || username,
     },

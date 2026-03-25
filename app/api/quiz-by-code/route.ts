@@ -110,15 +110,17 @@ export async function GET(request: NextRequest) {
 
     const openAttemptRes = await supabase
       .from("student_attempts_log")
-      .select("id, student_id")
+      .select("id, student_id, created_at")
       .in("quizid", quizIds.length > 0 ? quizIds : [String(quizRow.id ?? "")])
-      .eq("is_submitted", false);
+      .eq("is_submitted", false)
+      .order("created_at", { ascending: false });
     const openAttemptErr = (openAttemptRes.error as { message?: string } | null)?.message ?? "";
-    const matchingOpenAttempt =
+    const matchingOpenAttempts =
       !openAttemptErr || !openAttemptErr.toLowerCase().includes("student_attempts_log")
-        ? (((openAttemptRes.data ?? []) as Array<{ id?: string | null; student_id?: string | null }>)
-            .find((row) => sameStudentId(row.student_id, studentId)) ?? null)
-        : null;
+        ? (((openAttemptRes.data ?? []) as Array<{ id?: string | null; student_id?: string | null; created_at?: string | null }>)
+            .filter((row) => sameStudentId(row.student_id, studentId)))
+        : [];
+    let matchingOpenAttempt = matchingOpenAttempts[0] ?? null;
 
     const countRes = await supabase
       .from("student_attempts_log")
@@ -128,30 +130,41 @@ export async function GET(request: NextRequest) {
 
     // If student_attempts_log isn't migrated, don't block here (quiz-start still enforces attempts when possible).
     const countErr = (countRes.error as { message?: string } | null)?.message ?? "";
-    if (!countErr || !countErr.toLowerCase().includes("student_attempts_log")) {
-      const matchingRows = ((countRes.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>).filter(
-        (row) => sameStudentId(row.student_id, studentId)
-      );
-      const used = matchingRows.length;
-      const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
-      const noAttemptsLeft = used >= maxAttempts;
-      attemptsUsed = used;
-      let hasApprovedRecoveredAttempt = false;
-      if (matchingOpenAttempt?.id && noAttemptsLeft) {
-        const requestRes = await supabase
-          .from("student_attempt_recovery_requests")
-          .select("status")
-          .eq("attempt_log_id", String(matchingOpenAttempt.id))
-          .order("created_at", { ascending: false })
-          .limit(1);
-        const latest = ((requestRes.data ?? []) as Array<{ status?: string | null }>)[0] ?? null;
-        hasApprovedRecoveredAttempt = String(latest?.status ?? "").trim().toLowerCase() === "approved";
-      }
-      attemptsRemaining =
-        hasApprovedRecoveredAttempt ? -1 : hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
-      if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt) {
-        return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
-      }
+	    if (!countErr || !countErr.toLowerCase().includes("student_attempts_log")) {
+	      const matchingRows = ((countRes.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>).filter(
+	        (row) => sameStudentId(row.student_id, studentId)
+	      );
+	      const used = matchingRows.length;
+	      const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
+	      const noAttemptsLeft = used >= maxAttempts;
+	      attemptsUsed = used;
+	      let hasApprovedRecoveredAttempt = false;
+	      if (matchingOpenAttempts.length > 0) {
+	        const requestRes = await supabase
+	          .from("student_attempt_recovery_requests")
+	          .select("attempt_log_id, status")
+	          .in("attempt_log_id", matchingOpenAttempts.map((row) => String(row.id ?? "")).filter(Boolean))
+	          .order("created_at", { ascending: false })
+	          .limit(200);
+	        const approvedAttemptIdsOrdered = ((requestRes.data ?? []) as Array<{ attempt_log_id?: string | null; status?: string | null }>)
+	          .filter((row) => String(row.status ?? "").trim().toLowerCase() === "approved")
+	          .map((row) => String(row.attempt_log_id ?? "").trim())
+	          .filter(Boolean);
+	        const approvedAttemptIdSet = new Set(approvedAttemptIdsOrdered);
+	        const preferredApprovedOpenAttempt =
+	          approvedAttemptIdsOrdered
+	            .map((approvedId) => matchingOpenAttempts.find((row) => String(row.id ?? "").trim() === approvedId) ?? null)
+	            .find(Boolean) ?? null;
+	        matchingOpenAttempt = preferredApprovedOpenAttempt ?? matchingOpenAttempt;
+	        hasApprovedRecoveredAttempt = Boolean(
+	          matchingOpenAttempt?.id && approvedAttemptIdSet.has(String(matchingOpenAttempt.id).trim())
+	        );
+	      }
+	      attemptsRemaining =
+	        hasApprovedRecoveredAttempt ? -1 : hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
+	      if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt && !matchingOpenAttempt) {
+	        return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
+	      }
     }
   }
   const allowRetake = attemptsRemaining === 0 && attemptsUsed !== null ? false : baseAllowRetake;

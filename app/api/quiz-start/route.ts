@@ -177,34 +177,36 @@ export async function POST(request: NextRequest) {
       }
     }
 
-	  const existingOpenRes = await supabase
-	    .from("student_attempts_log")
-	    .select("id, attempt_number, started_at, quizid, student_id, answers")
-	    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
-	    .eq("is_submitted", false)
-	    .order("created_at", { ascending: false })
-	    .limit(200);
+		  const existingOpenRes = await supabase
+		    .from("student_attempts_log")
+		    .select("id, attempt_number, started_at, quizid, student_id, answers, created_at")
+		    .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
+		    .eq("is_submitted", false)
+		    .order("created_at", { ascending: false })
+		    .limit(200);
 
-		  let existingOpen = (((existingOpenRes.data ?? []) as Array<
-		    {
-		      id?: string;
-		      attempt_number?: number;
-		      started_at?: string;
-		      quizid?: string | null;
-		      student_id?: string | null;
-		      answers?: Record<string, unknown> | null;
-		    }
-		  >).find((row) => sameStudentId(row.student_id, studentId)) ?? null);
-	  const existingOpenError = existingOpenRes.error as { message?: string } | null;
+			  const matchingOpenAttempts = (((existingOpenRes.data ?? []) as Array<
+			    {
+			      id?: string;
+			      attempt_number?: number;
+			      started_at?: string;
+			      quizid?: string | null;
+			      student_id?: string | null;
+			      answers?: Record<string, unknown> | null;
+            created_at?: string | null;
+			    }
+			  >).filter((row) => sameStudentId(row.student_id, studentId)));
+        let existingOpen: (typeof matchingOpenAttempts)[number] | null = matchingOpenAttempts[0] ?? null;
+		  const existingOpenError = existingOpenRes.error as { message?: string } | null;
 
   if (existingOpenError?.message && existingOpenError.message.toLowerCase().includes("student_attempts_log")) {
     existingOpen = null;
   }
 
-  if (existingOpen) {
-    const countResult = await supabase
-      .from("student_attempts_log")
-      .select("student_id, submission_source")
+	  if (existingOpen) {
+	    const countResult = await supabase
+	      .from("student_attempts_log")
+	      .select("student_id, submission_source")
       .in("quizid", quizIds.length > 0 ? quizIds : [quizId])
       .eq("is_submitted", true);
     const countErr = (countResult.error as { message?: string } | null)?.message ?? "";
@@ -224,23 +226,34 @@ export async function POST(request: NextRequest) {
         : matchingRows.some(
             (row) => String(row.submission_source ?? "").trim() === "manual_submit"
           );
-    const attemptsRemaining =
-      typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
-    const noAttemptsLeft = typeof attemptsUsed === "number" && attemptsUsed >= maxAttempts;
-    let hasApprovedRecoveredAttempt = false;
-    if (existingOpen.id && noAttemptsLeft) {
-      const requestRes = await supabase
-        .from("student_attempt_recovery_requests")
-        .select("status")
-        .eq("attempt_log_id", String(existingOpen.id))
-        .order("created_at", { ascending: false })
-        .limit(1);
-      const latest = ((requestRes.data ?? []) as Array<{ status?: string | null }>)[0] ?? null;
-      hasApprovedRecoveredAttempt = String(latest?.status ?? "").trim().toLowerCase() === "approved";
-    }
-    if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt) {
-      return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
-    }
+	    const attemptsRemaining =
+	      typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
+	    const noAttemptsLeft = typeof attemptsUsed === "number" && attemptsUsed >= maxAttempts;
+	    let hasApprovedRecoveredAttempt = false;
+	    if (matchingOpenAttempts.length > 0) {
+	      const requestRes = await supabase
+	        .from("student_attempt_recovery_requests")
+	        .select("attempt_log_id, status")
+	        .in("attempt_log_id", matchingOpenAttempts.map((row) => String(row.id ?? "")).filter(Boolean))
+	        .order("created_at", { ascending: false })
+	        .limit(200);
+	      const approvedAttemptIdsOrdered = ((requestRes.data ?? []) as Array<{ attempt_log_id?: string | null; status?: string | null }>)
+	        .filter((row) => String(row.status ?? "").trim().toLowerCase() === "approved")
+	        .map((row) => String(row.attempt_log_id ?? "").trim())
+	        .filter(Boolean);
+	      const approvedAttemptIdSet = new Set(approvedAttemptIdsOrdered);
+	      const preferredApprovedOpenAttempt =
+	        approvedAttemptIdsOrdered
+	          .map((approvedId) => matchingOpenAttempts.find((row) => String(row.id ?? "").trim() === approvedId) ?? null)
+	          .find(Boolean) ?? null;
+	      existingOpen = preferredApprovedOpenAttempt ?? existingOpen;
+	      hasApprovedRecoveredAttempt = Boolean(
+	        existingOpen?.id && approvedAttemptIdSet.has(String(existingOpen.id).trim())
+	      );
+	    }
+	    if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt && !existingOpen) {
+	      return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
+	    }
     const allowRetake = hasManualSubmit || noAttemptsLeft ? false : baseAllowRetake;
 
     let timeLimitMinutes = (quizSettings as { time_limit_minutes?: number | null }).time_limit_minutes ?? null;

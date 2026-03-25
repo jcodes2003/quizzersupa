@@ -58,10 +58,6 @@ export default function StudentAccountPage() {
     setError(null);
     setMessage(null);
 
-    if (!fullName.trim()) {
-      setError("Full name is required.");
-      return;
-    }
     if (!username.trim()) {
       setError("Username is required.");
       return;
@@ -86,7 +82,6 @@ export default function StudentAccountPage() {
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          fullName: fullName.trim(),
           username: username.trim().toLowerCase(),
           currentPassword,
           newPassword: newPassword || undefined,
@@ -125,7 +120,7 @@ export default function StudentAccountPage() {
           </Link>
           <h1 className="text-3xl font-bold mt-2 text-emerald-300">Student Account</h1>
           <p className="text-slate-400 text-sm mt-1">
-            Update your name, username, and password.
+            View your name and update your username or password.
           </p>
         </div>
 
@@ -146,10 +141,11 @@ export default function StudentAccountPage() {
             <label className="block text-slate-300 text-sm mb-2">Full Name</label>
             <input
               value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              className="w-full rounded-xl border border-slate-700 bg-slate-950 px-4 py-3 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
-              placeholder="Your full name"
+              disabled
+              readOnly
+              className="w-full rounded-xl border border-slate-800 bg-slate-900 px-4 py-3 text-slate-400"
             />
+            <p className="mt-2 text-xs text-slate-500">Student names are managed by the school and cannot be edited here.</p>
           </div>
 
           <div>

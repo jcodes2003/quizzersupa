@@ -32,6 +32,7 @@ type QuizRow = {
   percentage?: number | null;
   attemptsUsed?: number;
   attemptsRemaining?: number;
+  openAttemptId?: string | null;
   latestAttemptId?: string | null;
   latestSubmissionSource?: string | null;
   recoveryRequestStatus?: string | null;
@@ -53,6 +54,8 @@ export default function StudentDashboardPage() {
   const [quizzes, setQuizzes] = useState<QuizRow[]>([]);
   const [quizLoading, setQuizLoading] = useState(false);
   const [requestingRecoveryFor, setRequestingRecoveryFor] = useState<string | null>(null);
+  const [finishingAttemptFor, setFinishingAttemptFor] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [selectedSectionId, setSelectedSectionId] = useState("");
   const [selectedSubjectId, setSelectedSubjectId] = useState("");
 
@@ -174,6 +177,31 @@ export default function StudentDashboardPage() {
       await loadQuizzes(selectedSectionId);
     } finally {
       setRequestingRecoveryFor(null);
+    }
+  };
+
+  const handleMarkDone = async (quiz: QuizRow) => {
+    const attemptId = String(quiz.openAttemptId ?? "").trim();
+    if (!attemptId) return;
+    setError(null);
+    setNotice(null);
+    setFinishingAttemptFor(quiz.id);
+    try {
+      const res = await fetch("/api/student-attempt-force-submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ attemptId, quizId: quiz.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? "Failed to mark attempt as done.");
+        return;
+      }
+      setNotice(`Done submitted for ${quiz.quizname || `Quiz ${quiz.quizcode}`}.`);
+      await loadQuizzes(selectedSectionId);
+    } finally {
+      setFinishingAttemptFor(null);
     }
   };
 
@@ -378,6 +406,11 @@ export default function StudentDashboardPage() {
         {error && (
           <div className="rounded-xl bg-red-900/20 border border-red-700/30 p-4 text-red-200">
             {error}
+          </div>
+        )}
+        {notice && (
+          <div className="rounded-xl bg-emerald-900/20 border border-emerald-700/30 p-4 text-emerald-200">
+            {notice}
           </div>
         )}
 
@@ -594,11 +627,12 @@ export default function StudentDashboardPage() {
                         </p>
 			                  ) : (
 		                    <ul className="space-y-2">
-			                      {openPageItems.map((q) => {
-			                    const badge = statusBadge(q);
-			                    const closeLabel = formatCloseLabel(q.submission_deadline, q.submissions_open);
-				                        const canOpen = q.status === "open";
-			                    return (
+				                      {openPageItems.map((q) => {
+				                    const badge = statusBadge(q);
+				                    const closeLabel = formatCloseLabel(q.submission_deadline, q.submissions_open);
+					                        const canOpen = q.status === "open";
+                            const canMarkDone = Boolean(String(q.openAttemptId ?? "").trim());
+				                    return (
 		                      <li
 		                        key={q.id}
 		                        className={`flex flex-col gap-3 rounded-lg border px-3 py-3 sm:flex-row sm:items-start sm:justify-between ${
@@ -633,20 +667,32 @@ export default function StudentDashboardPage() {
 		                          ) : null}
 	                          <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 	                        </div>
-			                        <button
-			                          type="button"
-			                          onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
-			                          disabled={!canOpen}
-			                          className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
-			                            canOpen
-			                              ? "bg-emerald-600 hover:bg-emerald-500"
-		                              : "bg-slate-700/70 opacity-60 cursor-not-allowed"
-		                          }`}
-		                        >
-		                          {canOpen ? "Open" : "Closed"}
-		                        </button>
-	                      </li>
-	                      );
+                            <div className="flex w-full flex-col gap-2 sm:w-auto">
+				                          <button
+				                            type="button"
+				                            onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
+				                            disabled={!canOpen}
+				                            className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
+				                              canOpen
+				                                ? "bg-emerald-600 hover:bg-emerald-500"
+			                                : "bg-slate-700/70 opacity-60 cursor-not-allowed"
+			                            }`}
+			                          >
+			                            {canOpen ? "Open" : "Closed"}
+			                          </button>
+                              {canMarkDone ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleMarkDone(q)}
+                                  disabled={finishingAttemptFor === q.id}
+                                  className="w-full sm:w-auto px-3 py-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-200 text-sm font-semibold hover:bg-cyan-500/15 disabled:opacity-50"
+                                >
+                                  {finishingAttemptFor === q.id ? "Submitting..." : "Done"}
+                                </button>
+                              ) : null}
+                            </div>
+		                      </li>
+		                      );
 		                    })}
 		                    </ul>
 		                  )}
@@ -661,11 +707,12 @@ export default function StudentDashboardPage() {
                           </p>
 				                  ) : (
 		                    <ul className="space-y-2">
-		                      {missingPageItems.map((q) => {
+			                      {missingPageItems.map((q) => {
 		                        const badge = statusBadge(q);
 		                        const closeLabel = formatCloseLabel(q.submission_deadline, q.submissions_open);
-		                        const canOpen = q.status === "open";
-		                        const scorePill =
+			                        const canOpen = q.status === "open";
+                              const canMarkDone = Boolean(String(q.openAttemptId ?? "").trim());
+			                        const scorePill =
 	                          typeof q.percentage === "number" ? (
 	                            <span className="px-2 py-0.5 rounded border text-xs bg-cyan-600/15 text-cyan-200 border-cyan-500/40">
 	                              Score {q.percentage}%
@@ -702,20 +749,32 @@ export default function StudentDashboardPage() {
 	                              </div>
 	                              <div className="text-slate-400 text-xs mt-1">{closeLabel}</div>
 	                            </div>
-		                            <button
-		                              type="button"
-		                              onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
-		                              disabled={!canOpen}
-		                              className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
-		                                canOpen
-		                                  ? "bg-emerald-600 hover:bg-emerald-500"
-	                                  : "bg-slate-700/70 opacity-60 cursor-not-allowed"
-	                              }`}
-	                            >
-	                              {canOpen ? "Open" : "Closed"}
-	                            </button>
-	                          </li>
-	                        );
+                              <div className="flex w-full flex-col gap-2 sm:w-auto">
+			                              <button
+			                                type="button"
+			                                onClick={() => router.push(`/quiz?code=${encodeURIComponent(q.quizcode)}`)}
+			                                disabled={!canOpen}
+			                                className={`w-full sm:w-auto px-3 py-2 rounded-lg text-white text-sm font-semibold ${
+			                                  canOpen
+			                                    ? "bg-emerald-600 hover:bg-emerald-500"
+		                                    : "bg-slate-700/70 opacity-60 cursor-not-allowed"
+		                                }`}
+		                              >
+		                                {canOpen ? "Open" : "Closed"}
+		                              </button>
+                                {canMarkDone ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleMarkDone(q)}
+                                    disabled={finishingAttemptFor === q.id}
+                                    className="w-full sm:w-auto px-3 py-2 rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-200 text-sm font-semibold hover:bg-cyan-500/15 disabled:opacity-50"
+                                  >
+                                    {finishingAttemptFor === q.id ? "Submitting..." : "Done"}
+                                  </button>
+                                ) : null}
+                              </div>
+		                          </li>
+		                        );
 		                      })}
 		                    </ul>
 		                  )}

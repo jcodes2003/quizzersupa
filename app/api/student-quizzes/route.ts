@@ -150,7 +150,7 @@ export async function GET(request: NextRequest) {
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
   const hasManualSubmitByQuizId = new Map<string, boolean>();
-  const openAttemptByQuizId = new Map<string, { attemptId: string }>();
+  const openAttemptByQuizId = new Map<string, { attemptId: string; approved: boolean }>();
   const approvedRecoveryAttemptIds = new Set<string>();
   const latestAttemptByQuizId = new Map<
     string,
@@ -223,18 +223,31 @@ export async function GET(request: NextRequest) {
 
     const openAttemptsRes = await supabase
       .from("student_attempts_log")
-      .select("id, quizid, student_id")
+      .select("id, quizid, student_id, created_at")
       .in("quizid", quizIds)
-      .eq("is_submitted", false);
+      .eq("is_submitted", false)
+      .order("created_at", { ascending: false });
     const openAttemptsErr = (openAttemptsRes.error as { message?: string } | null)?.message ?? "";
     if (!openAttemptsErr || !openAttemptsErr.toLowerCase().includes("student_attempts_log")) {
-      for (const row of (openAttemptsRes.data ?? []) as Array<{ id?: string | null; quizid?: string | null; student_id?: string | null }>) {
+      const openAttemptRows = (openAttemptsRes.data ?? []) as Array<{
+        id?: string | null;
+        quizid?: string | null;
+        student_id?: string | null;
+        created_at?: string | null;
+      }>;
+      const preferredOpenAttemptByQuizId = new Map<string, { attemptId: string; approved: boolean }>();
+      for (const row of openAttemptRows) {
         const qid = String(row.quizid ?? "").trim();
         const attemptId = String(row.id ?? "").trim();
         if (!qid || !attemptId || !sameStudentId(row.student_id, studentId)) continue;
-        if (!openAttemptByQuizId.has(qid)) {
-          openAttemptByQuizId.set(qid, { attemptId });
+        const approved = approvedRecoveryAttemptIds.has(attemptId);
+        const existing = preferredOpenAttemptByQuizId.get(qid) ?? null;
+        if (!existing || approved) {
+          preferredOpenAttemptByQuizId.set(qid, { attemptId, approved });
         }
+      }
+      for (const [qid, openAttempt] of preferredOpenAttemptByQuizId) {
+        openAttemptByQuizId.set(qid, openAttempt);
       }
     }
 
@@ -315,8 +328,7 @@ export async function GET(request: NextRequest) {
 	      const latestSubmissionSource = latestAttempt?.submissionSource ?? null;
 	      const submitted = attemptsUsed > 0;
 	      const hasManualSubmit = hasManualSubmitByQuizId.get(q.id) === true;
-      const hasApprovedRecoveredAttempt =
-        Boolean(existingOpenAttempt?.attemptId) && approvedRecoveryAttemptIds.has(String(existingOpenAttempt?.attemptId ?? ""));
+      const hasApprovedRecoveredAttempt = existingOpenAttempt?.approved === true;
       const hasReopenedAttempt = Boolean(existingOpenAttempt?.attemptId) && hasApprovedRecoveredAttempt;
       const attemptsRemaining = hasReopenedAttempt ? 0 : baseAttemptsRemaining;
       const canStillAttempt = (q._open && attemptsRemaining > 0 && !hasManualSubmit) || hasReopenedAttempt;
@@ -329,10 +341,10 @@ export async function GET(request: NextRequest) {
       const score = best?.score ?? null;
       const maxScore = best?.maxScore ?? null;
       const percentage = best?.percentage ?? null;
-      return {
-        id: q.id,
-        quizcode: q.quizcode,
-        quizname: q.quizname,
+	      return {
+	        id: q.id,
+	        quizcode: q.quizcode,
+	        quizname: q.quizname,
         period: q.period,
         sectionid: q.sectionid,
         sectionName: q.sectionName,
@@ -350,12 +362,13 @@ export async function GET(request: NextRequest) {
         score,
         maxScore,
         percentage,
-	        attemptsUsed,
-	        attemptsRemaining,
-	        latestAttemptId: existingOpenAttempt?.attemptId ?? latestAttempt?.attemptId ?? null,
-	        latestSubmissionSource,
-	      };
-	    })
+		        attemptsUsed,
+		        attemptsRemaining,
+		        openAttemptId: existingOpenAttempt?.attemptId ?? null,
+		        latestAttemptId: existingOpenAttempt?.attemptId ?? latestAttempt?.attemptId ?? null,
+		        latestSubmissionSource,
+		      };
+		    })
     .sort((a, b) => {
       // Open first, then missing, then completed, then closed; within group, closest deadline first, else by code.
       const rank = (s: string) => (s === "open" ? 0 : s === "missing" ? 1 : s === "completed" ? 2 : 3);

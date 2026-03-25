@@ -52,11 +52,22 @@ function normalizeQuizName(value: unknown): string {
     .toLowerCase();
 }
 
-async function isTeacherQuizNameTaken(teacherId: string, quizName: string, excludeQuizId?: string): Promise<boolean> {
+async function isTeacherQuizNameTakenInSection(
+  teacherId: string,
+  sectionId: string,
+  quizName: string,
+  excludeQuizId?: string
+): Promise<boolean> {
   const normalized = normalizeQuizName(quizName);
   if (!normalized) return false;
   const supabase = getSupabase();
-  const res = await supabase.from("quiztbl").select("id, quizname").eq("teacherid", teacherId);
+  const sectionIdTrimmed = String(sectionId ?? "").trim();
+  if (!sectionIdTrimmed) return false;
+  const res = await supabase
+    .from("quiztbl")
+    .select("id, quizname")
+    .eq("teacherid", teacherId)
+    .eq("sectionid", sectionIdTrimmed);
   if (res.error) throw res.error;
   return ((res.data ?? []) as Array<{ id?: string | null; quizname?: string | null }>).some((row) => {
     const rowId = String(row.id ?? "").trim();
@@ -152,7 +163,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Quiz name required" }, { status: 400 });
   }
   const supabase = getSupabase();
-  if (await isTeacherQuizNameTaken(teacherId, quizNameTrimmed)) {
+  if (await isTeacherQuizNameTakenInSection(teacherId, sectionIdStr, quizNameTrimmed)) {
     return NextResponse.json({ error: "Quiz name already taken. Please rename the quiz." }, { status: 409 });
   }
 
