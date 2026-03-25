@@ -31,6 +31,10 @@ type ApiQuiz = {
   max_attempts?: number | null;
   attemptsUsed?: number | null;
   attemptsRemaining?: number | null;
+  latestAttemptId?: string | null;
+  latestSubmissionSource?: string | null;
+  recoveryRequestStatus?: string | null;
+  canRequestRecovery?: boolean;
 };
 
 // Ensure options, reply, etc. inside arrays in quiz data all have totally unique keys
@@ -271,6 +275,9 @@ function QuizContent() {
         maxAttempts={apiQuiz.max_attempts ?? 1}
         attemptsUsed={apiQuiz.attemptsUsed ?? null}
         attemptsRemaining={apiQuiz.attemptsRemaining ?? null}
+        latestAttemptId={apiQuiz.latestAttemptId ?? null}
+        recoveryRequestStatus={apiQuiz.recoveryRequestStatus ?? null}
+        canRequestRecovery={apiQuiz.canRequestRecovery === true}
       />
     );
   }

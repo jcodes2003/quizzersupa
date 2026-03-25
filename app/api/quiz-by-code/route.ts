@@ -97,6 +97,10 @@ export async function GET(request: NextRequest) {
   const studentId = sanitizeStudentId(studentSession?.student?.studentId ?? "");
   let attemptsUsed: number | null = null;
   let attemptsRemaining: number | null = null;
+  let latestAttemptId: string | null = null;
+  let latestSubmissionSource: string | null = null;
+  let recoveryRequestStatus: string | null = null;
+  let canRequestRecovery = false;
   if (studentId) {
     const sourceQuizIdForAttempts =
       (quizRow as { source_quiz_id?: string | null }).source_quiz_id ?? String(quizRow.id ?? "");
@@ -122,9 +126,9 @@ export async function GET(request: NextRequest) {
         : [];
     let matchingOpenAttempt = matchingOpenAttempts[0] ?? null;
 
-    const countRes = await supabase
-      .from("student_attempts_log")
-      .select("student_id, submission_source")
+	    const countRes = await supabase
+	      .from("student_attempts_log")
+	      .select("student_id, submission_source")
       .in("quizid", quizIds.length > 0 ? quizIds : [String(quizRow.id ?? "")])
       .eq("is_submitted", true);
 
@@ -161,11 +165,57 @@ export async function GET(request: NextRequest) {
 	        );
 	      }
 	      attemptsRemaining =
-	        hasApprovedRecoveredAttempt ? -1 : hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
+	        hasApprovedRecoveredAttempt ? null : hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
 	      if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt && !matchingOpenAttempt) {
 	        return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
 	      }
+	    }
+
+    const latestAttemptRes = await supabase
+      .from("student_attempts_log")
+      .select("id, student_id, submission_source, submitted_at, created_at")
+      .in("quizid", quizIds.length > 0 ? quizIds : [String(quizRow.id ?? "")])
+      .eq("is_submitted", true)
+      .order("submitted_at", { ascending: false })
+      .order("created_at", { ascending: false })
+      .limit(200);
+    const latestAttemptErr = (latestAttemptRes.error as { message?: string } | null)?.message ?? "";
+    if (!latestAttemptErr || !latestAttemptErr.toLowerCase().includes("student_attempts_log")) {
+      const latestMatching = ((latestAttemptRes.data ?? []) as Array<{
+        id?: string | null;
+        student_id?: string | null;
+        submission_source?: string | null;
+      }>).find((row) => sameStudentId(row.student_id, studentId));
+      latestAttemptId = String(latestMatching?.id ?? "").trim() || null;
+      latestSubmissionSource = String(latestMatching?.submission_source ?? "").trim().toLowerCase() || null;
     }
+
+    if (latestAttemptId) {
+      const reqRes = await supabase
+        .from("student_attempt_recovery_requests")
+        .select("status")
+        .eq("attempt_log_id", latestAttemptId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const reqErr = (reqRes.error as { message?: string } | null)?.message ?? "";
+      if (!reqErr || !reqErr.toLowerCase().includes("student_attempt_recovery_requests")) {
+        const latestStatus = String(((reqRes.data ?? []) as Array<{ status?: string | null }>)[0]?.status ?? "")
+          .trim()
+          .toLowerCase();
+        recoveryRequestStatus = latestStatus || null;
+      }
+    }
+
+    const isLatestAutoSubmission =
+      latestSubmissionSource === "auto_tab_switch" ||
+      latestSubmissionSource === "auto_close_tab" ||
+      latestSubmissionSource === "auto_time_expired";
+    const hasOpenRecoveredAttempt = Boolean(matchingOpenAttempt?.id) && recoveryRequestStatus === "approved";
+    canRequestRecovery =
+      Boolean(latestAttemptId) &&
+      isLatestAutoSubmission &&
+      recoveryRequestStatus !== "pending" &&
+      !hasOpenRecoveredAttempt;
   }
   const allowRetake = attemptsRemaining === 0 && attemptsUsed !== null ? false : baseAllowRetake;
 
@@ -200,6 +250,10 @@ export async function GET(request: NextRequest) {
       max_attempts: maxAttempts,
       attemptsUsed,
       attemptsRemaining,
+      latestAttemptId,
+      latestSubmissionSource,
+      recoveryRequestStatus,
+      canRequestRecovery,
       source_quiz_id: (quizRow as { source_quiz_id?: string | null }).source_quiz_id ?? null,
       submission_deadline: (quizRow as { submission_deadline?: string | null }).submission_deadline ?? null,
       submissions_open: (quizRow as { submissions_open?: boolean | null }).submissions_open !== false,

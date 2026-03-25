@@ -850,6 +850,9 @@ interface QuizProps {
   maxAttempts?: number;
   attemptsUsed?: number | null;
   attemptsRemaining?: number | null;
+  latestAttemptId?: string | null;
+  recoveryRequestStatus?: string | null;
+  canRequestRecovery?: boolean;
 }
 
 type QuizFlowItem =
@@ -906,6 +909,9 @@ export default function Quiz({
   maxAttempts,
   attemptsUsed: initialAttemptsUsed = null,
   attemptsRemaining: initialAttemptsRemaining = null,
+  latestAttemptId: initialLatestAttemptId = null,
+  recoveryRequestStatus: initialRecoveryRequestStatus = null,
+  canRequestRecovery: initialCanRequestRecovery = false,
 }: QuizProps) {
 		  const {
 		    multipleChoice: multipleChoiceQuestions,
@@ -956,6 +962,9 @@ export default function Quiz({
 		  const [maxAttemptsState, setMaxAttemptsState] = useState<number>(resolvedMaxAttempts);
 		  const [attemptsUsedInfo, setAttemptsUsedInfo] = useState<number | null>(initialAttemptsUsed);
 		  const [attemptsRemainingInfo, setAttemptsRemainingInfo] = useState<number | null>(initialAttemptsRemaining);
+  const [startRecoveryAttemptId, setStartRecoveryAttemptId] = useState<string | null>(initialLatestAttemptId);
+  const [startCanRequestRecovery, setStartCanRequestRecovery] = useState<boolean>(initialCanRequestRecovery);
+  const [startRecoveryStatus, setStartRecoveryStatus] = useState<string | null>(initialRecoveryRequestStatus);
 		  const backHref = studentLocked ? "/student" : "/";
 		  const inputsLocked = identityLocked || studentLocked;
 
@@ -1050,19 +1059,35 @@ export default function Quiz({
 	        credentials: "include",
 	      });
 	      if (!res.ok) return;
-	      const data = (await res.json().catch(() => null)) as
-	        | { quiz?: { attemptsUsed?: number | null; attemptsRemaining?: number | null; max_attempts?: number | null } }
-	        | null;
-	      const used = data?.quiz?.attemptsUsed;
-		      const remaining = data?.quiz?.attemptsRemaining;
-		      if (typeof used === "number") setAttemptsUsedInfo(used);
-		      if (typeof remaining === "number") setAttemptsRemainingInfo(clampRemainingAttempts(remaining));
-	      const nextMax = Number(data?.quiz?.max_attempts);
-	      if (Number.isFinite(nextMax) && nextMax > 0) setMaxAttemptsState(nextMax);
-	    } catch {
-	      // ignore
-	    }
-	  }, [quizId, topic]);
+		      const data = (await res.json().catch(() => null)) as
+		        | {
+                quiz?: {
+                  attemptsUsed?: number | null;
+                  attemptsRemaining?: number | null;
+                  max_attempts?: number | null;
+                  latestAttemptId?: string | null;
+                  recoveryRequestStatus?: string | null;
+                  canRequestRecovery?: boolean;
+                };
+              }
+		        | null;
+		      const used = data?.quiz?.attemptsUsed;
+			      const remaining = data?.quiz?.attemptsRemaining;
+			      if (typeof used === "number") setAttemptsUsedInfo(used);
+			      if (typeof remaining === "number" && Number.isFinite(remaining)) {
+              setAttemptsRemainingInfo(clampRemainingAttempts(remaining));
+            } else {
+              setAttemptsRemainingInfo(null);
+            }
+		      const nextMax = Number(data?.quiz?.max_attempts);
+		      if (Number.isFinite(nextMax) && nextMax > 0) setMaxAttemptsState(nextMax);
+          setStartRecoveryAttemptId(String(data?.quiz?.latestAttemptId ?? "").trim() || null);
+          setStartRecoveryStatus(String(data?.quiz?.recoveryRequestStatus ?? "").trim().toLowerCase() || null);
+          setStartCanRequestRecovery(data?.quiz?.canRequestRecovery === true);
+		    } catch {
+		      // ignore
+		    }
+		  }, [quizId, topic]);
 
   const resultParts = useMemo(() => {
     return sectionOrder.map((sectionConst, index) => {
@@ -1395,10 +1420,15 @@ export default function Quiz({
 	      } else {
 	        setExpiresAt(null);
 	      }
-		      const used = Number((data as { attemptsUsed?: unknown }).attemptsUsed);
-		      const remaining = Number((data as { attemptsRemaining?: unknown }).attemptsRemaining);
-		      if (Number.isFinite(used) && used >= 0) setAttemptsUsedInfo(Math.trunc(used));
-		      if (Number.isFinite(remaining)) setAttemptsRemainingInfo(clampRemainingAttempts(remaining));
+			      const used = Number((data as { attemptsUsed?: unknown }).attemptsUsed);
+			      const remainingRaw = (data as { attemptsRemaining?: unknown }).attemptsRemaining;
+			      const remaining = Number(remainingRaw);
+			      if (Number.isFinite(used) && used >= 0) setAttemptsUsedInfo(Math.trunc(used));
+			      if (Number.isFinite(remaining) && typeof remainingRaw === "number") {
+              setAttemptsRemainingInfo(clampRemainingAttempts(remaining));
+            } else {
+              setAttemptsRemainingInfo(null);
+            }
 	      const restoredAnswers = (data as { restoredAnswers?: Record<string, unknown> | null }).restoredAnswers;
 	      if (restoredAnswers && typeof restoredAnswers === "object") {
 	        setMcAnswers(extractSavedAnswerMap(restoredAnswers.multiple_choice));
@@ -1803,7 +1833,45 @@ export default function Quiz({
     } finally {
       setRecoveryRequestLoading(false);
     }
-  }, [quizId, attemptId, attemptSaveReady, submissionSource]);
+	  }, [quizId, attemptId, attemptSaveReady, submissionSource]);
+
+  const handleStartRecoveryRequest = useCallback(async () => {
+    const targetAttemptId = String(startRecoveryAttemptId ?? "").trim();
+    if (!targetAttemptId) {
+      setRecoveryRequestMessage("No recoverable attempt was found for this quiz yet.");
+      return;
+    }
+    setRecoveryRequestLoading(true);
+    setRecoveryRequestMessage("");
+    try {
+      const res = await fetch("/api/student-attempt-recovery-requests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ attemptId: targetAttemptId }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string };
+      if (!res.ok) {
+        setRecoveryRequestMessage(data.error ?? "Failed to send recovery request.");
+        return;
+      }
+      const status = String(data.status ?? "pending").trim().toLowerCase();
+      setStartRecoveryStatus(status);
+      setStartCanRequestRecovery(status !== "pending");
+      if (status === "approved") {
+        setRecoveryRequestStatus("approved");
+        setRecoveryRequestMessage("Recovery already approved. You can now start the quiz and continue your saved answers.");
+      } else {
+        setRecoveryRequestStatus("pending");
+        setRecoveryRequestMessage("Recovery request sent. Wait for your teacher to approve, then reopen/start the quiz.");
+      }
+      await refreshAttemptsInfo();
+    } catch {
+      setRecoveryRequestMessage("Failed to send recovery request.");
+    } finally {
+      setRecoveryRequestLoading(false);
+    }
+  }, [startRecoveryAttemptId, refreshAttemptsInfo]);
 
   if (submittingAttempt) {
     return (
@@ -2081,11 +2149,30 @@ export default function Quiz({
 		            {studentLocked && (
 		              <p className="text-slate-500 text-xs">Using your student profile details.</p>
 		            )}
-                {noAttemptsRemaining && (
-                  <p className="text-amber-300 text-sm">
-                    No attempts remaining. Request recovery from the results page or ask your teacher to reopen your attempt.
-                  </p>
-                )}
+	                {noAttemptsRemaining && (
+                    <div className="space-y-2">
+	                  <p className="text-amber-300 text-sm">
+	                    No attempts remaining. Request recovery or ask your teacher to reopen your attempt.
+	                  </p>
+                      {startCanRequestRecovery ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleStartRecoveryRequest()}
+                          disabled={recoveryRequestLoading}
+                          className="rounded-xl bg-cyan-600 px-4 py-2 text-sm font-semibold text-white hover:bg-cyan-500 disabled:opacity-50"
+                        >
+                          {recoveryRequestLoading
+                            ? "Requesting..."
+                            : startRecoveryStatus === "pending"
+                              ? "Recovery Requested"
+                              : "Request Recovery"}
+                        </button>
+                      ) : null}
+                      {recoveryRequestMessage ? (
+                        <p className="text-xs text-cyan-200">{recoveryRequestMessage}</p>
+                      ) : null}
+                    </div>
+	                )}
 		            {quizId && (
 	              <div className="flex flex-wrap items-center gap-3">
 	                <button

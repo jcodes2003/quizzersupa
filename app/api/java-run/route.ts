@@ -11,6 +11,8 @@ const JAVA_TIMEOUT_MS = 5000;
 const SESSION_IDLE_MS = 10 * 60 * 1000;
 const EXTERNAL_JAVA_RUNNER_URL = String(process.env.JAVA_RUNNER_BASE_URL ?? "").trim();
 const EXTERNAL_JAVA_RUNNER_TOKEN = String(process.env.JAVA_RUNNER_TOKEN ?? "").trim();
+const LOCALHOST_JAVA_RUNNER_URL = String(process.env.JAVA_RUNNER_LOCALHOST_FALLBACK_URL ?? "").trim();
+const LOCALHOST_JAVA_RUNNER_TOKEN = String(process.env.JAVA_RUNNER_LOCALHOST_TOKEN ?? "").trim();
 
 type ProcessResult = {
   code: number | null;
@@ -170,16 +172,26 @@ async function waitForInitialOutput() {
   await new Promise((resolve) => setTimeout(resolve, 150));
 }
 
-async function proxyToExternalRunner(body: StartBody) {
+function shouldFallbackToNextRunner(status: number, responseText: string): boolean {
+  if (status >= 500) return true;
+  const msg = String(responseText ?? "").toLowerCase();
+  return (
+    msg.includes("java compiler is not available") ||
+    msg.includes("java runtime is not available") ||
+    msg.includes("java runner failed")
+  );
+}
+
+async function proxyToRunner(baseUrl: string, token: string, body: StartBody) {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
 
-  if (EXTERNAL_JAVA_RUNNER_TOKEN) {
-    headers.Authorization = `Bearer ${EXTERNAL_JAVA_RUNNER_TOKEN}`;
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${EXTERNAL_JAVA_RUNNER_URL.replace(/\/$/, "")}/java-run`, {
+  const response = await fetch(`${baseUrl.replace(/\/$/, "")}/java-run`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
@@ -188,12 +200,11 @@ async function proxyToExternalRunner(body: StartBody) {
 
   const text = await response.text();
 
-  return new NextResponse(text, {
+  return {
     status: response.status,
-    headers: {
-      "Content-Type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
-    },
-  });
+    text,
+    contentType: response.headers.get("content-type") ?? "application/json; charset=utf-8",
+  };
 }
 
 export async function POST(request: NextRequest) {
@@ -201,8 +212,33 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = (await request.json()) as StartBody;
-    if (EXTERNAL_JAVA_RUNNER_URL) {
-      return await proxyToExternalRunner(body);
+    const runnerCandidates = [
+      { url: EXTERNAL_JAVA_RUNNER_URL, token: EXTERNAL_JAVA_RUNNER_TOKEN },
+      { url: LOCALHOST_JAVA_RUNNER_URL, token: LOCALHOST_JAVA_RUNNER_TOKEN || EXTERNAL_JAVA_RUNNER_TOKEN },
+    ].filter((runner) => Boolean(runner.url));
+
+    if (runnerCandidates.length > 0) {
+      let lastRunnerResponse: { status: number; text: string; contentType: string } | null = null;
+      for (const runner of runnerCandidates) {
+        try {
+          const result = await proxyToRunner(runner.url, runner.token, body);
+          lastRunnerResponse = result;
+          if (!shouldFallbackToNextRunner(result.status, result.text)) {
+            return new NextResponse(result.text, {
+              status: result.status,
+              headers: { "Content-Type": result.contentType },
+            });
+          }
+        } catch {
+          // Try next runner candidate.
+        }
+      }
+      if (lastRunnerResponse && !shouldFallbackToNextRunner(lastRunnerResponse.status, lastRunnerResponse.text)) {
+        return new NextResponse(lastRunnerResponse.text, {
+          status: lastRunnerResponse.status,
+          headers: { "Content-Type": lastRunnerResponse.contentType },
+        });
+      }
     }
     const action = body.action ?? "start";
 

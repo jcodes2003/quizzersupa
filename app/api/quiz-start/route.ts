@@ -279,13 +279,13 @@ export async function POST(request: NextRequest) {
 	      attemptId: existingOpen.id,
 	      attemptNumber: attemptNumberOut,
 	      expiresAt,
-      maxAttempts,
-      allowRetake,
-      attemptsUsed,
-      attemptsRemaining: hasManualSubmit || noAttemptsLeft ? 0 : attemptsRemaining,
-      restoredAnswers: existingOpen.answers ?? null,
-    });
-  }
+	      maxAttempts,
+	      allowRetake,
+	      attemptsUsed,
+	      attemptsRemaining: hasApprovedRecoveredAttempt ? null : hasManualSubmit || noAttemptsLeft ? 0 : attemptsRemaining,
+	      restoredAnswers: existingOpen.answers ?? null,
+	    });
+	  }
 
   let count: number | null = null;
   const countResult = await supabase
