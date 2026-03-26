@@ -181,6 +181,8 @@ type ConsolidatedRow = {
   >;
 };
 
+const TEACHER_SEEN_RECOVERY_REQUEST_IDS_KEY = "teacher_seen_recovery_request_ids_v1";
+
 type NameImportEntry = {
   raw: string;
   studentId?: string;
@@ -1631,6 +1633,8 @@ export default function TeacherPage() {
   const [scoresLoading, setScoresLoading] = useState(false);
   const [recoveryRequests, setRecoveryRequests] = useState<RecoveryRequestRow[]>([]);
   const [recoveryRequestsLoading, setRecoveryRequestsLoading] = useState(false);
+  const [newRecoveryRequestsNotice, setNewRecoveryRequestsNotice] = useState<string | null>(null);
+  const [cronFailureNotice, setCronFailureNotice] = useState<string | null>(null);
   const [autoApproveRecoveryRequests, setAutoApproveRecoveryRequests] = useState(false);
   const [autoApproveRecoveryBusy, setAutoApproveRecoveryBusy] = useState(false);
   const autoApproveRecoveryInFlightRef = useRef(false);
@@ -2378,7 +2382,45 @@ export default function TeacherPage() {
         return false;
       }
       const data = await res.json();
-      setRecoveryRequests(Array.isArray(data.rows) ? data.rows : []);
+      const nextRows = Array.isArray(data.rows) ? (data.rows as RecoveryRequestRow[]) : [];
+      setRecoveryRequests(nextRows);
+
+      const pendingRows = nextRows.filter((row) => String(row.status ?? "").trim().toLowerCase() === "pending");
+      const pendingIds = pendingRows.map((row) => String(row.id ?? "").trim()).filter(Boolean);
+
+      try {
+        const rawSeen = localStorage.getItem(TEACHER_SEEN_RECOVERY_REQUEST_IDS_KEY);
+        const parsedSeen = rawSeen ? JSON.parse(rawSeen) : [];
+        const seenSet = new Set<string>(Array.isArray(parsedSeen) ? (parsedSeen as string[]) : []);
+        const newPendingCount = pendingIds.filter((id) => !seenSet.has(id)).length;
+        if (newPendingCount > 0) {
+          setNewRecoveryRequestsNotice(
+            `${newPendingCount} new recovery request${newPendingCount > 1 ? "s" : ""} arrived.`
+          );
+        }
+        const nextSeen = Array.from(new Set([...seenSet, ...pendingIds])).slice(-500);
+        localStorage.setItem(TEACHER_SEEN_RECOVERY_REQUEST_IDS_KEY, JSON.stringify(nextSeen));
+      } catch {
+        // ignore localStorage errors
+      }
+
+      const oldestPendingMs = pendingRows.reduce((min, row) => {
+        const t = row.created_at ? new Date(row.created_at).getTime() : Number.NaN;
+        if (!Number.isFinite(t)) return min;
+        return Math.min(min, t);
+      }, Number.POSITIVE_INFINITY);
+      if (Number.isFinite(oldestPendingMs)) {
+        const ageMs = Date.now() - oldestPendingMs;
+        if (ageMs > 3 * 60 * 1000) {
+          setCronFailureNotice(
+            "Auto-approve may be failing: some recovery requests have been pending for over 3 minutes."
+          );
+        } else {
+          setCronFailureNotice(null);
+        }
+      } else {
+        setCronFailureNotice(null);
+      }
       return true;
     } catch {
       return false;
@@ -2493,6 +2535,19 @@ export default function TeacherPage() {
       autoApproveRecoveryInFlightRef.current = false;
     };
   }, [autoApproveRecoveryRequests, fetchRecoveryRequests, fetchScores]);
+
+  useEffect(() => {
+    if (!authenticated) return;
+    const timer = window.setInterval(() => {
+      void fetchRecoveryRequests();
+      if (tab === "responses") {
+        void fetchScores();
+      }
+    }, 60000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [authenticated, tab, fetchRecoveryRequests, fetchScores]);
 
   const handleRecheckSubject = useCallback(async () => {
     if (!recheckSubject || !recheckSection) {
@@ -3027,6 +3082,61 @@ export default function TeacherPage() {
       }
     },
     [fetchScores, sections]
+  );
+
+  const handleMoveAttemptByQuizCode = useCallback(
+    async (row: Pick<QuizResponseRow, "id" | "quizcode" | "quizname" | "studentname">) => {
+      const studentLabel = formatNameLastFirst(row.studentname) || row.studentname || "this student";
+      const currentQuizCode = String(row.quizcode ?? "").trim().toUpperCase();
+      const entered = window.prompt(
+        `Enter the correct quiz code for ${studentLabel}.\nCurrent quiz code: ${currentQuizCode || "N/A"}`,
+        currentQuizCode
+      );
+      if (entered === null) return;
+      const nextCode = String(entered ?? "").trim().toUpperCase();
+      if (!nextCode) {
+        setError("Please enter a quiz code.");
+        return;
+      }
+
+      const targetQuiz = quizzes.find((q) => String(q.quizcode ?? "").trim().toUpperCase() === nextCode);
+      if (!targetQuiz) {
+        setError(`Quiz code "${nextCode}" was not found in your quiz list.`);
+        return;
+      }
+
+      const confirmMove = window.confirm(
+        `Move attempt of ${studentLabel} from ${currentQuizCode || "N/A"} to ${nextCode}?`
+      );
+      if (!confirmMove) return;
+
+      setSavingAttemptId(row.id);
+      setError("");
+      try {
+        const res = await fetch(`/api/teacher-attempts/${encodeURIComponent(row.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({ quizId: targetQuiz.id }),
+        });
+        if (res.status === 401) {
+          setAuthenticated(false);
+          setError("Session expired. Please log in again.");
+          return;
+        }
+        const data = await readJsonSafe(res);
+        if (!res.ok) {
+          setError(readStringField(data, "error") ?? "Failed to move attempt to the target quiz.");
+          return;
+        }
+        await fetchScores();
+      } catch {
+        setError("Failed to move attempt to the target quiz.");
+      } finally {
+        setSavingAttemptId(null);
+      }
+    },
+    [fetchScores, quizzes]
   );
 
   const handleForceReopenAttempt = useCallback(
@@ -5581,6 +5691,16 @@ export default function TeacherPage() {
 		                  </button>
                     </div>
 		              </div>
+                  {newRecoveryRequestsNotice ? (
+                    <div className="mb-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs text-cyan-200">
+                      {newRecoveryRequestsNotice}
+                    </div>
+                  ) : null}
+                  {cronFailureNotice ? (
+                    <div className="mb-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      {cronFailureNotice}
+                    </div>
+                  ) : null}
                   {autoApproveRecoveryRequests ? (
                     <p className="mb-2 text-[11px] text-emerald-200">
                       Auto-approve is active {autoApproveRecoveryBusy ? "(checking now...)" : "(waiting for next 10-second check)"}.
@@ -5682,19 +5802,29 @@ export default function TeacherPage() {
                           <td className="px-4 py-3 text-emerald-400 font-medium">{r.score ?? "—"}</td>
                           <td className="hidden px-4 py-4 text-slate-300 lg:table-cell">{r.attempt_number ?? "-"}</td>
                           <td className="hidden px-4 py-4 text-slate-300 xl:table-cell">{formatSubmissionSource(r.submission_source)}</td>
-	                          <td className="px-4 py-4 text-slate-300">
-	                            <div className="flex flex-col items-start gap-2">
-	                              <span>{r.sectionname || r.section || getSectionName(r.sectionid)}</span>
-	                              <button
-	                                type="button"
-	                                onClick={() => handleEditResponseSection(r)}
-	                                disabled={savingAttemptId === r.id}
-	                                className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-600 disabled:opacity-50"
-	                              >
-	                                {savingAttemptId === r.id ? "Saving..." : "Edit Section"}
-	                              </button>
-	                            </div>
-	                          </td>
+		                          <td className="px-4 py-4 text-slate-300">
+		                            <div className="flex flex-col items-start gap-2">
+		                              <span>{r.sectionname || r.section || getSectionName(r.sectionid)}</span>
+                                  <div className="flex flex-wrap gap-2">
+		                                <button
+		                                  type="button"
+		                                  onClick={() => handleEditResponseSection(r)}
+		                                  disabled={savingAttemptId === r.id}
+		                                  className="rounded-lg bg-slate-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-600 disabled:opacity-50"
+		                                >
+		                                  {savingAttemptId === r.id ? "Saving..." : "Edit Section"}
+		                                </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleMoveAttemptByQuizCode(r)}
+                                      disabled={savingAttemptId === r.id}
+                                      className="rounded-lg bg-cyan-700 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-cyan-600 disabled:opacity-50"
+                                    >
+                                      {savingAttemptId === r.id ? "Saving..." : "Move Quiz ID"}
+                                    </button>
+                                  </div>
+		                            </div>
+		                          </td>
                           <td className="hidden px-4 py-4 text-slate-300 lg:table-cell">
                             {r.subjectname || r.subject || getSubjectName(r.subjectid)}
                           </td>
@@ -6144,24 +6274,39 @@ export default function TeacherPage() {
 		                                          </button>
 		                                        </>
 				                                      ) : (
-				                                        <>
-				                                          <button
-				                                            type="button"
-				                                            onClick={() =>
-				                                              handleEditReportScore(
-				                                                { studentname: r.studentname, student_id: r.student_id },
-				                                                { quizname: q.quizname, quizcode: q.quizcode },
-				                                                { attemptId: qq.attemptId ?? "", score: qq.score, max_score: qq.max_score }
-				                                              )
-				                                            }
-				                                            disabled={savingAttemptId === qq.attemptId}
-				                                            className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
-				                                          >
-				                                            {savingAttemptId === qq.attemptId ? "Saving..." : "Edit"}
-				                                          </button>
-				                                        </>
-				                                      )}
-				                                    </div>
+					                                        <>
+					                                          <button
+					                                            type="button"
+					                                            onClick={() =>
+					                                              handleEditReportScore(
+					                                                { studentname: r.studentname, student_id: r.student_id },
+					                                                { quizname: q.quizname, quizcode: q.quizcode },
+					                                                { attemptId: qq.attemptId ?? "", score: qq.score, max_score: qq.max_score }
+					                                              )
+					                                            }
+					                                            disabled={savingAttemptId === qq.attemptId}
+					                                            className="px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 disabled:opacity-50 text-[11px] text-white"
+					                                          >
+					                                            {savingAttemptId === qq.attemptId ? "Saving..." : "Edit"}
+					                                          </button>
+                                              <button
+                                                type="button"
+                                                onClick={() =>
+                                                  handleMoveAttemptByQuizCode({
+                                                    id: qq.attemptId ?? "",
+                                                    quizcode: q.quizcode,
+                                                    quizname: q.quizname,
+                                                    studentname: r.studentname,
+                                                  })
+                                                }
+                                                disabled={!qq.attemptId || savingAttemptId === qq.attemptId}
+                                                className="px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 disabled:opacity-50 text-[11px] text-white"
+                                              >
+                                                {savingAttemptId === qq.attemptId ? "Saving..." : "Move Quiz ID"}
+                                              </button>
+					                                        </>
+					                                      )}
+					                                    </div>
 			                                  </div>
 		                                ) : (
 			                                  <div className="flex flex-col items-start gap-2">

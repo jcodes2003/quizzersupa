@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 export default function StudentRegisterPage() {
-  const [fullName, setFullName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [middleInitial, setMiddleInitial] = useState("");
   const [email, setEmail] = useState("");
   const [studentId, setStudentId] = useState("");
   const [password, setPassword] = useState("");
@@ -22,10 +24,17 @@ export default function StudentRegisterPage() {
     setError("");
     setSuccess("");
 
-    const name = fullName.trim();
+    const first = firstName.trim();
+    const last = lastName.trim();
+    const middle = middleInitial.trim().toUpperCase();
     const mail = email.trim().toLowerCase();
-    if (!name || !mail || !password) {
+    const id = studentId.trim();
+    if (!first || !last || !mail || !id || !password) {
       setError("Please complete all required fields.");
+      return;
+    }
+    if (middle && !/^[A-Z]$/.test(middle)) {
+      setError("Middle initial must be one letter only.");
       return;
     }
     if (!/^[a-z0-9._%+-]+@phinmaed\.com$/.test(mail)) {
@@ -46,12 +55,14 @@ export default function StudentRegisterPage() {
       const res = await fetch("/api/student-register", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fullName: name,
-          email: mail,
-          studentId: studentId.trim() || undefined,
-          password,
-        }),
+          body: JSON.stringify({
+            firstName: first,
+            lastName: last,
+            middleInitial: middle || undefined,
+            email: mail,
+            studentId: id,
+            password,
+          }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -59,7 +70,9 @@ export default function StudentRegisterPage() {
         return;
       }
       setSuccess("Account created. You can now log in.");
-      setFullName("");
+      setFirstName("");
+      setLastName("");
+      setMiddleInitial("");
       setEmail("");
       setStudentId("");
       setPassword("");
@@ -81,10 +94,24 @@ export default function StudentRegisterPage() {
         </p>
 
         <form onSubmit={handleRegister} className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <input
+              value={firstName}
+              onChange={(e) => setFirstName(e.target.value)}
+              placeholder="First name"
+              className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+            <input
+              value={lastName}
+              onChange={(e) => setLastName(e.target.value)}
+              placeholder="Last name"
+              className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            />
+          </div>
           <input
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            placeholder="Full name"
+            value={middleInitial}
+            onChange={(e) => setMiddleInitial(e.target.value.replace(/[^a-zA-Z]/g, "").slice(0, 1).toUpperCase())}
+            placeholder="Middle initial (optional)"
             className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
           <input
@@ -96,7 +123,8 @@ export default function StudentRegisterPage() {
           <input
             value={studentId}
             onChange={(e) => setStudentId(e.target.value)}
-            placeholder="Student ID (optional)"
+            placeholder="Student ID number"
+            required
             className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
           />
           <div className="relative">

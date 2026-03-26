@@ -366,6 +366,35 @@ export default function StudentDashboardPage() {
       });
   }, [quizzes]);
 
+  const studentNotifications = useMemo(() => {
+    const items: Array<{ id: string; kind: "success" | "warning"; message: string }> = [];
+    for (const q of quizzes) {
+      const status = String(q.recoveryRequestStatus ?? "").trim().toLowerCase();
+      if (!status) continue;
+      const label = q.quizname || `Quiz ${q.quizcode}`;
+      if (status === "approved" && q.status === "open") {
+        items.push({
+          id: `${q.id}-approved-open`,
+          kind: "success",
+          message: `Recovery approved: ${label} has been reopened. You can continue your saved answers.`,
+        });
+      } else if (status === "approved") {
+        items.push({
+          id: `${q.id}-approved`,
+          kind: "success",
+          message: `Recovery approved for ${label}. Reopen the quiz to continue your saved answers.`,
+        });
+      } else if (status === "rejected") {
+        items.push({
+          id: `${q.id}-rejected`,
+          kind: "warning",
+          message: `Recovery request rejected for ${label}. Ask your teacher if you need another reopen.`,
+        });
+      }
+    }
+    return items;
+  }, [quizzes]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 flex items-center justify-center">
@@ -411,6 +440,23 @@ export default function StudentDashboardPage() {
         {notice && (
           <div className="rounded-xl bg-emerald-900/20 border border-emerald-700/30 p-4 text-emerald-200">
             {notice}
+          </div>
+        )}
+        {studentNotifications.length > 0 && (
+          <div className="rounded-2xl bg-slate-800/60 border border-slate-600/50 p-4 space-y-2">
+            <h2 className="text-sm font-semibold text-slate-200">Notifications</h2>
+            {studentNotifications.map((n) => (
+              <div
+                key={n.id}
+                className={`rounded-xl border px-3 py-2 text-sm ${
+                  n.kind === "success"
+                    ? "bg-emerald-900/20 border-emerald-700/30 text-emerald-200"
+                    : "bg-amber-900/20 border-amber-700/30 text-amber-200"
+                }`}
+              >
+                {n.message}
+              </div>
+            ))}
           </div>
         )}
 
