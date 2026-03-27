@@ -14,6 +14,7 @@ type QuestionRow = {
 
 type AnswerItem = { questionId?: string; answer?: string };
 type HandsOnAnswerItem = { questionId?: string; answer?: string };
+type NormalizedAnswerItem = { questionId: string; answer: string };
 
 function normalizeAnswer(s: string): string {
   return s
@@ -64,8 +65,9 @@ function normalizeForEnum(s: string): string {
     .trim()
     .replace(/[._<>()[\]{}:,;\\]+/g, " ")
     .replace(/[^\w\s/+*-]/g, "")
+    .replace(/\band\b/gi, " ")
     .replace(/\s+/g, " ")
-    .replace(/\band\b/gi, " ");
+    .trim();
 }
 
 function parseEnumerationInput(input: string): string[] {
@@ -178,9 +180,31 @@ function buildAnswerMap(items: AnswerItem[]): Map<string, string> {
   return map;
 }
 
-function getAnswerItems(raw: Record<string, unknown>, key: string): AnswerItem[] {
+function getAnswerItems(raw: Record<string, unknown>, key: string): NormalizedAnswerItem[] {
   const value = raw[key];
-  return Array.isArray(value) ? (value as AnswerItem[]) : [];
+  if (Array.isArray(value)) {
+    const rows: NormalizedAnswerItem[] = [];
+    for (const item of value) {
+      const row = (item ?? {}) as Record<string, unknown>;
+      const questionId = String(row.questionId ?? row.question_id ?? row.id ?? "").trim();
+      if (!questionId) continue;
+      const answerValue = row.answer ?? row.value ?? "";
+      rows.push({
+        questionId,
+        answer: typeof answerValue === "string" ? answerValue : String(answerValue ?? ""),
+      });
+    }
+    return rows;
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([questionId, answer]) => ({
+        questionId: String(questionId).trim(),
+        answer: typeof answer === "string" ? answer : String(answer ?? ""),
+      }))
+      .filter((item) => item.questionId.length > 0);
+  }
+  return [];
 }
 
 function getHandsOnAnswerItems(raw: Record<string, unknown>): HandsOnAnswerItem[] {

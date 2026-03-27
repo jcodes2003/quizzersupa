@@ -32,6 +32,9 @@ type QuizInfo = {
   source_quiz_id?: string | null;
 };
 
+type NormalizedAnswerItem = { questionId: string; answer: string };
+type NormalizedHandsOnScoreItem = { questionId: string; score: number };
+
 function normalizeAnswer(s: string): string {
   return s
     .toLowerCase()
@@ -82,20 +85,21 @@ function normalizeForEnum(s: string): string {
     .trim()
     .replace(/[._<>()[\]{}:,;\\]+/g, " ")
     .replace(/[^\w\s/+*-]/g, "")
+    .replace(/\band\b/gi, " ")
     .replace(/\s+/g, " ")
-    .replace(/\band\b/gi, " ");
+    .trim();
 }
 
 function parseEnumerationInput(input: string): string[] {
   return input
-    .split(/[,;\n]|\d+\.\s*|-\s*/)
+    .split(/[|,;\n]|\d+\.\s*|-\s*/)
     .map((s) => normalizeForEnum(s))
     .filter((s) => s.length > 0);
 }
 
 function parseEnumerationAnswerKey(input: string): string[] {
   return input
-    .split(/[,;\n]/)
+    .split(/[|,;\n]/)
     .map((s) => normalizeForEnum(s))
     .filter((s) => s.length > 0);
 }
@@ -174,6 +178,13 @@ function getQuestionScore(score?: number | null, fallback = 1): number {
   return Number.isFinite(score) && (score ?? 0) > 0 ? (score as number) : fallback;
 }
 
+function isEnumerationPerItemMode(questionScore: number, expected: number): boolean {
+  if (expected <= 0) return false;
+  // Legacy compatibility: many older enumeration items were saved with score=1
+  // while the intended scoring was 1 point per correct item.
+  return questionScore === expected || (questionScore === 1 && expected > 1);
+}
+
 function parseOptions(options: string | null | undefined): string[] {
   if (!options) return [];
   try {
@@ -190,6 +201,7 @@ function normalizeQuizType(value: string): string {
   if (t === "true_false" || t === "truefalse" || t === "tf") return "multiple_choice";
   if (t === "identification" || t === "id") return "identification";
   if (t === "enumeration" || t === "enum") return "enumeration";
+  if (t === "hands_on" || t === "handson" || t === "hands-on" || t === "coding") return "hands_on";
   if (t === "long_answer" || t === "longanswer" || t === "essay") return "long_answer";
   return t;
 }
@@ -198,6 +210,7 @@ type QuizGradeData = {
   mc: QuestionRow[];
   id: QuestionRow[];
   enum: QuestionRow[];
+  handsOn: QuestionRow[];
   maxScore: number;
 };
 
@@ -205,11 +218,16 @@ function buildQuizGradeData(questions: QuestionRow[]): QuizGradeData {
   const mc: QuestionRow[] = [];
   const id: QuestionRow[] = [];
   const en: QuestionRow[] = [];
+  const handsOn: QuestionRow[] = [];
 
   for (const q of questions) {
     const type = normalizeQuizType(String(q.quiztype ?? ""));
     if (type === "enumeration") {
       en.push(q);
+      continue;
+    }
+    if (type === "hands_on") {
+      handsOn.push(q);
       continue;
     }
     if (type === "long_answer" || type === "identification") {
@@ -229,11 +247,12 @@ function buildQuizGradeData(questions: QuestionRow[]): QuizGradeData {
   const enumMax = en.reduce((sum, q) => {
     const expected = parseEnumerationAnswerKey(String(q.answerkey ?? "")).length;
     const questionScore = getQuestionScore(q.score, 1);
-    if (questionScore === expected && expected > 0) return sum + expected;
+    if (isEnumerationPerItemMode(questionScore, expected)) return sum + expected;
     return sum + questionScore;
   }, 0);
+  const handsOnMax = handsOn.reduce((sum, q) => sum + getQuestionScore(q.score, 1), 0);
 
-  return { mc, id, enum: en, maxScore: mcMax + idMax + enumMax };
+  return { mc, id, enum: en, handsOn, maxScore: mcMax + idMax + enumMax + handsOnMax };
 }
 
 function buildAnswerMap(items: AnswerItem[]): Map<string, string> {
@@ -246,15 +265,63 @@ function buildAnswerMap(items: AnswerItem[]): Map<string, string> {
   return map;
 }
 
-function getAnswerItems(raw: Record<string, unknown>, key: string): AnswerItem[] {
+function getAnswerItems(raw: Record<string, unknown>, key: string): NormalizedAnswerItem[] {
   const value = raw[key];
-  return Array.isArray(value) ? (value as AnswerItem[]) : [];
+  if (Array.isArray(value)) {
+    const rows: NormalizedAnswerItem[] = [];
+    for (const item of value) {
+      const row = (item ?? {}) as Record<string, unknown>;
+      const questionId = String(row.questionId ?? row.question_id ?? row.id ?? "").trim();
+      if (!questionId) continue;
+      const answerValue = row.answer ?? row.value ?? "";
+      rows.push({
+        questionId,
+        answer: typeof answerValue === "string" ? answerValue : String(answerValue ?? ""),
+      });
+    }
+    return rows;
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([questionId, answer]) => ({
+        questionId: String(questionId).trim(),
+        answer: typeof answer === "string" ? answer : String(answer ?? ""),
+      }))
+      .filter((item) => item.questionId.length > 0);
+  }
+  return [];
+}
+
+function getHandsOnScoreItems(raw: Record<string, unknown>): NormalizedHandsOnScoreItem[] {
+  const value = raw.hands_on;
+  if (!Array.isArray(value)) return [];
+  const rows: NormalizedHandsOnScoreItem[] = [];
+  for (const item of value) {
+    const row = (item ?? {}) as Record<string, unknown>;
+    const questionId = String(row.questionId ?? row.question_id ?? row.id ?? "").trim();
+    if (!questionId) continue;
+    const score = Number(row.score ?? 0);
+    if (!Number.isFinite(score) || score < 0) continue;
+    rows.push({ questionId, score });
+  }
+  return rows;
+}
+
+function buildHandsOnScoreMap(items: NormalizedHandsOnScoreItem[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    const key = String(item.questionId ?? "").trim();
+    if (!key) continue;
+    map.set(key, item.score);
+  }
+  return map;
 }
 
 function gradeAttempt(quizData: QuizGradeData, answers: Record<string, unknown>) {
   const mcMap = buildAnswerMap(getAnswerItems(answers, "multiple_choice"));
   const idMap = buildAnswerMap(getAnswerItems(answers, "identification"));
   const enMap = buildAnswerMap(getAnswerItems(answers, "enumeration"));
+  const handsOnScoreMap = buildHandsOnScoreMap(getHandsOnScoreItems(answers));
 
   let mcScore = 0;
   for (const q of quizData.mc) {
@@ -288,11 +355,23 @@ function gradeAttempt(quizData: QuizGradeData, answers: Record<string, unknown>)
     const expected = correctItems.length;
     const questionScore = getQuestionScore(q.score, 1);
     if (expected > 0) {
-      enumScore += questionScore === expected ? matched : matched / expected >= 0.8 ? questionScore : 0;
+      enumScore += isEnumerationPerItemMode(questionScore, expected)
+        ? matched
+        : matched / expected >= 0.8
+          ? questionScore
+          : 0;
     }
   }
 
-  const totalScore = mcScore + idScore + enumScore;
+  let handsOnScore = 0;
+  for (const q of quizData.handsOn) {
+    const questionMax = getQuestionScore(q.score, 1);
+    const raw = Number(handsOnScoreMap.get(String(q.id)) ?? 0);
+    if (!Number.isFinite(raw) || raw <= 0) continue;
+    handsOnScore += Math.min(questionMax, raw);
+  }
+
+  const totalScore = mcScore + idScore + enumScore + handsOnScore;
   return { totalScore, maxScore: quizData.maxScore };
 }
 
@@ -303,18 +382,19 @@ export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => ({}));
   const subjectId = String(body.subjectId ?? "").trim();
   const sectionId = String(body.sectionId ?? "").trim();
+  const quizId = String(body.quizId ?? "").trim();
   if (!subjectId || !sectionId) {
     return NextResponse.json({ error: "subjectId and sectionId required" }, { status: 400 });
   }
 
   const supabase = getSupabase();
 
-	  const quizQuery = supabase
-	    .from("quiztbl")
-	    .select("id, save_best_only, source_quiz_id")
-	    .eq("teacherid", teacherId)
-	    .eq("subjectid", subjectId)
-	    .eq("sectionid", sectionId);
+  const quizQuery = supabase
+    .from("quiztbl")
+    .select("id, save_best_only, source_quiz_id")
+    .eq("teacherid", teacherId)
+    .eq("subjectid", subjectId)
+    .eq("sectionid", sectionId);
 
   const quizResult = await quizQuery;
 
@@ -322,10 +402,32 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: quizResult.error.message }, { status: 500 });
   }
 
-  const quizzes = (quizResult.data ?? []) as QuizInfo[];
-  if (quizzes.length === 0) {
+  const allQuizzes = (quizResult.data ?? []) as QuizInfo[];
+  if (allQuizzes.length === 0) {
     return NextResponse.json({ ok: true, totalAttempts: 0, updatedAttempts: 0 });
   }
+
+  const groupedQuizzes = quizId
+    ? (() => {
+        const target = allQuizzes.find((q) => String(q.id ?? "").trim() === quizId);
+        if (!target) return null;
+        const targetId = String(target.id ?? "").trim();
+        const targetSourceId = String(target.source_quiz_id ?? "").trim();
+        return allQuizzes.filter((q) => {
+          const qid = String(q.id ?? "").trim();
+          const qsource = String(q.source_quiz_id ?? "").trim();
+          if (!qid) return false;
+          if (qid === targetId || qsource === targetId) return true;
+          if (targetSourceId && (qid === targetSourceId || qsource === targetSourceId)) return true;
+          return false;
+        });
+      })()
+    : allQuizzes;
+
+  if (quizId && !groupedQuizzes) {
+    return NextResponse.json({ error: "Selected quiz not found for this subject and section." }, { status: 404 });
+  }
+  const quizzes = groupedQuizzes ?? [];
 
   const quizIds = quizzes.map((q) => String(q.id));
   const sourceQuizIds = Array.from(

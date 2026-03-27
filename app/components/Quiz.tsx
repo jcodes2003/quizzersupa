@@ -60,7 +60,9 @@ function normalizeForEnum(s: string): string {
     .trim()
     .replace(/[._<>()[\]{}:,;\\]+/g, " ")
     .replace(/[^\w\s/+*-]/g, "")
-    .replace(/\band\b/gi, " ");
+    .replace(/\band\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function parseEnumerationInput(input: string): string[] {

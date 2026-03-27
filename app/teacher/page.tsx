@@ -1249,8 +1249,9 @@ function normalizeForEnum(s: string): string {
     .trim()
     .replace(/[._<>()[\]{}:,;\\]+/g, " ")
     .replace(/[^\w\s/+*-]/g, "")
+    .replace(/\band\b/gi, " ")
     .replace(/\s+/g, " ")
-    .replace(/\band\b/gi, " ");
+    .trim();
 }
 
 function parseEnumerationInput(input: string): string[] {
@@ -1644,6 +1645,7 @@ export default function TeacherPage() {
   const [recheckError, setRecheckError] = useState<string | null>(null);
   const [recheckSubject, setRecheckSubject] = useState<string>("");
   const [recheckSection, setRecheckSection] = useState<string>("");
+  const [recheckQuiz, setRecheckQuiz] = useState<string>("");
   const [filterSubject, setFilterSubject] = useState<string>("");
   const [filterSection, setFilterSection] = useState<string>("");
   const [filterQuizName, setFilterQuizName] = useState<string>("");
@@ -2525,9 +2527,9 @@ export default function TeacherPage() {
     };
 
     void runAutoApprove();
-    const timer = window.setInterval(() => {
-      void runAutoApprove();
-    }, 10000);
+	    const timer = window.setInterval(() => {
+	      void runAutoApprove();
+	    }, 120000);
 
     return () => {
       cancelled = true;
@@ -2557,8 +2559,15 @@ export default function TeacherPage() {
     }
     const subjectLabel = subjects.find((s) => s.id === recheckSubject)?.name || "this subject";
     const sectionLabel = sections.find((s) => s.id === recheckSection)?.name || "this section";
+    const quizLabel = recheckQuiz
+      ? ((quizzes.find((q) => q.id === recheckQuiz && q.subjectid === recheckSubject && q.sectionid === recheckSection)?.quizname
+          || quizzes.find((q) => q.id === recheckQuiz && q.subjectid === recheckSubject && q.sectionid === recheckSection)?.quizcode
+          || "selected quiz"))
+      : "all quizzes";
     const ok = confirm(
-      `Recheck all attempts for ${subjectLabel} (${sectionLabel})? This will update scores based on current answer keys.`
+      recheckQuiz
+        ? `Recheck attempts for ${subjectLabel} (${sectionLabel}) - ${quizLabel}? This will update scores based on current answer keys.`
+        : `Recheck all attempts for ${subjectLabel} (${sectionLabel}) across ${quizLabel}? This will update scores based on current answer keys.`
     );
     if (!ok) return;
     setRecheckLoading(true);
@@ -2569,7 +2578,11 @@ export default function TeacherPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ subjectId: recheckSubject, sectionId: recheckSection }),
+        body: JSON.stringify({
+          subjectId: recheckSubject,
+          sectionId: recheckSection,
+          quizId: recheckQuiz || undefined,
+        }),
       });
       if (res.status === 401) {
         setAuthenticated(false);
@@ -2590,7 +2603,7 @@ export default function TeacherPage() {
     } finally {
       setRecheckLoading(false);
     }
-  }, [recheckSubject, recheckSection, fetchScores, subjects, sections]);
+  }, [recheckSubject, recheckSection, recheckQuiz, fetchScores, subjects, sections, quizzes]);
 
   const handleEditReportScore = useCallback(
     async (
@@ -3367,7 +3380,7 @@ export default function TeacherPage() {
   }, [teacherCreatedQuizzes, genQuizSubjectFilter, genQuizPeriodFilter, normalizePeriodValue]);
 
   useEffect(() => {
-    if (tab !== "generator") return;
+    if (tab !== "generator" && tab !== "recheck") return;
     if (subjects.length === 0) fetchSubjects();
     if (sections.length === 0) fetchSections();
     if (quizzes.length === 0) fetchQuizzes();
@@ -3561,13 +3574,18 @@ export default function TeacherPage() {
   useEffect(() => {
     setRecheckMessage(null);
     setRecheckError(null);
-  }, [recheckSubject, recheckSection]);
+  }, [recheckSubject, recheckSection, recheckQuiz]);
 
   useEffect(() => {
     if (!recheckSubject) {
       setRecheckSection("");
     }
+    setRecheckQuiz("");
   }, [recheckSubject]);
+
+  useEffect(() => {
+    setRecheckQuiz("");
+  }, [recheckSection]);
 
   useEffect(() => {
     setReportsPage(1);
@@ -4841,6 +4859,50 @@ export default function TeacherPage() {
       )
     : [];
 
+  const recheckQuizzesForSelection = recheckSubject && recheckSection
+    ? (() => {
+        const optionMap = new Map<string, { id: string; name: string }>();
+        for (const q of quizzes) {
+          if (String(q.subjectid ?? "").trim() !== recheckSubject || String(q.sectionid ?? "").trim() !== recheckSection) continue;
+          const id = String(q.id ?? "").trim();
+          if (!id) continue;
+          const base = (q.quizname || q.quizcode || "").trim() || q.quizcode || id;
+          const kind = String(q.assessment_type ?? "").trim().toLowerCase() === "exam" ? "Exam" : "Quiz";
+          const name = `${base} (${kind})`;
+          optionMap.set(id, { id, name });
+        }
+        for (const r of rows) {
+          if (String(r.subjectid ?? "").trim() !== recheckSubject || String(r.sectionid ?? "").trim() !== recheckSection) continue;
+          const id = String(r.quizid ?? "").trim();
+          if (!id || optionMap.has(id)) continue;
+          const base = (r.quizname || r.quizcode || "").trim() || r.quizcode || id;
+          const kind = String(r.assessment_type ?? "").trim().toLowerCase() === "exam" ? "Exam" : "Quiz";
+          const name = `${base} (${kind})`;
+          optionMap.set(id, { id, name });
+        }
+        return Array.from(optionMap.values()).sort((a, b) =>
+          a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
+        );
+      })()
+    : [];
+
+  const recheckSelectedQuizGroupKeys = useMemo(() => {
+    if (!recheckQuiz) return new Set<string>();
+    const keys = new Set<string>();
+    const targetId = String(recheckQuiz).trim();
+    if (!targetId) return keys;
+    keys.add(`quiz:${targetId}`);
+    // Include clones/assigned copies where source_quiz_id points to the selected quiz.
+    keys.add(`source:${targetId}`);
+    const selectedQuiz = quizzes.find((q) => String(q.id ?? "").trim() === targetId);
+    const selectedSourceId = String(selectedQuiz?.source_quiz_id ?? "").trim();
+    if (selectedSourceId) {
+      keys.add(`quiz:${selectedSourceId}`);
+      keys.add(`source:${selectedSourceId}`);
+    }
+    return keys;
+  }, [recheckQuiz, quizzes]);
+
   // Best attempt per (student_id, quizid) for responses view
   const bestByStudentQuiz = new Map<string, QuizResponseRow>();
   for (const r of rows) {
@@ -4908,7 +4970,15 @@ export default function TeacherPage() {
   const pagedResponsesRows = sortedResponsesRows.slice(responsesStartIndex, responsesEndIndex);
 
   const recheckFilteredRows = recheckSubject && recheckSection
-    ? rows.filter((r) => r.subjectid === recheckSubject && r.sectionid === recheckSection)
+    ? rows.filter((r) => {
+        if (r.subjectid !== recheckSubject || r.sectionid !== recheckSection) return false;
+        if (recheckQuiz) {
+          const groupKey = getReportQuizGroupKey(r);
+          const exactId = String(r.quizid ?? "").trim();
+          if (!recheckSelectedQuizGroupKeys.has(groupKey) && exactId !== recheckQuiz) return false;
+        }
+        return true;
+      })
     : [];
 
 	  const selectedSectionStatus = selectedSectionStatusId ? sectionStatusById[selectedSectionStatusId] ?? null : null;
@@ -5665,10 +5735,10 @@ export default function TeacherPage() {
 		                  <p className="text-xs text-slate-400">
 		                    Approve an auto-submitted attempt so the student can reopen it with saved answers restored.
 		                  </p>
-                      <p className="mt-1 text-[11px] text-amber-300/90">
-                        Auto-approve checks every 10 seconds.
-                      </p>
-		                </div>
+	                      <p className="mt-1 text-[11px] text-amber-300/90">
+	                        Auto-approve checks every 2 minutes.
+	                      </p>
+			                </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <button
                         type="button"
@@ -5681,10 +5751,10 @@ export default function TeacherPage() {
                       >
                         {autoApproveRecoveryRequests ? "Auto-Approve: ON" : "Auto-Approve: OFF"}
                       </button>
-		                  <button
-		                    type="button"
-		                    onClick={() => void fetchRecoveryRequests()}
-		                    disabled={recoveryRequestsLoading}
+			                  <button
+			                    type="button"
+			                    onClick={() => void fetchRecoveryRequests()}
+			                    disabled={recoveryRequestsLoading}
 		                    className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-slate-700 disabled:opacity-50"
 		                  >
 		                    {recoveryRequestsLoading ? "Loading..." : "Refresh Requests"}
@@ -5701,11 +5771,11 @@ export default function TeacherPage() {
                       {cronFailureNotice}
                     </div>
                   ) : null}
-                  {autoApproveRecoveryRequests ? (
-                    <p className="mb-2 text-[11px] text-emerald-200">
-                      Auto-approve is active {autoApproveRecoveryBusy ? "(checking now...)" : "(waiting for next 10-second check)"}.
-                    </p>
-                  ) : null}
+	                  {autoApproveRecoveryRequests ? (
+	                    <p className="mb-2 text-[11px] text-emerald-200">
+	                      Auto-approve is active {autoApproveRecoveryBusy ? "(checking now...)" : "(waiting for next 2-minute check)"}.
+	                    </p>
+	                  ) : null}
 		              {recoveryRequests.filter((r) => r.status === "pending").length === 0 ? (
 	                <p className="text-sm text-slate-400">No pending recovery requests.</p>
 	              ) : (
@@ -5923,6 +5993,17 @@ export default function TeacherPage() {
                     <option key={s.id} value={s.id}>{s.name}</option>
                   ))}
                 </select>
+                <select
+                  value={recheckQuiz}
+                  onChange={(e) => setRecheckQuiz(e.target.value)}
+                  disabled={!recheckSubject || !recheckSection}
+                  className="px-3 py-2 rounded-lg bg-slate-700 border border-slate-600 text-slate-200 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="">All quizzes in section...</option>
+                  {recheckQuizzesForSelection.map((q) => (
+                    <option key={q.id} value={q.id}>{q.name}</option>
+                  ))}
+                </select>
                 <button
                   onClick={handleRecheckSubject}
                   disabled={recheckLoading || !recheckSubject || !recheckSection}
@@ -5938,7 +6019,7 @@ export default function TeacherPage() {
                 </div>
               )}
               <p className="mt-3 text-xs text-slate-500">
-                Recheck uses current answer keys and updates stored scores for the selected subject and section.
+                Recheck uses current answer keys and updates stored scores for the selected subject, section, and optional quiz filter.
               </p>
               {subjectOptionsFromRows.length === 0 || sectionOptionsFromRows.length === 0 ? (
                 <p className="mt-2 text-xs text-slate-500">
@@ -5963,7 +6044,7 @@ export default function TeacherPage() {
                         {recheckFilteredRows.length === 0 ? (
                           <tr>
                             <td colSpan={6} className="px-4 py-6 text-slate-500 text-center">
-                              No attempts found for this subject and section.
+                              No attempts found for this selected recheck filter.
                             </td>
                           </tr>
                         ) : (
