@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/internal/auto-approve-recovery",
-      "schedule": "* * * * *"
+      "schedule": "0 0 * * *"
     }
   ]
 }
