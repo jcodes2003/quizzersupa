@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS student_attempts (
   created_at timestamptz DEFAULT now()
 );
 
--- Create indexes for fast lookups
+
 CREATE INDEX IF NOT EXISTS idx_student_attempts_quiz ON student_attempts(quizid);
 CREATE INDEX IF NOT EXISTS idx_student_attempts_student ON student_attempts(quizid, studentname);
 CREATE INDEX IF NOT EXISTS idx_student_attempts_student_id ON student_attempts(quizid, student_id);

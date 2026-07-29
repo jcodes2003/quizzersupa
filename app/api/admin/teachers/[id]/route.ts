@@ -3,6 +3,28 @@ import bcrypt from "bcryptjs";
 import { isAdminAuthenticated } from "../../../../lib/admin-auth";
 import { getSupabase } from "../../../../lib/supabase-server";
 
+function isMissingTableError(message: string): boolean {
+  return /does not exist|relation .* does not exist|undefined table|does not exist in the schema|table .* not found/i.test(message);
+}
+
+async function deleteQuestionsForQuizIds(supabase: ReturnType<typeof getSupabase>, quizIds: string[]) {
+  if (quizIds.length === 0) return;
+
+  const attempts = [
+    { table: "questiontbl", column: "quizid" },
+    { table: "questionstbl", column: "quizid" },
+    { table: "questions", column: "quizid" },
+  ];
+
+  for (const attempt of attempts) {
+    const { error } = await supabase.from(attempt.table).delete().in(attempt.column, quizIds);
+    if (!error) return;
+    if (!isMissingTableError(error.message)) {
+      throw new Error(error.message);
+    }
+  }
+}
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -56,14 +78,61 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const ok = await isAdminAuthenticated();
   if (!ok) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
+  const body = await request.json().catch(() => ({})) as { deleteAll?: boolean };
+  const deleteAll = body.deleteAll === true;
   const supabase = getSupabase();
-  const { error } = await supabase.from("teachertbl").delete().eq("id", id);
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+
+  if (deleteAll) {
+    const { data: quizRows } = await supabase.from("quiztbl").select("id").eq("teacherid", id);
+    const quizIds = Array.isArray(quizRows)
+      ? quizRows.map((row) => String((row as { id?: string }).id)).filter(Boolean)
+      : [];
+
+    if (quizIds.length > 0) {
+      const { error: recoveryErr } = await supabase.from("student_attempt_recovery_requests").delete().in("quizid", quizIds);
+      if (recoveryErr && !isMissingTableError(recoveryErr.message)) {
+        return NextResponse.json({ error: recoveryErr.message }, { status: 500 });
+      }
+
+      const { error: logErr } = await supabase.from("student_attempts_log").delete().in("quizid", quizIds);
+      if (logErr && !isMissingTableError(logErr.message)) {
+        return NextResponse.json({ error: logErr.message }, { status: 500 });
+      }
+
+      const { error: attemptsErr } = await supabase.from("student_attempts").delete().in("quizid", quizIds);
+      if (attemptsErr && !isMissingTableError(attemptsErr.message)) {
+        return NextResponse.json({ error: attemptsErr.message }, { status: 500 });
+      }
+
+      try {
+        await deleteQuestionsForQuizIds(supabase, quizIds);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Failed to delete questions";
+        return NextResponse.json({ error: message }, { status: 500 });
+      }
+    }
+
+    const { error: teacherRecoveryErr } = await supabase.from("student_attempt_recovery_requests").delete().eq("teacherid", id);
+    if (teacherRecoveryErr && !isMissingTableError(teacherRecoveryErr.message)) {
+      return NextResponse.json({ error: teacherRecoveryErr.message }, { status: 500 });
+    }
+
+    const { error: sectionErr } = await supabase.from("sections").delete().eq("teacherid", id);
+    if (sectionErr && !isMissingTableError(sectionErr.message)) {
+      return NextResponse.json({ error: sectionErr.message }, { status: 500 });
+    }
+
+    const { error: quizErr } = await supabase.from("quiztbl").delete().eq("teacherid", id);
+    if (quizErr && !isMissingTableError(quizErr.message)) {
+      return NextResponse.json({ error: quizErr.message }, { status: 500 });
+    }
+  }
+
+  return NextResponse.json({ ok: true, deletedAll: deleteAll });
 }

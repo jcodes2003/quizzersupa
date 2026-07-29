@@ -8,7 +8,6 @@ CREATE TABLE IF NOT EXISTS student_sections (
   created_at timestamptz DEFAULT now()
 );
 
--- Prevent duplicates: one student can join a section only once
 CREATE UNIQUE INDEX IF NOT EXISTS uq_student_sections_student_section
   ON student_sections(student_id, section_id);
 

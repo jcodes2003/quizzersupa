@@ -31,6 +31,7 @@ export default function AdminPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
   const [authenticated, setAuthenticated] = useState<boolean | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -128,6 +129,49 @@ export default function AdminPage() {
       setError("Login failed");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const clearAllPastYearContent = async () => {
+    const ok = confirm(
+      "This will remove sections, subjects, and teachers from the past school year. Student accounts will be kept. Continue?"
+    );
+    if (!ok) return;
+
+    setError("");
+    setClearingAll(true);
+    try {
+      const sectionIds = sections.map((section) => section.id);
+      const subjectIds = subjects.map((subject) => subject.id);
+      const teacherIds = teachers.map((teacher) => teacher.id);
+      const failures: string[] = [];
+
+      for (const id of sectionIds) {
+        const res = await fetch(`/api/admin/sections/${id}`, { method: "DELETE", credentials: "include" });
+        if (!res.ok) failures.push("sections");
+      }
+
+      for (const id of subjectIds) {
+        const res = await fetch(`/api/admin/subjects/${id}`, { method: "DELETE", credentials: "include" });
+        if (!res.ok) failures.push("subjects");
+      }
+
+      for (const id of teacherIds) {
+        const res = await fetch(`/api/admin/teachers/${id}`, { method: "DELETE", credentials: "include" });
+        if (!res.ok) failures.push("teachers");
+      }
+
+      if (failures.length > 0) {
+        const uniqueFailures = Array.from(new Set(failures));
+        setError(`Some items could not be cleared. Please review ${uniqueFailures.join(", ")} and try again.`);
+        return;
+      }
+
+      await fetchData();
+    } catch {
+      setError("Failed to clear past-year content.");
+    } finally {
+      setClearingAll(false);
     }
   };
 
@@ -351,9 +395,25 @@ export default function AdminPage() {
   };
 
   const deleteTeacher = async (id: string) => {
-    if (!confirm("Delete this teacher?")) return;
+    if (!confirm("Delete this teacher account?")) return;
     const res = await fetch(`/api/admin/teachers/${id}`, { method: "DELETE", credentials: "include" });
     if (res.ok) fetchData();
+  };
+
+  const deleteTeacherAllData = async (id: string) => {
+    if (!confirm("Delete this teacher and all related quizzes, questions, sections, and student attempt records? This cannot be undone.")) return;
+    const res = await fetch(`/api/admin/teachers/${id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ deleteAll: true }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      setError(data.error ?? "Failed to delete teacher data");
+      return;
+    }
+    fetchData();
   };
 
   const resetStudentPassword = async (student: Student) => {
@@ -630,6 +690,23 @@ export default function AdminPage() {
 	                <h1 className="break-words text-2xl font-bold text-amber-300">Admin</h1>
 	                <p className="mt-1 text-sm text-slate-400">{activeNavItem.caption}</p>
 	              </div>
+	            </div>
+	            <div className="flex flex-wrap items-center gap-2">
+	              <button
+	                type="button"
+	                onClick={clearAllPastYearContent}
+	                disabled={clearingAll}
+	                className="inline-flex min-h-[44px] items-center justify-center rounded-xl border border-red-500/40 bg-red-600/80 px-3 py-2 text-sm font-semibold text-white transition hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+	              >
+	                {clearingAll ? "Clearing..." : "Clear All"}
+	              </button>
+	              <button
+	                type="button"
+	                onClick={handleLogout}
+	                className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700"
+	              >
+	                Logout
+	              </button>
 	            </div>
 	          </div>
 	          <div className="hidden">
@@ -998,8 +1075,11 @@ export default function AdminPage() {
                           <button onClick={() => { setEditingId(t.id); setEditValue(t.name); setEditSlug(t.email); }} className="px-3 py-1 rounded bg-slate-600 text-sm">
                             Edit
                           </button>
-                          <button onClick={() => deleteTeacher(t.id)} className="px-3 py-1 rounded bg-red-600/80 text-sm">
-                            Delete
+                          <button onClick={() => deleteTeacher(t.id)} className="px-3 py-1 rounded bg-slate-600 text-sm">
+                            Delete account
+                          </button>
+                          <button onClick={() => deleteTeacherAllData(t.id)} className="px-3 py-1 rounded bg-red-700/90 text-sm">
+                            Delete all
                           </button>
                         </div>
                       </>

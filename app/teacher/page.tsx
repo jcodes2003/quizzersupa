@@ -187,6 +187,7 @@ type NameImportEntry = {
   raw: string;
   studentId?: string;
   name?: string;
+  importIndex?: number;
 };
 
 const SUBJECT_LABELS: Record<string, string> = {
@@ -922,17 +923,31 @@ function parseNameImportText(text: string): NameImportEntry[] {
   const rows = parseCsv(trimmed);
   if (rows.length === 0) return [];
   const header = rows[0]!.map((h) => normalizeNameLoose(h));
-  const hasHeader =
-    header.includes("name") ||
-    header.includes("student name") ||
-    header.includes("full name") ||
-    header.includes("student_id") ||
-    header.includes("student id") ||
-    header.includes("id");
+  const isNameHeader = (h: string) => ["name", "student name", "full name"].includes(h);
+  const isIdHeader = (h: string) =>
+    h === "id" ||
+    h === "student id" ||
+    h === "student_id" ||
+    h === "student ids" ||
+    h === "student_ids" ||
+    h === "studentid" ||
+    h === "studentids";
 
-  const nameHeaderIdx = header.findIndex((h) => ["name", "student name", "full name"].includes(h));
-  const idHeaderIdx = header.findIndex((h) => ["student_id", "student id", "id"].includes(h));
+  const hasHeader = header.some((h) => isNameHeader(h) || isIdHeader(h));
+
+  const nameHeaderIdx = header.findIndex((h) => isNameHeader(h));
+  const idHeaderIdx = header.findIndex((h) => isIdHeader(h));
   if (!hasHeader) {
+    if (rows.every((r) => r.length <= 1)) {
+      const values = rows.map((r) => String(r[0] ?? "").trim()).filter(Boolean);
+      const idLikeCount = values.filter((v) => sanitizeStudentId(v).length > 0).length;
+      if (values.length > 0 && idLikeCount >= Math.ceil(values.length * 0.7)) {
+        return values.map((v) => {
+          const sid = sanitizeStudentId(v);
+          return { raw: sid || v, studentId: sid || undefined, name: undefined };
+        });
+      }
+    }
     if (rows.every((r) => r.length <= 1)) {
       return lines.map((line) => ({ raw: line, name: line }));
     }
@@ -5235,14 +5250,15 @@ export default function TeacherPage() {
 	    sortedConsolidatedRows.map((row) => [getCurrentReportStudentKey(row), calculateWeightedGrade(row, displayQuizColumns)])
 	  );
 
-  const nameImportMatchResult = useMemo(() => {
-    const byStudentId = new Map<string, ConsolidatedRow>();
+	  const nameImportMatchResult = useMemo(() => {
+	    const byStudentId = new Map<string, ConsolidatedRow>();
     const byNameKey = new Map<string, ConsolidatedRow>();
     const byLastName = new Map<string, Array<{ first: string; row: ConsolidatedRow }>>();
 
-    for (const row of sortedConsolidatedRows) {
-      const sid = sanitizeStudentId(row.student_id);
-      if (sid && !byStudentId.has(sid)) byStudentId.set(sid, row);
+	    for (const row of sortedConsolidatedRows) {
+	      const sid = sanitizeStudentId(row.student_id);
+	      const sidKey = sid.toLowerCase();
+	      if (sidKey && !byStudentId.has(sidKey)) byStudentId.set(sidKey, row);
 
       const parts = getNamePartsForMatch(row.studentname);
       if (parts.last) {
@@ -5266,19 +5282,24 @@ export default function TeacherPage() {
     const seen = new Set<string>();
     let matchedEntriesCount = 0;
 
-    for (const entry of nameImportEntries) {
-      let matched: ConsolidatedRow | undefined;
-      const sid = sanitizeStudentId(entry.studentId ?? "");
-      if (sid) {
-        matched = byStudentId.get(sid);
-      }
+	    const orderedEntries = [...nameImportEntries].sort(
+	      (a, b) => (a.importIndex ?? Number.MAX_SAFE_INTEGER) - (b.importIndex ?? Number.MAX_SAFE_INTEGER)
+	    );
+	    for (const entry of orderedEntries) {
+	      let matched: ConsolidatedRow | undefined;
+	      const sid = sanitizeStudentId(entry.studentId ?? "");
+	      const sidKey = sid.toLowerCase();
+	      const hasImportedStudentId = sid.length > 0;
+	      if (hasImportedStudentId) {
+	        matched = byStudentId.get(sidKey);
+	      }
 
-      if (!matched && entry.name) {
-        const inputParts = getNamePartsForMatch(entry.name);
-        if (inputParts.last) {
-          const candidates = byLastName.get(inputParts.last) ?? [];
-          if (candidates.length === 1) {
-            matched = candidates[0]!.row;
+	      if (!matched && !hasImportedStudentId && entry.name) {
+	        const inputParts = getNamePartsForMatch(entry.name);
+	        if (inputParts.last) {
+	          const candidates = byLastName.get(inputParts.last) ?? [];
+	          if (candidates.length === 1) {
+	            matched = candidates[0]!.row;
           } else if (candidates.length > 1 && inputParts.first) {
             const firstFiltered = candidates.filter((c) => c.first === inputParts.first);
             if (firstFiltered.length === 1) {
@@ -5288,12 +5309,12 @@ export default function TeacherPage() {
         }
       }
 
-      if (!matched && entry.name) {
-        for (const key of buildNameMatchKeys(entry.name)) {
-          matched = byNameKey.get(key);
-          if (matched) break;
-        }
-      }
+	      if (!matched && !hasImportedStudentId && entry.name) {
+	        for (const key of buildNameMatchKeys(entry.name)) {
+	          matched = byNameKey.get(key);
+	          if (matched) break;
+	        }
+	      }
 
       if (!matched) {
         unmatchedEntries.push(entry);
@@ -5307,9 +5328,16 @@ export default function TeacherPage() {
           quizzes: new Map(),
         });
         continue;
-      }
-      matchedEntriesCount++;
-      exportRows.push(matched);
+	      }
+	      matchedEntriesCount++;
+	      exportRows.push(
+	        hasImportedStudentId
+	          ? {
+	              ...matched,
+	              student_id: sid,
+	            }
+	          : matched
+	      );
 
       const identity = getStudentIdentityKey({ student_id: matched.student_id, studentname: matched.studentname });
       if (!identity || seen.has(identity)) continue;
@@ -5326,7 +5354,7 @@ export default function TeacherPage() {
     setNameImportError("");
     try {
       const text = await file.text();
-      const parsed = parseNameImportText(text);
+	      const parsed = parseNameImportText(text).map((entry, index) => ({ ...entry, importIndex: index }));
       if (parsed.length === 0) {
         setNameImportEntries([]);
         setNameImportFileName(file.name);
