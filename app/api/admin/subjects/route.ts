@@ -26,13 +26,13 @@ export async function GET() {
 
   const full = await supabase
     .from("subjecttbl")
-    .select("id, subjectname, archived, year_level, semester, subject_code")
+    .select("id, subjectname, archived, year_level, semester, subject_code, created_at")
     .order("subjectname");
   data = (full.data ?? null) as Array<Record<string, unknown>> | null;
   error = (full.error ?? null) as { message: string } | null;
 
   if (error?.message && error.message.toLowerCase().includes("archived")) {
-    const fallback = await supabase.from("subjecttbl").select("id, subjectname").order("subjectname");
+    const fallback = await supabase.from("subjecttbl").select("id, subjectname, created_at").order("subjectname");
     data = (fallback.data ?? null) as Array<Record<string, unknown>> | null;
     error = (fallback.error ?? null) as { message: string } | null;
   }
@@ -45,9 +45,30 @@ export async function GET() {
     year_level?: number | null;
     semester?: string | null;
     subject_code?: string | null;
+    created_at?: string | null;
   }>;
+  const sortedRows = [...rows].sort((a, b) => {
+    const aCreated = a.created_at ?? null;
+    const bCreated = b.created_at ?? null;
+
+    if (aCreated && bCreated) {
+      const aTime = new Date(aCreated).getTime();
+      const bTime = new Date(bCreated).getTime();
+      if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) {
+        return bTime - aTime;
+      }
+    }
+
+    const aId = Number(a.id);
+    const bId = Number(b.id);
+    if (!Number.isNaN(aId) && !Number.isNaN(bId) && aId !== bId) {
+      return bId - aId;
+    }
+
+    return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+  });
   return NextResponse.json(
-    rows.map((r) => ({
+    sortedRows.map((r) => ({
       id: r.id,
       name: r.subjectname,
       slug: toSlug(r.subjectname),
@@ -55,6 +76,7 @@ export async function GET() {
       yearLevel: r.year_level ?? null,
       semester: r.semester ?? null,
       code: r.subject_code ?? null,
+      created_at: r.created_at ?? null,
     }))
   );
 }

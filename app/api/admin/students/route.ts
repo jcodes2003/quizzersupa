@@ -24,8 +24,16 @@ export async function GET() {
   }
 
   const rows = (data ?? []) as StudentRow[];
+  const sortedRows = [...rows].sort((a, b) => {
+    const aId = Number(a.id);
+    const bId = Number(b.id);
+    if (!Number.isNaN(aId) && !Number.isNaN(bId) && aId !== bId) {
+      return bId - aId;
+    }
+    return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+  });
   return NextResponse.json(
-    rows.map((row) => ({
+    sortedRows.map((row) => ({
       id: row.id,
       name: String(row.studentname ?? "").trim(),
       studentId: String(row.studentid ?? "").trim(),

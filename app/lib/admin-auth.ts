@@ -28,7 +28,7 @@ function verify(value: string): boolean {
 }
 
 export async function isAdminAuthenticated(): Promise<boolean> {
-  const cookieStore = await cookies();
+  const cookieStore = await cookies();  
   const value = cookieStore.get(COOKIE_NAME)?.value;
   return !!value && verify(value);
 }

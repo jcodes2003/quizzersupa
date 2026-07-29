@@ -27,6 +27,30 @@ const ADMIN_NAV_ITEMS: Array<{ id: AdminTab; label: string; caption: string }> =
 
 const PAGE_SIZE = 8;
 
+const sortByLatestAdded = <T extends { id?: string | number; created_at?: string | null; createdAt?: string | null }>(items: T[]) => {
+  return [...items].sort((a, b) => {
+    const aCreated = a.created_at ?? a.createdAt ?? null;
+    const bCreated = b.created_at ?? b.createdAt ?? null;
+
+    if (aCreated && bCreated) {
+      const aTime = new Date(aCreated).getTime();
+      const bTime = new Date(bCreated).getTime();
+      if (!Number.isNaN(aTime) && !Number.isNaN(bTime) && aTime !== bTime) {
+        return bTime - aTime;
+      }
+    }
+
+    const aId = typeof a.id === "number" ? a.id : Number(a.id);
+    const bId = typeof b.id === "number" ? b.id : Number(b.id);
+
+    if (!Number.isNaN(aId) && !Number.isNaN(bId) && aId !== bId) {
+      return bId - aId;
+    }
+
+    return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+  });
+};
+
 export default function AdminPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -87,10 +111,10 @@ export default function AdminPage() {
         return;
       }
       setAuthenticated(true);
-      if (sRes.ok) setSections(await sRes.json());
-      if (subRes.ok) setSubjects(await subRes.json());
-      if (tRes.ok) setTeachers(await tRes.json());
-      if (studentRes?.ok) setStudents(await studentRes.json());
+      if (sRes.ok) setSections(sortByLatestAdded(await sRes.json() as Section[]));
+      if (subRes.ok) setSubjects(sortByLatestAdded(await subRes.json() as Subject[]));
+      if (tRes.ok) setTeachers(sortByLatestAdded(await tRes.json() as Teacher[]));
+      if (studentRes?.ok) setStudents(sortByLatestAdded(await studentRes.json() as Student[]));
     } catch {
       setAuthenticated(false);
     }
