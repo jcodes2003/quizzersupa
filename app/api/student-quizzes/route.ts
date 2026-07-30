@@ -150,6 +150,7 @@ export async function GET(request: NextRequest) {
   const quizIds = baseQuizzes.map((q) => q.id);
   const attemptsUsedByQuizId = new Map<string, number>();
   const hasManualSubmitByQuizId = new Map<string, boolean>();
+  const hasAutomaticSubmitByQuizId = new Map<string, boolean>();
   const openAttemptByQuizId = new Map<string, { attemptId: string; approved: boolean }>();
   const approvedRecoveryAttemptIds = new Set<string>();
   const latestAttemptByQuizId = new Map<
@@ -163,8 +164,11 @@ export async function GET(request: NextRequest) {
 
   const mergeAttemptIntoBest = (qid: string, attempt: Record<string, unknown>) => {
     attemptsUsedByQuizId.set(qid, (attemptsUsedByQuizId.get(qid) ?? 0) + 1);
-    if (String(attempt.submission_source ?? "").trim() === "manual_submit") {
+    if (String(attempt.submission_source ?? "").trim().toLowerCase().startsWith("manual")) {
       hasManualSubmitByQuizId.set(qid, true);
+    }
+    if (String(attempt.submission_source ?? "").trim().toLowerCase().startsWith("auto_")) {
+      hasAutomaticSubmitByQuizId.set(qid, true);
     }
 
     const submittedAtRaw = safeIso(attempt.submitted_at ?? attempt.created_at);
@@ -328,10 +332,11 @@ export async function GET(request: NextRequest) {
 	      const latestSubmissionSource = latestAttempt?.submissionSource ?? null;
 	      const submitted = attemptsUsed > 0;
 	      const hasManualSubmit = hasManualSubmitByQuizId.get(q.id) === true;
+	      const hasAutomaticSubmit = hasAutomaticSubmitByQuizId.get(q.id) === true;
       const hasApprovedRecoveredAttempt = existingOpenAttempt?.approved === true;
       const hasReopenedAttempt = Boolean(existingOpenAttempt?.attemptId) && hasApprovedRecoveredAttempt;
       const attemptsRemaining = hasReopenedAttempt ? 0 : baseAttemptsRemaining;
-      const canStillAttempt = (q._open && attemptsRemaining > 0 && !hasManualSubmit) || hasReopenedAttempt;
+	      const canStillAttempt = (q._open && attemptsRemaining > 0 && !hasManualSubmit && !hasAutomaticSubmit) || hasReopenedAttempt;
 	      const status: "open" | "closed" | "missing" | "completed" = canStillAttempt
 	        ? "open"
 	        : submitted

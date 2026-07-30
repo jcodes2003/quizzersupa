@@ -1008,7 +1008,8 @@ function formatSubmissionSource(source?: string | null): string {
   if (v === "auto_tab_switch") return "Auto: Tab/window changed";
   if (v === "auto_close_tab") return "Auto: Closed tab/browser";
   if (v === "auto_time_expired") return "Auto: Time expired";
-  if (v === "manual_done_button") return "Manual: Done button";
+  // Legacy records may use manual_done_button, but manual submissions are now terminal.
+  if (v === "manual_done_button") return "Manual submit";
   return "Manual submit";
 }
 

@@ -139,7 +139,8 @@ export async function GET(request: NextRequest) {
 	        (row) => sameStudentId(row.student_id, studentId)
 	      );
 	      const used = matchingRows.length;
-	      const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
+      const hasManualSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim().toLowerCase().startsWith("manual"));
+	      const hasAutomaticSubmit = matchingRows.some((row) => String(row.submission_source ?? "").trim().toLowerCase().startsWith("auto_"));
 	      const noAttemptsLeft = used >= maxAttempts;
 	      attemptsUsed = used;
 	      let hasApprovedRecoveredAttempt = false;
@@ -165,7 +166,7 @@ export async function GET(request: NextRequest) {
 	        );
 	      }
 	      attemptsRemaining =
-	        hasApprovedRecoveredAttempt ? null : hasManualSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
+	        hasApprovedRecoveredAttempt ? null : hasManualSubmit || hasAutomaticSubmit || noAttemptsLeft ? 0 : Math.max(0, maxAttempts - used);
 	      if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt && !matchingOpenAttempt) {
 	        return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
 	      }

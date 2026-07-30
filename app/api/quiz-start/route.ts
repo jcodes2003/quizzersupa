@@ -220,12 +220,16 @@ export async function POST(request: NextRequest) {
       countErr && countErr.toLowerCase().includes("student_attempts_log")
         ? null
         : matchingRows.length;
-    const hasManualSubmit =
-      countErr && countErr.toLowerCase().includes("student_attempts_log")
-        ? false
-        : matchingRows.some(
-            (row) => String(row.submission_source ?? "").trim() === "manual_submit"
-          );
+	    const hasManualSubmit =
+	      countErr && countErr.toLowerCase().includes("student_attempts_log")
+	        ? false
+	        : matchingRows.some(
+	            (row) => String(row.submission_source ?? "").trim().toLowerCase().startsWith("manual")
+	          );
+	    const hasAutomaticSubmit =
+	      countErr && countErr.toLowerCase().includes("student_attempts_log")
+	        ? false
+	        : matchingRows.some((row) => String(row.submission_source ?? "").trim().toLowerCase().startsWith("auto_"));
 	    const attemptsRemaining =
 	      typeof attemptsUsed === "number" ? Math.max(0, maxAttempts - attemptsUsed) : null;
 	    const noAttemptsLeft = typeof attemptsUsed === "number" && attemptsUsed >= maxAttempts;
@@ -251,7 +255,10 @@ export async function POST(request: NextRequest) {
 	        existingOpen?.id && approvedAttemptIdSet.has(String(existingOpen.id).trim())
 	      );
 	    }
-	    if ((hasManualSubmit || noAttemptsLeft) && !hasApprovedRecoveredAttempt && !existingOpen) {
+	    if (hasManualSubmit && !hasApprovedRecoveredAttempt) {
+	      return NextResponse.json({ error: "This quiz was already manually submitted. No new attempt is available." }, { status: 403 });
+	    }
+	    if (noAttemptsLeft && !hasApprovedRecoveredAttempt && !existingOpen) {
 	      return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
 	    }
     const allowRetake = hasManualSubmit || noAttemptsLeft ? false : baseAllowRetake;
@@ -313,10 +320,19 @@ export async function POST(request: NextRequest) {
       ? false
       : ((countResult.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>)
           .filter((row) => sameStudentId(row.student_id, studentId))
-          .some((row) => String(row.submission_source ?? "").trim() === "manual_submit");
+          .some((row) => String(row.submission_source ?? "").trim().toLowerCase().startsWith("manual"));
+  const hasAutomaticSubmit =
+    countResult.error?.message && countResult.error.message.toLowerCase().includes("student_attempts_log")
+      ? false
+      : ((countResult.data ?? []) as Array<{ student_id?: string | null; submission_source?: string | null }>)
+          .filter((row) => sameStudentId(row.student_id, studentId))
+          .some((row) => String(row.submission_source ?? "").trim().toLowerCase().startsWith("auto_"));
   const noAttemptsLeft = attemptCount >= maxAttempts;
-  if (hasManualSubmit || noAttemptsLeft) {
-    return NextResponse.json({ error: "No attempts remaining" }, { status: 403 });
+  if (hasManualSubmit || hasAutomaticSubmit || noAttemptsLeft) {
+    return NextResponse.json(
+      { error: hasAutomaticSubmit ? "This quiz was automatically submitted. No new attempt is available." : "No attempts remaining" },
+      { status: 403 }
+    );
   }
   const allowRetake = hasManualSubmit || noAttemptsLeft ? false : baseAllowRetake;
 

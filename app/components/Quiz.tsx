@@ -952,8 +952,11 @@ export default function Quiz({
   const autoSubmitRef = useRef(false);
   const [started, setStarted] = useState(false);
   const [startLoading, setStartLoading] = useState(false);
+  const [screenGuardActive, setScreenGuardActive] = useState(false);
+  const [rulesAcknowledged, setRulesAcknowledged] = useState(false);
   const [attemptId, setAttemptId] = useState<string | null>(null);
   const [attemptNumber, setAttemptNumber] = useState<number | null>(null);
+  const manualSubmitInFlightRef = useRef(false);
   const [expiresAt, setExpiresAt] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -1368,6 +1371,10 @@ export default function Quiz({
 
 	  const handleStart = async () => {
 	    setSubmitError(null);
+	    if (!rulesAcknowledged) {
+	      setSubmitError("Please read and acknowledge the test rules before starting.");
+	      return;
+	    }
     if (!studentFirstName.trim()) {
       setSubmitError("Please enter your first name.");
       setCurrentPage(0);
@@ -1471,8 +1478,9 @@ export default function Quiz({
     };
   }, []);
 
-  const gradeQuiz = useCallback(async (source: SubmissionSource = "manual_submit") => {
-    const name = getFullName();
+	  const gradeQuiz = useCallback(async (source: SubmissionSource = "manual_submit") => {
+	    if (submitted || (source === "manual_submit" && manualSubmitInFlightRef.current)) return;
+	    const name = getFullName();
     const id = studentId.trim();
     if (!id) {
       setSubmitError("Please enter your student ID.");
@@ -1509,8 +1517,10 @@ export default function Quiz({
         setCurrentPage(0);
         return;
       }
-      nextAttemptNumber = currentAttempts + 1;
-    }
+	      nextAttemptNumber = currentAttempts + 1;
+	    }
+
+    if (source === "manual_submit") manualSubmitInFlightRef.current = true;
 
     let mcScore = 0;
     for (const q of multipleChoiceQuestions) {
@@ -1640,8 +1650,9 @@ export default function Quiz({
           submissionSource: source,
         };
         const result = await saveAttempt(payload);
-        if (!result.ok) {
-          if (result.deadlinePassed) {
+	        if (!result.ok) {
+	          if (source === "manual_submit") manualSubmitInFlightRef.current = false;
+	          if (result.deadlinePassed) {
             setSubmitError("Quiz deadline has passed. Submission is closed.");
             return;
           }
@@ -1653,8 +1664,9 @@ export default function Quiz({
 	        setAttemptSaveReady(true);
           clearSubmissionLock(quizId, id);
 	        void refreshAttemptsInfo();
-      } catch (err) {
-        console.error("Error saving attempt:", err);
+	      } catch (err) {
+	        if (source === "manual_submit") manualSubmitInFlightRef.current = false;
+	        console.error("Error saving attempt:", err);
         setSubmitError("Failed to save attempt.");
         return;
       } finally {
@@ -1664,7 +1676,7 @@ export default function Quiz({
     setResults(nextResults);
 	    setSubmissionSource(source);
 	    setSubmitted(true);
-	  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, handsOnAnswers, questionFlow, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, quizId, attemptId, attemptNumber, started, saveAttempt, refreshAttemptsInfo]);
+	  }, [topic, getFullName, studentFirstName, studentLastName, studentId, section, mcAnswers, idAnswers, enumAnswers, handsOnAnswers, questionFlow, multipleChoiceQuestions, identificationQuestions, enumerationQuestions, quizId, attemptId, attemptNumber, started, submitted, saveAttempt, refreshAttemptsInfo]);
 
   useEffect(() => {
     if (!expiresAt || submitted) {
@@ -1687,8 +1699,8 @@ export default function Quiz({
     return () => clearInterval(interval);
   }, [expiresAt, submitted, gradeQuiz]);
 
-  useEffect(() => {
-    closeIntentRef.current = false;
+	  useEffect(() => {
+	    closeIntentRef.current = false;
     const triggerAutoSubmit = () => {
       if (submitted || (quizId && !started) || autoSubmitRef.current) return;
       autoSubmitRef.current = true;
@@ -1737,6 +1749,32 @@ export default function Quiz({
       window.removeEventListener("pagehide", handlePageHide);
     };
 		  }, [submitted, gradeQuiz]);
+
+	  useEffect(() => {
+	    if (!started || submitted) {
+	      setScreenGuardActive(false);
+	      return;
+	    }
+
+	    const concealQuiz = () => setScreenGuardActive(true);
+    const handleVisibility = () => {
+      setScreenGuardActive(document.visibilityState !== "visible");
+    };
+    const revealQuiz = () => setScreenGuardActive(false);
+
+    document.addEventListener("visibilitychange", handleVisibility);
+	    window.addEventListener("blur", concealQuiz);
+	    window.addEventListener("focus", revealQuiz);
+	    window.addEventListener("beforeprint", concealQuiz);
+	    window.addEventListener("afterprint", revealQuiz);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+	      window.removeEventListener("blur", concealQuiz);
+	      window.removeEventListener("focus", revealQuiz);
+	      window.removeEventListener("beforeprint", concealQuiz);
+	      window.removeEventListener("afterprint", revealQuiz);
+	    };
+	  }, [started, submitted]);
 
 	  useEffect(() => {
 	    if (!submitted) return;
@@ -2059,7 +2097,17 @@ export default function Quiz({
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
+	    <div className="quiz-shell min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-slate-100 p-6 md:p-10">
+	      {screenGuardActive && (
+	        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950 p-6 text-center">
+	          <div className="max-w-md rounded-2xl border border-amber-400/40 bg-slate-900 p-6 shadow-2xl">
+	            <p className="text-lg font-semibold text-amber-200">Quiz content hidden</p>
+            <p className="mt-2 text-sm text-slate-300">
+              Return to this quiz window to continue. Screen capture and printing precautions are active.
+	            </p>
+	          </div>
+	        </div>
+	      )}
       <div className="max-w-3xl mx-auto">
         <div className="text-center mb-6">
 	          <Link href={backHref} className="text-slate-500 hover:text-cyan-400 text-sm mb-2 inline-block">← Back</Link>
@@ -2148,9 +2196,35 @@ export default function Quiz({
 		                className="w-full px-4 py-3 rounded-lg bg-slate-800 border border-slate-600 text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500"
 		              />
 	            </div>
-		            {studentLocked && (
-		              <p className="text-slate-500 text-xs">Using your student profile details.</p>
-		            )}
+	            {studentLocked && (
+	              <p className="text-slate-500 text-xs">Using your student profile details.</p>
+	            )}
+	            <div className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-left">
+	              <div className="flex items-start gap-3">
+	                <span aria-hidden="true" className="mt-0.5 text-xl">⚠️</span>
+	                <div>
+	                  <h2 className="font-semibold text-amber-200">Test Rules and Reminders</h2>
+	                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-100/90">
+	                    <li>Read each question carefully and answer independently.</li>
+	                    <li>Stay on this tab. Leaving or switching tabs may submit the test automatically.</li>
+	                    <li>Do not copy, paste, or use outside help during the test.</li>
+                    <li>Review your answers and submit before the timer expires.</li>
+                  </ul>
+                </div>
+              </div>
+              <label className="mt-4 flex cursor-pointer items-start gap-3 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={rulesAcknowledged}
+                  onChange={(e) => {
+                    setRulesAcknowledged(e.target.checked);
+                    if (e.target.checked) setSubmitError(null);
+                  }}
+                  className="mt-0.5 h-4 w-4 accent-emerald-500"
+                />
+                <span>I have read and understand the test rules.</span>
+              </label>
+            </div>
 	                {noAttemptsRemaining && (
                     <div className="space-y-2">
 	                  <p className="text-amber-300 text-sm">
@@ -2180,7 +2254,7 @@ export default function Quiz({
 	                <button
 	                  type="button"
 	                  onClick={handleStart}
-	                  disabled={startLoading || started || noAttemptsRemaining}
+	                  disabled={startLoading || started || noAttemptsRemaining || !rulesAcknowledged}
 	                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold"
 	                >
                   {started ? "Quiz Started" : startLoading ? "Starting..." : "Start Quiz"}
